@@ -1,0 +1,23 @@
+---
+name: Bug Report / Verbesserung
+about: Manuell ein Issue erstellen
+title: "[Manual] "
+labels: ""
+---
+
+## Beschreibung
+<!-- Was ist das Problem oder die Verbesserung? -->
+
+## Schritte zum Reproduzieren (bei Bugs)
+1. ...
+2. ...
+
+## Erwartetes Verhalten
+<!-- Was sollte passieren? -->
+
+## Tatsächliches Verhalten
+<!-- Was passiert stattdessen? -->
+
+## Umgebung
+- OS: 
+- Python/Tool-Version:
