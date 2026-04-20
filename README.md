@@ -1,0 +1,258 @@
+# 🤖 AI Issue Solver — Morpheus-Style Workflow
+
+> Automatisches Analysieren, Erstellen und Lösen von GitHub Issues mit KI-Unterstützung  
+> Inspiriert von [TheMorpheus407](https://www.youtube.com/user/TheMorpheus407) / [the-morpheus.de](https://www.the-morpheus.de)
+
+---
+
+## 📋 Inhaltsverzeichnis
+
+- [Was macht dieses Repo?](#was-macht-dieses-repo)
+- [Voraussetzungen](#voraussetzungen)
+- [Setup & Installation](#setup--installation)
+- [Workflow im Überblick](#workflow-im-überblick)
+- [Scripts im Detail](#scripts-im-detail)
+- [GitHub PAT erstellen](#github-pat-erstellen)
+- [KI-Modelle konfigurieren](#ki-modelle-konfigurieren)
+- [Verzeichnisstruktur](#verzeichnisstruktur)
+
+---
+
+## Was macht dieses Repo?
+
+Dieses Repo implementiert einen vollautomatischen **KI-gestützten Verbesserungs-Workflow** für GitHub-Projekte:
+
+```
+Repos analysieren  →  Issues erstellen  →  KI löst Issues  →  PR erstellen
+```
+
+**Schritt 1 — Analyse:** `analyze_repos.py` scannt alle deine GitHub-Repos per API,  
+analysiert Code-Qualität, fehlende Dokumentation, Sicherheit und Best Practices.
+
+**Schritt 2 — Issues erstellen:** `create_issues.py` legt für jeden gefundenen  
+Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
+
+**Schritt 3 — Issues lösen:** `solve_issues.py` ruft wahlweise **Claude**, **OpenAI**  
+oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code mit `aider`  
+und erstellt einen Branch + Commit.
+
+---
+
+## Voraussetzungen
+
+| Tool | Version | Zweck |
+|------|---------|-------|
+| Python | ≥ 3.10 | Haupt-Scriptsprache |
+| `gh` CLI | aktuell | GitHub-Zugriff |
+| `aider` | aktuell | KI-Pair-Programmer |
+| `git` | aktuell | Versionskontrolle |
+| Ollama | optional | Lokale KI-Modelle |
+
+---
+
+## Setup & Installation
+
+### 1. Repo klonen
+
+```bash
+git clone https://github.com/SaJaToGu/ai-issue-solver.git
+cd ai-issue-solver
+```
+
+### 2. Python-Abhängigkeiten installieren
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. GitHub PAT einrichten
+
+→ Siehe [GitHub PAT erstellen](#github-pat-erstellen) weiter unten.
+
+```bash
+cp config/config.example.env config/.env
+# .env mit deinen Werten befüllen (NIEMALS committen!)
+```
+
+### 4. KI-Modell wählen
+
+```bash
+python scripts/solve_issues.py --model claude    # Anthropic Claude
+python scripts/solve_issues.py --model openai    # OpenAI GPT-4
+python scripts/solve_issues.py --model ollama    # Lokales Modell
+```
+
+---
+
+## Workflow im Überblick
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    AI ISSUE SOLVER                       │
+│                  (Morpheus-Methode)                      │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 1. analyze_repos │  ← Scannt alle Repos per GitHub API
+│    .py           │    Prüft: README, Lizenz, Code-Qualität
+└────────┬────────┘    Sicherheit, CI/CD, Dokumentation
+         │
+         ▼
+┌─────────────────┐
+│ 2. create_issues │  ← Erstellt strukturierte Issues
+│    .py           │    mit Labels, Priorität, Beschreibung
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 3. solve_issues  │  ← Wählt KI-Modell (Claude/OpenAI/Ollama)
+│    .py           │    Nutzt aider als Code-Editor
+└────────┬────────┘    Erstellt Branch → Commit → PR
+         │
+         ▼
+┌─────────────────┐
+│   GitHub PR      │  ← Du reviewst und mergst
+└─────────────────┘
+```
+
+---
+
+## Scripts im Detail
+
+### `analyze_repos.py`
+Analysiert alle Repos eines GitHub-Users und erstellt einen JSON-Report.
+
+```bash
+python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
+```
+
+**Prüft auf:**
+- Fehlendes README / schlechte README-Qualität
+- Fehlende LICENSE-Datei
+- Fehlende `.gitignore`
+- Keine CI/CD-Pipeline (GitHub Actions)
+- Veraltete Dependencies
+- Sicherheitslücken (hardcoded secrets)
+- Fehlende Code-Kommentare
+- Fehlende Issues-Templates
+
+---
+
+### `create_issues.py`
+Liest den Analysis-Report und erstellt GitHub Issues.
+
+```bash
+python scripts/create_issues.py --report reports/analysis.json --dry-run
+python scripts/create_issues.py --report reports/analysis.json  # echte Issues
+```
+
+**Flags:**
+- `--dry-run` — zeigt Issues an ohne sie zu erstellen
+- `--repo` — nur für ein bestimmtes Repo
+- `--priority high` — nur High-Priority Issues
+
+---
+
+### `solve_issues.py`
+Löst offene Issues automatisch mit KI + aider.
+
+```bash
+python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
+python scripts/solve_issues.py --model ollama --model-name llama3 --all-repos
+```
+
+**Flags:**
+- `--model` — `claude`, `openai`, oder `ollama`
+- `--model-name` — spezifisches Modell z.B. `llama3`, `deepseek-coder`
+- `--dry-run` — zeigt Plan ohne Änderungen
+- `--issue` — nur ein bestimmtes Issue lösen
+
+---
+
+## GitHub PAT erstellen
+
+Ein **Personal Access Token (PAT)** ist dein persönlicher API-Schlüssel für GitHub.
+
+### Schritt-für-Schritt:
+
+1. Gehe zu: **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)**  
+   Direktlink: https://github.com/settings/tokens/new
+
+2. **Note:** `ai-issue-solver`
+
+3. **Expiration:** 90 days (empfohlen)
+
+4. **Scopes — diese Haken setzen:**
+   - ✅ `repo` (vollständiger Repo-Zugriff)
+   - ✅ `read:user` (User-Info lesen)
+   - ✅ `workflow` (GitHub Actions)
+
+5. Klick **Generate token** → Token kopieren (wird nur einmal angezeigt!)
+
+6. In `config/.env` eintragen:
+   ```
+   GITHUB_TOKEN=ghp_deinTokenHier
+   ```
+
+> ⚠️ **Wichtig:** Den Token NIEMALS in ein Repo committen!  
+> Die `.env`-Datei ist in `.gitignore` eingetragen.
+
+---
+
+## KI-Modelle konfigurieren
+
+### Claude (Anthropic)
+1. API-Key holen: https://console.anthropic.com/
+2. In `.env` eintragen: `ANTHROPIC_API_KEY=sk-ant-...`
+
+### OpenAI
+1. API-Key holen: https://platform.openai.com/api-keys
+2. In `.env` eintragen: `OPENAI_API_KEY=sk-...`
+
+### Ollama (lokal / Raspberry Pi)
+```bash
+# Ollama installieren
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# Modell herunterladen (z.B. für Raspberry Pi: kleines Modell)
+ollama pull llama3.2:3b        # klein, schnell (Raspi-tauglich)
+ollama pull deepseek-coder:6.7b # gut für Code
+
+# In .env eintragen:
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=deepseek-coder:6.7b
+```
+
+---
+
+## Verzeichnisstruktur
+
+```
+ai-issue-solver/
+├── README.md                    # Diese Datei
+├── requirements.txt             # Python-Dependencies
+├── .gitignore                   # Schützt .env und Secrets
+├── config/
+│   ├── config.example.env       # Vorlage für deine .env
+│   └── issue_templates.json     # Issue-Vorlagen
+├── scripts/
+│   ├── analyze_repos.py         # Schritt 1: Repos analysieren
+│   ├── create_issues.py         # Schritt 2: Issues erstellen
+│   ├── solve_issues.py          # Schritt 3: Issues mit KI lösen
+│   └── utils.py                 # Gemeinsame Hilfsfunktionen
+├── templates/
+│   └── issue_body.md            # Issue-Text-Vorlage
+├── reports/                     # Generierte Analyse-Reports (gitignored)
+│   └── .gitkeep
+└── docs/
+    ├── WORKFLOW.md               # Detaillierter Workflow
+    ├── SETUP_AIDER.md            # Aider-Einrichtung
+    └── RASPBERRY_PI.md           # Ollama auf Raspberry Pi
+```
+
+---
+
+## Lizenz
+
+MIT — Mach damit was du willst. Viel Spaß! 🚀
