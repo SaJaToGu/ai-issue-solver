@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+"""
+solve_issues.py — Schritt 3: Issues mit KI lösen (Morpheus-Methode)
+Morpheus-Style AI Issue Solver — github.com/SaJaToGu
+
+Holt offene GitHub Issues, übergibt sie an `aider` mit dem
+gewählten KI-Modell (Claude / OpenAI / Ollama), erstellt
+einen Branch und einen Commit mit der Lösung.
+
+Verwendung:
+    python scripts/solve_issues.py --model claude
+    python scripts/solve_issues.py --model openai
+    python scripts/solve_issues.py --model ollama --model-name deepseek-coder:6.7b
+    python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
+    python scripts/solve_issues.py --model claude --issue 3
+    python scripts/solve_issues.py --model claude --dry-run
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+import requests
+
+sys.path.insert(0, str(Path(__file__).parent))
+from utils import load_env, print_banner, print_step, print_ok, print_warn, print_err
+
+
+# ─────────────────────────────────────────────────────────────
+# Modell-Konfigurationen
+# ─────────────────────────────────────────────────────────────
+
+MODEL_CONFIGS = {
+    "claude": {
+        "display_name": "Anthropic Claude (claude-sonnet-4-20250514)",
+        "aider_flags": [
+            "--model", "claude-sonnet-4-20250514",
+        ],
+        "env_key": "ANTHROPIC_API_KEY",
+        "env_var": "ANTHROPIC_API_KEY",
+    },
+    "openai": {
+        "display_name": "OpenAI GPT-4o",
+        "aider_flags": [
+            "--model", "gpt-4o",
+        ],
+        "env_key": "OPENAI_API_KEY",
+        "env_var": "OPENAI_API_KEY",
+    },
+    "ollama": {
+        "display_name": "Ollama (lokal)",
+        "aider_flags": [
+            "--model", "ollama/{model_name}",
+        ],
+        "env_key": None,
+        "env_var": None,
+        "default_model_name": "deepseek-coder:6.7b",
+    },
+}
+
+# Prompt-Vorlage für aider
+AIDER_PROMPT_TEMPLATE = """Löse das folgende GitHub Issue in diesem Repository.
+
+=== ISSUE #{number}: {title} ===
+
+{body}
+
+=== AUFGABE ===
+Analysiere das Problem und implementiere eine saubere, vollständige Lösung.
+Halte dich an die bestehende Code-Struktur und Konventionen des Projekts.
+Kommentiere deine Änderungen auf Deutsch wenn sinnvoll.
+Erstelle oder verbessere Dateien direkt (README, LICENSE, .gitignore, etc.).
+
+Wenn du Dateien erstellst, achte auf:
+- Vollständigkeit (keine Platzhalter wie "TODO" oder "...")
+- Korrekte Syntax für die jeweilige Sprache/Format
+- Sinnvolle Inhalte die zum Projekt passen
+"""
+
+
+# ─────────────────────────────────────────────────────────────
+# GitHub API Helper
+# ─────────────────────────────────────────────────────────────
+
+class GitHubClient:
+    BASE = "https://api.github.com"
+
+    def __init__(self, token: str, owner: str):
+        self.owner = owner
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+
+    def get_repos(self) -> list:
+        resp = self.session.get(
+            f"{self.BASE}/users/{self.owner}/repos",
+            params={"type": "owner", "per_page": 100}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_open_issues(self, repo: str, label: str = "ai-generated") -> list:
+        resp = self.session.get(
+            f"{self.BASE}/repos/{self.owner}/{repo}/issues",
+            params={"state": "open", "labels": label, "per_page": 100}
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        return [i for i in resp.json() if "pull_request" not in i]
+
+    def get_single_issue(self, repo: str, number: int) -> dict | None:
+        resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def close_issue_with_comment(self, repo: str, number: int,
+                                  comment: str, dry_run: bool = False):
+        if dry_run:
+            return
+        # Kommentar hinzufügen
+        self.session.post(
+            f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}/comments",
+            json={"body": comment}
+        )
+        # Issue schließen
+        self.session.patch(
+            f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}",
+            json={"state": "closed"}
+        )
+
+    def create_pull_request(self, repo: str, title: str, body: str,
+                             head: str, base: str = "main",
+                             dry_run: bool = False) -> dict | None:
+        if dry_run:
+            print(f"      [DRY-RUN] Würde PR erstellen: '{title}'")
+            return {"html_url": "https://github.com/dry-run-pr"}
+
+        # Prüfe ob 'main' oder 'master' existiert
+        resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/branches/{base}")
+        if resp.status_code == 404:
+            base = "master"
+
+        resp = self.session.post(
+            f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
+            json={"title": title, "body": body, "head": head, "base": base}
+        )
+        if resp.status_code == 201:
+            return resp.json()
+        print_warn(f"PR konnte nicht erstellt werden: {resp.status_code}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
+# Aider Integration
+# ─────────────────────────────────────────────────────────────
+
+def check_aider_installed() -> bool:
+    try:
+        result = subprocess.run(["aider", "--version"], capture_output=True, text=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str) -> list:
+    config = MODEL_CONFIGS[model]
+    flags = []
+
+    for flag in config["aider_flags"]:
+        if "{model_name}" in flag:
+            flags.append(flag.format(model_name=model_name))
+        else:
+            flags.append(flag)
+
+    cmd = [
+        "aider",
+        *flags,
+        "--yes",                   # Automatisch ja sagen
+        "--no-auto-commits",       # Wir committen selbst
+        "--message", prompt,       # Direkt-Prompt (kein interaktiver Modus)
+    ]
+
+    return cmd
+
+
+def clone_repo(owner: str, repo: str, token: str, target_dir: str) -> bool:
+    url = f"https://{token}@github.com/{owner}/{repo}.git"
+    result = subprocess.run(
+        ["git", "clone", url, target_dir],
+        capture_output=True, text=True
+    )
+    return result.returncode == 0
+
+
+def create_branch(repo_dir: str, branch_name: str) -> bool:
+    result = subprocess.run(
+        ["git", "checkout", "-b", branch_name],
+        cwd=repo_dir, capture_output=True, text=True
+    )
+    return result.returncode == 0
+
+
+def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
+                    owner: str, repo: str) -> bool:
+    # Alle Änderungen stagen
+    subprocess.run(["git", "add", "-A"], cwd=repo_dir, capture_output=True)
+
+    # Prüfen ob es Änderungen gibt
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=repo_dir, capture_output=True
+    )
+    if result.returncode == 0:
+        print_warn("Keine Änderungen zu committen")
+        return False
+
+    # Commit
+    subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=repo_dir, capture_output=True, text=True,
+        env={**os.environ,
+             "GIT_AUTHOR_NAME": "AI Issue Solver",
+             "GIT_AUTHOR_EMAIL": "ai@github.com",
+             "GIT_COMMITTER_NAME": "AI Issue Solver",
+             "GIT_COMMITTER_EMAIL": "ai@github.com"}
+    )
+
+    # Push
+    remote_url = f"https://{token}@github.com/{owner}/{repo}.git"
+    result = subprocess.run(
+        ["git", "push", remote_url, branch],
+        cwd=repo_dir, capture_output=True, text=True
+    )
+    return result.returncode == 0
+
+
+# ─────────────────────────────────────────────────────────────
+# Issue lösen
+# ─────────────────────────────────────────────────────────────
+
+def solve_issue(client: GitHubClient, issue: dict, repo: str,
+                model: str, model_name: str, config: dict,
+                token: str, dry_run: bool) -> bool:
+    number = issue["number"]
+    title = issue["title"]
+    body = issue.get("body", "")
+
+    print(f"\n   🔧 Issue #{number}: {title}")
+    print(f"      Modell: {MODEL_CONFIGS[model]['display_name']}")
+
+    if dry_run:
+        print(f"      [DRY-RUN] Würde bearbeiten mit {model}")
+        return True
+
+    # Repo klonen
+    with tempfile.TemporaryDirectory(prefix="ai-solver-") as tmpdir:
+        repo_dir = os.path.join(tmpdir, repo)
+        print(f"      📥 Klone {repo} ...", end=" ", flush=True)
+
+        if not clone_repo(config["owner"], repo, token, repo_dir):
+            print_err("Klonen fehlgeschlagen")
+            return False
+        print("✅")
+
+        # Branch anlegen
+        branch_name = f"ai/fix-issue-{number}"
+        create_branch(repo_dir, branch_name)
+
+        # Prompt bauen
+        prompt = AIDER_PROMPT_TEMPLATE.format(
+            number=number,
+            title=title,
+            body=body or "(kein Beschreibungstext)"
+        )
+
+        # API-Key setzen
+        env = os.environ.copy()
+        env_key = MODEL_CONFIGS[model]["env_key"]
+        if env_key:
+            api_key = config["config"].get(env_key)
+            if not api_key:
+                print_err(f"{env_key} fehlt in config/.env")
+                return False
+            env[MODEL_CONFIGS[model]["env_var"]] = api_key
+
+        if model == "ollama":
+            ollama_host = config["config"].get("OLLAMA_HOST", "http://localhost:11434")
+            env["OLLAMA_API_BASE"] = ollama_host
+
+        # Aider ausführen
+        print(f"      🤖 Starte aider ...", flush=True)
+        cmd = build_aider_command(model, model_name, prompt, repo_dir)
+
+        result = subprocess.run(
+            cmd, cwd=repo_dir, env=env,
+            capture_output=False,  # Output direkt anzeigen
+            text=True,
+        )
+
+        if result.returncode != 0:
+            print_warn(f"Aider exit code: {result.returncode} (kann trotzdem OK sein)")
+
+        # Committen & pushen
+        print(f"      📤 Commit & Push ...", end=" ", flush=True)
+        commit_msg = f"fix: Löse Issue #{number} — {title}\n\nAutomatisch gelöst mit AI Issue Solver (Modell: {model})\nIssue: https://github.com/{config['owner']}/{repo}/issues/{number}"
+
+        pushed = commit_and_push(repo_dir, branch_name, commit_msg, token, config["owner"], repo)
+
+        if not pushed:
+            print_warn("Push fehlgeschlagen oder keine Änderungen")
+            return False
+        print("✅")
+
+        # PR erstellen
+        pr_body = f"""## 🤖 AI-generierter Fix für Issue #{number}
+
+Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config['owner']}/ai-issue-solver) erstellt.
+
+### Gelöstes Issue
+Closes #{number}: {title}
+
+### Verwendetes Modell
+`{MODEL_CONFIGS[model]['display_name']}`
+
+### Änderungen
+*(bitte vor dem Merge reviewen)*
+
+---
+*Erstellt mit dem AI Issue Solver (Morpheus-Methode)*
+"""
+        pr = client.create_pull_request(
+            repo=repo,
+            title=f"[AI] Fix: {title}",
+            body=pr_body,
+            head=branch_name,
+            dry_run=dry_run,
+        )
+        if pr:
+            print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
+
+        # Issue schließen
+        close_comment = f"✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\nPR: {pr.get('html_url', '?') if pr else '(kein PR)'}\nModell: {MODEL_CONFIGS[model]['display_name']}"
+        client.close_issue_with_comment(repo, number, close_comment)
+
+    return True
+
+
+# ─────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────
+
+def main():
+    print_banner("SCHRITT 3: ISSUES MIT KI LÖSEN")
+
+    parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
+    parser.add_argument(
+        "--model", required=True, choices=["claude", "openai", "ollama"],
+        help="KI-Modell: claude, openai oder ollama"
+    )
+    parser.add_argument(
+        "--model-name",
+        help="Spezifisches Modell (für Ollama z.B. 'deepseek-coder:6.7b', 'llama3.2:3b')"
+    )
+    parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
+    parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
+    parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
+    parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
+    args = parser.parse_args()
+
+    # Config laden
+    cfg = load_env()
+    token = cfg.get("GITHUB_TOKEN")
+    user = cfg.get("GITHUB_USER", "SaJaToGu")
+
+    if not token:
+        print_err("GITHUB_TOKEN fehlt in config/.env")
+        sys.exit(1)
+
+    # Aider prüfen
+    if not check_aider_installed() and not args.dry_run:
+        print_err("aider ist nicht installiert!")
+        print("   → Installieren mit: pip install aider-chat")
+        print("   → Mehr Infos: docs/SETUP_AIDER.md")
+        sys.exit(1)
+
+    # Modell-Name
+    model_config = MODEL_CONFIGS[args.model]
+    model_name = args.model_name or model_config.get("default_model_name", "")
+
+    solver_config = {"owner": user, "config": cfg}
+    client = GitHubClient(token, user)
+
+    if args.dry_run:
+        print_warn("DRY-RUN Modus aktiv\n")
+
+    print_step(1, f"Modell: {model_config['display_name']}")
+    if model_name:
+        print(f"   Modell-Name: {model_name}")
+
+    # Repos ermitteln
+    if args.repo:
+        repos = [args.repo]
+    else:
+        all_repos = client.get_repos()
+        repos = [r["name"] for r in all_repos if not r.get("archived")]
+
+    print_step(2, f"Suche offene Issues in {len(repos)} Repo(s)")
+
+    solved = 0
+    failed = 0
+
+    for repo_name in repos:
+        if args.issue:
+            # Einzelnes Issue
+            issue = client.get_single_issue(repo_name, args.issue)
+            if not issue:
+                continue
+            issues = [issue]
+        else:
+            issues = client.get_open_issues(repo_name, label=args.label)
+
+        if not issues:
+            continue
+
+        print(f"\n   📁 {repo_name}: {len(issues)} offene Issue(s)")
+
+        for issue in issues:
+            ok = solve_issue(
+                client=client,
+                issue=issue,
+                repo=repo_name,
+                model=args.model,
+                model_name=model_name,
+                config=solver_config,
+                token=token,
+                dry_run=args.dry_run,
+            )
+            if ok:
+                solved += 1
+            else:
+                failed += 1
+            time.sleep(2)
+
+    # Zusammenfassung
+    print("\n" + "─" * 50)
+    print(f"  ✅ Gelöst:  {solved}")
+    print(f"  ❌ Fehler:  {failed}")
+    print("─" * 50 + "\n")
+
+
+if __name__ == "__main__":
+    main()
