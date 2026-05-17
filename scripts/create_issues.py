@@ -24,7 +24,16 @@ except ModuleNotFoundError:
     requests = None
 
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_env, print_banner, print_step, print_ok, print_warn, print_err
+from utils import (
+    load_env,
+    print_banner,
+    print_err,
+    print_ok,
+    print_step,
+    print_warn,
+    raise_for_github_response,
+    require_config_value,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -131,18 +140,20 @@ class GitHubClient:
         resp = self.session.get(f"{url}/{name}")
         if resp.status_code == 200:
             return  # Schon vorhanden
-        self.session.post(url, json={
+        if resp.status_code != 404:
+            raise_for_github_response(resp, f"Label prüfen: {name}")
+        created = self.session.post(url, json={
             "name": name,
             "color": info["color"],
             "description": info["description"],
         })
+        raise_for_github_response(created, f"Label erstellen: {name}")
 
     def issue_exists(self, repo: str, title: str) -> bool:
         """Prüft ob ein Issue mit diesem Titel schon existiert."""
         url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
         resp = self.session.get(url, params={"state": "all", "per_page": 100})
-        if resp.status_code != 200:
-            return False
+        raise_for_github_response(resp, "Issues prüfen")
         existing = [i["title"] for i in resp.json()]
         return title in existing
 
@@ -161,8 +172,7 @@ class GitHubClient:
         })
         if resp.status_code == 201:
             return resp.json()
-        print_warn(f"Issue-Erstellung fehlgeschlagen: {resp.status_code} — {resp.text[:200]}")
-        return None
+        raise_for_github_response(resp, f"Issue erstellen: {title}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -261,10 +271,7 @@ def main():
 
     # Config laden
     config = load_env()
-    token = config.get("GITHUB_TOKEN")
-    if not token:
-        print_err("GITHUB_TOKEN fehlt in config/.env")
-        sys.exit(1)
+    token = require_config_value(config, "GITHUB_TOKEN", "GitHub Token")
 
     user = report["user"]
     client = GitHubClient(token, user)

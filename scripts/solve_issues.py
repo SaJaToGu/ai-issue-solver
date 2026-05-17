@@ -33,7 +33,17 @@ except ModuleNotFoundError:
     requests = None
 
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_env, print_banner, print_step, print_ok, print_warn, print_err
+from utils import (
+    is_placeholder_value,
+    load_env,
+    print_banner,
+    print_err,
+    print_ok,
+    print_step,
+    print_warn,
+    raise_for_github_response,
+    require_config_value,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -115,7 +125,7 @@ class GitHubClient:
             f"{self.BASE}/users/{self.owner}/repos",
             params={"type": "owner", "per_page": 100}
         )
-        resp.raise_for_status()
+        raise_for_github_response(resp, "Repos laden")
         return resp.json()
 
     def get_open_issues(self, repo: str, label: str = "ai-generated") -> list:
@@ -125,14 +135,14 @@ class GitHubClient:
         )
         if resp.status_code == 404:
             return []
-        resp.raise_for_status()
+        raise_for_github_response(resp, f"Issues laden: {repo}")
         return [i for i in resp.json() if "pull_request" not in i]
 
     def get_single_issue(self, repo: str, number: int) -> dict | None:
         resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}")
         if resp.status_code == 404:
             return None
-        resp.raise_for_status()
+        raise_for_github_response(resp, f"Issue laden: {repo}#{number}")
         return resp.json()
 
     def close_issue_with_comment(self, repo: str, number: int,
@@ -322,10 +332,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         env = os.environ.copy()
         env_key = MODEL_CONFIGS[model]["env_key"]
         if env_key:
-            api_key = config["config"].get(env_key)
-            if not api_key:
-                print_err(f"{env_key} fehlt in config/.env")
-                return False
+            api_key = require_config_value(config["config"], env_key)
             env[MODEL_CONFIGS[model]["env_var"]] = api_key
 
         if model == "ollama":
@@ -423,12 +430,8 @@ def main():
 
     # Config laden
     cfg = load_env()
-    token = cfg.get("GITHUB_TOKEN")
-    user = cfg.get("GITHUB_USER", "SaJaToGu")
-
-    if not token:
-        print_err("GITHUB_TOKEN fehlt in config/.env")
-        sys.exit(1)
+    token = require_config_value(cfg, "GITHUB_TOKEN", "GitHub Token")
+    user = require_config_value(cfg, "GITHUB_USER", "GitHub User")
 
     # KI-Worker prüfen
     if args.model == "codex" and not find_codex_executable() and not args.dry_run:
@@ -445,6 +448,12 @@ def main():
     # Modell-Name
     model_config = MODEL_CONFIGS[args.model]
     model_name = args.model_name or model_config.get("default_model_name", "")
+
+    env_key = model_config.get("env_key")
+    if env_key and args.dry_run and is_placeholder_value(cfg.get(env_key)):
+        print_warn(f"{env_key} fehlt oder ist noch ein Platzhalter")
+    elif env_key:
+        require_config_value(cfg, env_key)
 
     solver_config = {"owner": user, "config": cfg}
     client = GitHubClient(token, user)

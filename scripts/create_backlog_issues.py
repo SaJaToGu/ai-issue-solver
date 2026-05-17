@@ -18,7 +18,16 @@ except ModuleNotFoundError:
     requests = None
 
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_env, print_banner, print_err, print_ok, print_step, print_warn
+from utils import (
+    load_env,
+    print_banner,
+    print_err,
+    print_ok,
+    print_step,
+    print_warn,
+    raise_for_github_response,
+    require_config_value,
+)
 
 
 DEFAULT_LABELS = {
@@ -56,7 +65,7 @@ class GitHubClient:
         if resp.status_code == 200:
             return
         if resp.status_code != 404:
-            resp.raise_for_status()
+            raise_for_github_response(resp, f"Label prüfen: {name}")
         created = self.session.post(
             labels_url,
             json={
@@ -65,12 +74,12 @@ class GitHubClient:
                 "description": info["description"],
             },
         )
-        created.raise_for_status()
+        raise_for_github_response(created, f"Label erstellen: {name}")
 
     def issue_exists(self, repo: str, title: str) -> bool:
         issues_url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
         resp = self.session.get(issues_url, params={"state": "all", "per_page": 100})
-        resp.raise_for_status()
+        raise_for_github_response(resp, "Issues prüfen")
         return any(item.get("title") == title for item in resp.json())
 
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> str:
@@ -79,7 +88,7 @@ class GitHubClient:
             issues_url,
             json={"title": title, "body": body, "labels": labels},
         )
-        resp.raise_for_status()
+        raise_for_github_response(resp, f"Issue erstellen: {title}")
         return resp.json()["html_url"]
 
 
@@ -153,13 +162,11 @@ def main() -> int:
 
     config = load_env()
     owner = args.owner or config.get("GITHUB_USER")
-    token = config.get("GITHUB_TOKEN")
+    token = require_config_value(config, "GITHUB_TOKEN", "GitHub Token")
 
     if not owner:
-        print_err("GITHUB_USER fehlt in config/.env oder --owner")
-        return 1
-    if not token:
-        print_err("GITHUB_TOKEN fehlt in config/.env")
+        print_err("GitHub User fehlt oder ist noch ein Platzhalter")
+        print("   Erwartet: GITHUB_USER=<dein GitHub Username> oder --owner <username>")
         return 1
 
     client = GitHubClient(token, owner)

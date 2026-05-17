@@ -81,6 +81,9 @@ cp config/config.example.env config/.env
 # .env mit deinen Werten befüllen (NIEMALS committen!)
 ```
 
+Die Scripts erkennen fehlende Werte und Platzhalter wie `DEIN_TOKEN_HIER` und
+geben sichere Hinweise aus, ohne Secret-Werte im Terminal anzuzeigen.
+
 ### 4. KI-Modell wählen
 
 ```bash

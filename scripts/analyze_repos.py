@@ -25,7 +25,16 @@ except ModuleNotFoundError:
 
 # ── Projektverzeichnis ins sys.path ──────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_env, print_banner, print_step, print_ok, print_warn, print_err
+from utils import (
+    load_env,
+    print_banner,
+    print_err,
+    print_ok,
+    print_step,
+    print_warn,
+    raise_for_github_response,
+    require_config_value,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -134,7 +143,7 @@ class GitHubClient:
         resp = self.session.get(url, params=params)
         if resp.status_code == 404:
             return None
-        resp.raise_for_status()
+        raise_for_github_response(resp, f"GET {path}")
         return resp.json()
 
     def get_all_pages(self, path: str, **params) -> list:
@@ -292,11 +301,7 @@ def main():
 
     # Config laden
     config = load_env()
-    token = config.get("GITHUB_TOKEN")
-    if not token:
-        print_err("GITHUB_TOKEN fehlt in config/.env")
-        print("   → Siehe README.md: Abschnitt 'GitHub PAT erstellen'")
-        sys.exit(1)
+    token = require_config_value(config, "GITHUB_TOKEN", "GitHub Token")
 
     # Output-Verzeichnis anlegen
     output_path = Path(args.output)
