@@ -1,7 +1,12 @@
 # Backlog
 
-This backlog captures the first issues for the `develop` workflow. Create these
-as GitHub issues once `GITHUB_TOKEN` is configured in `config/.env`.
+This backlog captures the first issues for the `develop` workflow.
+
+Create them as GitHub issues with:
+
+```bash
+python scripts/create_backlog_issues.py --apply
+```
 
 ## 1. Improve GitHub token setup and config validation
 

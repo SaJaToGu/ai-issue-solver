@@ -153,12 +153,16 @@ Liest den Analysis-Report und erstellt GitHub Issues.
 ```bash
 python scripts/create_issues.py --report reports/analysis.json --dry-run
 python scripts/create_issues.py --report reports/analysis.json  # echte Issues
+python scripts/create_backlog_issues.py --apply                 # Backlog-Issues
 ```
 
 **Flags:**
 - `--dry-run` — zeigt Issues an ohne sie zu erstellen
 - `--repo` — nur für ein bestimmtes Repo
 - `--priority high` — nur High-Priority Issues
+
+`create_backlog_issues.py` liest [docs/BACKLOG.md](docs/BACKLOG.md) und erstellt
+daraus die initialen Projekt-Issues. Ohne `--apply` läuft es als Dry-Run.
 
 ---
 
