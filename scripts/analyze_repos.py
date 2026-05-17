@@ -18,7 +18,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    requests = None
 
 # ── Projektverzeichnis ins sys.path ──────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
@@ -281,6 +284,11 @@ def main():
         help="Pfad für den JSON-Report",
     )
     args = parser.parse_args()
+
+    if requests is None:
+        print_err("Python-Abhängigkeit fehlt: requests")
+        print("   → Installieren mit: pip install -r requirements.txt")
+        sys.exit(1)
 
     # Config laden
     config = load_env()

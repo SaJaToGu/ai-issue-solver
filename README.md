@@ -32,8 +32,8 @@ analysiert Code-Qualität, fehlende Dokumentation, Sicherheit und Best Practices
 **Schritt 2 — Issues erstellen:** `create_issues.py` legt für jeden gefundenen  
 Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
 
-**Schritt 3 — Issues lösen:** `solve_issues.py` ruft wahlweise **Claude**, **OpenAI**  
-oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code mit `aider`  
+**Schritt 3 — Issues lösen:** `solve_issues.py` ruft wahlweise **Codex**, **Claude**,
+**OpenAI** oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code
 und erstellt einen Branch + Commit.
 
 ---
@@ -44,7 +44,8 @@ und erstellt einen Branch + Commit.
 |------|---------|-------|
 | Python | ≥ 3.10 | Haupt-Scriptsprache |
 | `gh` CLI | aktuell | GitHub-Zugriff |
-| `aider` | aktuell | KI-Pair-Programmer |
+| Codex CLI | optional | KI-Worker über deinen Codex-Zugang |
+| `aider` | optional | KI-Worker für Claude/OpenAI/Ollama |
 | `git` | aktuell | Versionskontrolle |
 | Ollama | optional | Lokale KI-Modelle |
 
@@ -65,6 +66,12 @@ cd ai-issue-solver
 pip install -r requirements.txt
 ```
 
+Für die Modi `claude`, `openai` oder `ollama` zusätzlich:
+
+```bash
+pip install -r requirements-aider.txt
+```
+
 ### 3. GitHub PAT einrichten
 
 → Siehe [GitHub PAT erstellen](#github-pat-erstellen) weiter unten.
@@ -77,6 +84,7 @@ cp config/config.example.env config/.env
 ### 4. KI-Modell wählen
 
 ```bash
+python scripts/solve_issues.py --model codex     # Codex CLI
 python scripts/solve_issues.py --model claude    # Anthropic Claude
 python scripts/solve_issues.py --model openai    # OpenAI GPT-4
 python scripts/solve_issues.py --model ollama    # Lokales Modell
@@ -106,8 +114,8 @@ python scripts/solve_issues.py --model ollama    # Lokales Modell
          │
          ▼
 ┌─────────────────┐
-│ 3. solve_issues  │  ← Wählt KI-Modell (Claude/OpenAI/Ollama)
-│    .py           │    Nutzt aider als Code-Editor
+│ 3. solve_issues  │  ← Wählt KI-Modell (Codex/Claude/OpenAI/Ollama)
+│    .py           │    Nutzt Codex oder aider als Code-Worker
 └────────┬────────┘    Erstellt Branch → Commit → PR
          │
          ▼
@@ -155,16 +163,17 @@ python scripts/create_issues.py --report reports/analysis.json  # echte Issues
 ---
 
 ### `solve_issues.py`
-Löst offene Issues automatisch mit KI + aider.
+Löst offene Issues automatisch mit KI + Codex oder aider.
 
 ```bash
+python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
-python scripts/solve_issues.py --model ollama --model-name llama3 --all-repos
+python scripts/solve_issues.py --model ollama --model-name llama3
 ```
 
 **Flags:**
-- `--model` — `claude`, `openai`, oder `ollama`
-- `--model-name` — spezifisches Modell z.B. `llama3`, `deepseek-coder`
+- `--model` — `codex`, `claude`, `openai`, oder `ollama`
+- `--model-name` — spezifisches Modell, z.B. für Codex oder Ollama
 - `--dry-run` — zeigt Plan ohne Änderungen
 - `--issue` — nur ein bestimmtes Issue lösen
 
@@ -232,10 +241,10 @@ OLLAMA_MODEL=deepseek-coder:6.7b
 ai-issue-solver/
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
+├── requirements-aider.txt       # Optionale Aider-Dependencies
 ├── .gitignore                   # Schützt .env und Secrets
 ├── config/
-│   ├── config.example.env       # Vorlage für deine .env
-│   └── issue_templates.json     # Issue-Vorlagen
+│   └── config.example.env       # Vorlage für deine .env
 ├── scripts/
 │   ├── analyze_repos.py         # Schritt 1: Repos analysieren
 │   ├── create_issues.py         # Schritt 2: Issues erstellen

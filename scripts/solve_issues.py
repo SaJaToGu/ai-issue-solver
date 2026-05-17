@@ -3,11 +3,12 @@
 solve_issues.py — Schritt 3: Issues mit KI lösen (Morpheus-Methode)
 Morpheus-Style AI Issue Solver — github.com/SaJaToGu
 
-Holt offene GitHub Issues, übergibt sie an `aider` mit dem
-gewählten KI-Modell (Claude / OpenAI / Ollama), erstellt
+Holt offene GitHub Issues, übergibt sie an Codex oder `aider` mit dem
+gewählten KI-Modell (Codex / Claude / OpenAI / Ollama), erstellt
 einen Branch und einen Commit mit der Lösung.
 
 Verwendung:
+    python scripts/solve_issues.py --model codex
     python scripts/solve_issues.py --model claude
     python scripts/solve_issues.py --model openai
     python scripts/solve_issues.py --model ollama --model-name deepseek-coder:6.7b
@@ -19,13 +20,17 @@ Verwendung:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    requests = None
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import load_env, print_banner, print_step, print_ok, print_warn, print_err
@@ -36,6 +41,11 @@ from utils import load_env, print_banner, print_step, print_ok, print_warn, prin
 # ─────────────────────────────────────────────────────────────
 
 MODEL_CONFIGS = {
+    "codex": {
+        "display_name": "Codex CLI",
+        "env_key": None,
+        "env_var": None,
+    },
     "claude": {
         "display_name": "Anthropic Claude (claude-sonnet-4-20250514)",
         "aider_flags": [
@@ -63,7 +73,7 @@ MODEL_CONFIGS = {
     },
 }
 
-# Prompt-Vorlage für aider
+# Prompt-Vorlage für Codex/aider
 AIDER_PROMPT_TEMPLATE = """Löse das folgende GitHub Issue in diesem Repository.
 
 === ISSUE #{number}: {title} ===
@@ -75,6 +85,7 @@ Analysiere das Problem und implementiere eine saubere, vollständige Lösung.
 Halte dich an die bestehende Code-Struktur und Konventionen des Projekts.
 Kommentiere deine Änderungen auf Deutsch wenn sinnvoll.
 Erstelle oder verbessere Dateien direkt (README, LICENSE, .gitignore, etc.).
+Erstelle keinen Commit, pushe nichts und öffne keinen Pull Request. Das übernimmt das Wrapper-Script nach deiner Änderung.
 
 Wenn du Dateien erstellst, achte auf:
 - Vollständigkeit (keine Platzhalter wie "TODO" oder "...")
@@ -166,11 +177,16 @@ class GitHubClient:
 # ─────────────────────────────────────────────────────────────
 
 def check_aider_installed() -> bool:
-    try:
-        result = subprocess.run(["aider", "--version"], capture_output=True, text=True)
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
+    return shutil.which("aider") is not None
+
+
+def find_codex_executable() -> str | None:
+    """Find the Codex CLI installed by the desktop app or available on PATH."""
+    candidates = [
+        shutil.which("codex"),
+        "/Applications/Codex.app/Contents/Resources/codex",
+    ]
+    return next((path for path in candidates if path and Path(path).exists()), None)
 
 
 def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str) -> list:
@@ -191,6 +207,24 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
         "--message", prompt,       # Direkt-Prompt (kein interaktiver Modus)
     ]
 
+    return cmd
+
+
+def build_codex_command(prompt: str, repo_path: str, model_name: str | None = None) -> list:
+    codex = find_codex_executable()
+    if not codex:
+        raise FileNotFoundError("codex")
+
+    cmd = [
+        codex,
+        "exec",
+        "--cd", repo_path,
+        "--sandbox", "workspace-write",
+        "--ask-for-approval", "never",
+    ]
+    if model_name:
+        cmd.extend(["--model", model_name])
+    cmd.append(prompt)
     return cmd
 
 
@@ -298,9 +332,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             ollama_host = config["config"].get("OLLAMA_HOST", "http://localhost:11434")
             env["OLLAMA_API_BASE"] = ollama_host
 
-        # Aider ausführen
-        print(f"      🤖 Starte aider ...", flush=True)
-        cmd = build_aider_command(model, model_name, prompt, repo_dir)
+        # KI-Worker ausführen
+        if model == "codex":
+            print(f"      🤖 Starte Codex ...", flush=True)
+            cmd = build_codex_command(prompt, repo_dir, model_name or None)
+        else:
+            print(f"      🤖 Starte aider ...", flush=True)
+            cmd = build_aider_command(model, model_name, prompt, repo_dir)
 
         result = subprocess.run(
             cmd, cwd=repo_dir, env=env,
@@ -309,7 +347,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         )
 
         if result.returncode != 0:
-            print_warn(f"Aider exit code: {result.returncode} (kann trotzdem OK sein)")
+            print_warn(f"KI-Worker exit code: {result.returncode} (kann trotzdem OK sein)")
 
         # Committen & pushen
         print(f"      📤 Commit & Push ...", end=" ", flush=True)
@@ -365,18 +403,23 @@ def main():
 
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
-        "--model", required=True, choices=["claude", "openai", "ollama"],
-        help="KI-Modell: claude, openai oder ollama"
+        "--model", required=True, choices=["codex", "claude", "openai", "ollama"],
+        help="KI-Modell: codex, claude, openai oder ollama"
     )
     parser.add_argument(
         "--model-name",
-        help="Spezifisches Modell (für Ollama z.B. 'deepseek-coder:6.7b', 'llama3.2:3b')"
+        help="Spezifisches Modell (für Codex optional, für Ollama z.B. 'deepseek-coder:6.7b')"
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
     args = parser.parse_args()
+
+    if requests is None:
+        print_err("Python-Abhängigkeit fehlt: requests")
+        print("   → Installieren mit: pip install -r requirements.txt")
+        sys.exit(1)
 
     # Config laden
     cfg = load_env()
@@ -387,8 +430,13 @@ def main():
         print_err("GITHUB_TOKEN fehlt in config/.env")
         sys.exit(1)
 
-    # Aider prüfen
-    if not check_aider_installed() and not args.dry_run:
+    # KI-Worker prüfen
+    if args.model == "codex" and not find_codex_executable() and not args.dry_run:
+        print_err("Codex CLI wurde nicht gefunden!")
+        print("   → Codex Desktop App installieren oder `codex` in PATH verfügbar machen")
+        sys.exit(1)
+
+    if args.model != "codex" and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert!")
         print("   → Installieren mit: pip install aider-chat")
         print("   → Mehr Infos: docs/SETUP_AIDER.md")

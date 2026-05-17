@@ -38,12 +38,12 @@
 ┌──────────────────────────────────────────────────────────────┐
 │  SCHRITT 3: ISSUES LÖSEN                                     │
 │                                                              │
-│  python scripts/solve_issues.py --model claude               │
+│  python scripts/solve_issues.py --model codex                │
 │                                                              │
 │  → Klont jedes Repo in ein Temp-Verzeichnis                  │
 │  → Erstellt Branch: ai/fix-issue-{nummer}                    │
-│  → Ruft aider mit dem Issue-Text auf                         │
-│  → aider fragt das KI-Modell und ändert Dateien              │
+│  → Ruft Codex oder aider mit dem Issue-Text auf              │
+│  → Der KI-Worker ändert Dateien                              │
 │  → Commit + Push + PR erstellen                              │
 │  → Issue schließen mit Kommentar                             │
 └──────────────────────────────────────────────────────────────┘
@@ -64,7 +64,7 @@
 # Alles auf einmal (Morpheus-Methode):
 python scripts/analyze_repos.py --user SaJaToGu && \
 python scripts/create_issues.py --report reports/analysis.json && \
-python scripts/solve_issues.py --model claude
+python scripts/solve_issues.py --model codex
 ```
 
 ## Nützliche Flags
@@ -74,6 +74,7 @@ python scripts/solve_issues.py --model claude
 python scripts/create_issues.py --priority high
 
 # Nur ein Repo bearbeiten
+python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model ollama --repo BedBoxDrawerRole
 
 # Einzelnes Issue lösen
@@ -82,5 +83,5 @@ python scripts/solve_issues.py --model claude --repo dustycase --issue 1
 # Alles erst simulieren
 python scripts/analyze_repos.py --user SaJaToGu
 python scripts/create_issues.py --dry-run
-python scripts/solve_issues.py --model claude --dry-run
+python scripts/solve_issues.py --model codex --dry-run
 ```

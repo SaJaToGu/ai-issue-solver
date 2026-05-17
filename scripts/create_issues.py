@@ -18,7 +18,10 @@ import sys
 import time
 from pathlib import Path
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    requests = None
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import load_env, print_banner, print_step, print_ok, print_warn, print_err
@@ -240,6 +243,11 @@ def main():
     parser.add_argument("--repo", help="Nur für dieses Repo Issues erstellen")
     parser.add_argument("--priority", choices=["high", "medium", "low"], help="Nur diese Priorität")
     args = parser.parse_args()
+
+    if requests is None:
+        print_err("Python-Abhängigkeit fehlt: requests")
+        print("   → Installieren mit: pip install -r requirements.txt")
+        sys.exit(1)
 
     # Report laden
     report_path = Path(args.report)

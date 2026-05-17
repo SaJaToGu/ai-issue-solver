@@ -1,0 +1,4 @@
+# Optional: Aider support for Claude/OpenAI/Ollama worker modes
+# Installieren: pip install -r requirements-aider.txt
+
+aider-chat>=0.50.0
