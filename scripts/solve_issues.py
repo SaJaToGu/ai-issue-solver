@@ -41,6 +41,7 @@ from utils import (
     print_ok,
     print_step,
     print_warn,
+    handle_github_request_error,
     raise_for_github_response,
     require_config_value,
 )
@@ -121,25 +122,34 @@ class GitHubClient:
         })
 
     def get_repos(self) -> list:
-        resp = self.session.get(
-            f"{self.BASE}/users/{self.owner}/repos",
-            params={"type": "owner", "per_page": 100}
-        )
+        try:
+            resp = self.session.get(
+                f"{self.BASE}/users/{self.owner}/repos",
+                params={"type": "owner", "per_page": 100}
+            )
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, "Repos laden")
         raise_for_github_response(resp, "Repos laden")
         return resp.json()
 
     def get_open_issues(self, repo: str, label: str = "ai-generated") -> list:
-        resp = self.session.get(
-            f"{self.BASE}/repos/{self.owner}/{repo}/issues",
-            params={"state": "open", "labels": label, "per_page": 100}
-        )
+        try:
+            resp = self.session.get(
+                f"{self.BASE}/repos/{self.owner}/{repo}/issues",
+                params={"state": "open", "labels": label, "per_page": 100}
+            )
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Issues laden: {repo}")
         if resp.status_code == 404:
             return []
         raise_for_github_response(resp, f"Issues laden: {repo}")
         return [i for i in resp.json() if "pull_request" not in i]
 
     def get_single_issue(self, repo: str, number: int) -> dict | None:
-        resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}")
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}")
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Issue laden: {repo}#{number}")
         if resp.status_code == 404:
             return None
         raise_for_github_response(resp, f"Issue laden: {repo}#{number}")
@@ -238,10 +248,11 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
     return cmd
 
 
-def clone_repo(owner: str, repo: str, token: str, target_dir: str) -> bool:
+def clone_repo(owner: str, repo: str, token: str, target_dir: str,
+               base_branch: str) -> bool:
     url = f"https://{token}@github.com/{owner}/{repo}.git"
     result = subprocess.run(
-        ["git", "clone", url, target_dir],
+        ["git", "clone", "--branch", base_branch, "--single-branch", url, target_dir],
         capture_output=True, text=True
     )
     return result.returncode == 0
@@ -295,7 +306,8 @@ def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
 
 def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 model: str, model_name: str, config: dict,
-                token: str, dry_run: bool) -> bool:
+                token: str, dry_run: bool, base_branch: str,
+                close_issues: bool) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -305,6 +317,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
     if dry_run:
         print(f"      [DRY-RUN] Würde bearbeiten mit {model}")
+        print(f"      [DRY-RUN] Zielbranch: {base_branch}")
         return True
 
     # Repo klonen
@@ -312,8 +325,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         repo_dir = os.path.join(tmpdir, repo)
         print(f"      📥 Klone {repo} ...", end=" ", flush=True)
 
-        if not clone_repo(config["owner"], repo, token, repo_dir):
+        if not clone_repo(config["owner"], repo, token, repo_dir, base_branch):
             print_err("Klonen fehlgeschlagen")
+            print(f"      Prüfe, ob der Branch '{base_branch}' in {repo} existiert.")
             return False
         print("✅")
 
@@ -373,7 +387,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config['owner']}/ai-issue-solver) erstellt.
 
 ### Gelöstes Issue
-Closes #{number}: {title}
+{"Closes" if close_issues else "Refs"} #{number}: {title}
 
 ### Verwendetes Modell
 `{MODEL_CONFIGS[model]['display_name']}`
@@ -389,14 +403,15 @@ Closes #{number}: {title}
             title=f"[AI] Fix: {title}",
             body=pr_body,
             head=branch_name,
+            base=base_branch,
             dry_run=dry_run,
         )
         if pr:
             print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
 
-        # Issue schließen
-        close_comment = f"✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\nPR: {pr.get('html_url', '?') if pr else '(kein PR)'}\nModell: {MODEL_CONFIGS[model]['display_name']}"
-        client.close_issue_with_comment(repo, number, close_comment)
+        if close_issues:
+            close_comment = f"✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\nPR: {pr.get('html_url', '?') if pr else '(kein PR)'}\nModell: {MODEL_CONFIGS[model]['display_name']}"
+            client.close_issue_with_comment(repo, number, close_comment)
 
     return True
 
@@ -421,6 +436,12 @@ def main():
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
+    parser.add_argument("--base-branch", default="develop", help="Zielbranch für Klon und PR")
+    parser.add_argument(
+        "--close-issues",
+        action="store_true",
+        help="Issues nach PR-Erstellung direkt schließen",
+    )
     args = parser.parse_args()
 
     if requests is None:
@@ -502,6 +523,8 @@ def main():
                 config=solver_config,
                 token=token,
                 dry_run=args.dry_run,
+                base_branch=args.base_branch,
+                close_issues=args.close_issues,
             )
             if ok:
                 solved += 1

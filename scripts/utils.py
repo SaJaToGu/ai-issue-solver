@@ -102,6 +102,16 @@ def require_github_config(config: dict, require_user: bool = True) -> tuple[str,
     return token, user
 
 
+def handle_github_request_error(error, action: str = "GitHub API-Aufruf") -> None:
+    """Bricht bei Netzwerkfehlern mit verständlicher Meldung ab."""
+    print_err(f"{action} konnte GitHub nicht erreichen")
+    print("   Prüfe Netzwerkzugriff und versuche es erneut.")
+    message = str(error)
+    if message:
+        print(f"   Technischer Hinweis: {message.splitlines()[0][:200]}")
+    raise SystemExit(1)
+
+
 def raise_for_github_response(resp, action: str = "GitHub API-Aufruf") -> None:
     """Bricht mit einer verständlichen GitHub-Fehlermeldung ab."""
     if resp.status_code < 400:
