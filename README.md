@@ -147,9 +147,11 @@ python scripts/solve_issues.py --model ollama    # Lokales Modell
 
 ## Branch-Modell
 
-Die Projektarbeit läuft über `develop`: `main` bleibt stabil, `develop` sammelt
-laufende Änderungen, und Feature-Branches referenzieren GitHub Issues, zum
-Beispiel `ai/fix-issue-10`. Pull Requests gehen zurück nach `develop`.
+Die Projektarbeit kann über `develop` laufen: `main` bleibt stabil, `develop`
+sammelt laufende Änderungen, und Feature-Branches referenzieren GitHub Issues,
+zum Beispiel `ai/fix-issue-10`. `solve_issues.py` nutzt ohne explizite Vorgabe
+den GitHub-Default-Branch des Ziel-Repositories. Wer ein `develop`-Modell nutzt,
+setzt `--base-branch develop`.
 
 Details stehen in [docs/WORKFLOW.md](docs/WORKFLOW.md#branch-modell).
 

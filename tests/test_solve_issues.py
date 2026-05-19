@@ -12,12 +12,80 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from solve_issues import (  # noqa: E402
+    GitHubClient,
     WorkerRunResult,
     assess_worker_result,
     format_worker_output_tail,
     git_status_porcelain,
     run_worker_command,
 )
+
+
+class FakeResponse:
+    def __init__(self, status_code, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+class FakeGitHubSession:
+    def __init__(self):
+        self.headers = {}
+        self.posts = []
+
+    def get(self, url, params=None):
+        if url.endswith("/repos/test-owner/demo"):
+            return FakeResponse(200, {"default_branch": "main"})
+        if url.endswith("/repos/test-owner/demo/branches/main"):
+            return FakeResponse(200, {"name": "main"})
+        if url.endswith("/repos/test-owner/demo/branches/develop"):
+            return FakeResponse(404, {"message": "Branch not found"})
+        return FakeResponse(404, {"message": "Not found"})
+
+    def post(self, url, json=None):
+        self.posts.append((url, json))
+        return FakeResponse(201, {"html_url": "https://github.com/test-owner/demo/pull/1"})
+
+
+class GitHubClientBranchTests(unittest.TestCase):
+    def make_client(self):
+        client = GitHubClient.__new__(GitHubClient)
+        client.owner = "test-owner"
+        client.session = FakeGitHubSession()
+        return client
+
+    def test_resolve_base_branch_uses_default_branch_without_override(self):
+        client = self.make_client()
+
+        base_branch = client.resolve_base_branch("demo")
+
+        self.assertEqual(base_branch, "main")
+
+    def test_resolve_base_branch_falls_back_to_default_when_requested_branch_is_missing(self):
+        client = self.make_client()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            base_branch = client.resolve_base_branch("demo", "develop")
+
+        self.assertEqual(base_branch, "main")
+
+    def test_create_pull_request_posts_against_resolved_default_branch(self):
+        client = self.make_client()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            pr = client.create_pull_request(
+                repo="demo",
+                title="Fix",
+                body="Body",
+                head="ai/fix-issue-1",
+                base="develop",
+            )
+
+        self.assertEqual(pr["html_url"], "https://github.com/test-owner/demo/pull/1")
+        self.assertEqual(client.session.posts[0][1]["base"], "main")
 
 
 class WorkerAssessmentTests(unittest.TestCase):

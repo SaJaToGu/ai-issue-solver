@@ -148,6 +148,56 @@ class GitHubClient:
         raise_for_github_response(resp, "Repos laden")
         return resp.json()
 
+    def get_repo(self, repo: str) -> dict | None:
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}")
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Repo laden: {repo}")
+        if resp.status_code == 404:
+            return None
+        raise_for_github_response(resp, f"Repo laden: {repo}")
+        return resp.json()
+
+    def get_default_branch(self, repo: str) -> str | None:
+        repo_info = self.get_repo(repo)
+        if not repo_info:
+            return None
+        return repo_info.get("default_branch")
+
+    def branch_exists(self, repo: str, branch: str) -> bool:
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/branches/{branch}")
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Branch prüfen: {repo}/{branch}")
+        if resp.status_code == 404:
+            return False
+        raise_for_github_response(resp, f"Branch prüfen: {repo}/{branch}")
+        return True
+
+    def resolve_base_branch(self, repo: str, requested_base: str | None = None) -> str | None:
+        """Ermittelt den Zielbranch und nutzt ohne Vorgabe den GitHub-Default-Branch."""
+        if requested_base:
+            if self.branch_exists(repo, requested_base):
+                return requested_base
+
+            default_branch = self.get_default_branch(repo)
+            if default_branch and default_branch != requested_base and self.branch_exists(repo, default_branch):
+                print_warn(
+                    f"Base-Branch '{requested_base}' existiert nicht; nutze Default-Branch '{default_branch}'"
+                )
+                return default_branch
+
+            return requested_base
+
+        default_branch = self.get_default_branch(repo)
+        if default_branch:
+            return default_branch
+
+        for candidate in ("main", "master", "develop"):
+            if self.branch_exists(repo, candidate):
+                return candidate
+        return None
+
     def get_open_issues(self, repo: str, label: str = "ai-generated") -> list:
         try:
             resp = self.session.get(
@@ -187,20 +237,20 @@ class GitHubClient:
         )
 
     def create_pull_request(self, repo: str, title: str, body: str,
-                             head: str, base: str = "main",
+                             head: str, base: str | None = None,
                              dry_run: bool = False) -> dict | None:
-        if dry_run:
-            print(f"      [DRY-RUN] Würde PR erstellen: '{title}'")
-            return {"html_url": "https://github.com/dry-run-pr"}
+        resolved_base = self.resolve_base_branch(repo, base)
+        if not resolved_base:
+            print_warn("PR konnte nicht erstellt werden: Kein gültiger Base-Branch gefunden")
+            return None
 
-        # Prüfe ob 'main' oder 'master' existiert
-        resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/branches/{base}")
-        if resp.status_code == 404:
-            base = "master"
+        if dry_run:
+            print(f"      [DRY-RUN] Würde PR erstellen: '{title}' gegen '{resolved_base}'")
+            return {"html_url": "https://github.com/dry-run-pr"}
 
         resp = self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
-            json={"title": title, "body": body, "head": head, "base": base}
+            json={"title": title, "body": body, "head": head, "base": resolved_base}
         )
         if resp.status_code == 201:
             return resp.json()
@@ -540,7 +590,10 @@ def main():
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
-    parser.add_argument("--base-branch", default="develop", help="Zielbranch für Klon und PR")
+    parser.add_argument(
+        "--base-branch",
+        help="Zielbranch für Klon und PR; ohne Angabe wird der GitHub-Default-Branch genutzt",
+    )
     parser.add_argument(
         "--close-issues",
         action="store_true",
@@ -616,6 +669,13 @@ def main():
             continue
 
         print(f"\n   📁 {repo_name}: {len(issues)} offene Issue(s)")
+        base_branch = client.resolve_base_branch(repo_name, args.base_branch)
+        if not base_branch:
+            print_warn(f"Kein gültiger Base-Branch für {repo_name} gefunden")
+            failed += len(issues)
+            continue
+        if not args.base_branch:
+            print(f"      Zielbranch: {base_branch} (GitHub-Default-Branch)")
 
         for issue in issues:
             ok = solve_issue(
@@ -627,7 +687,7 @@ def main():
                 config=solver_config,
                 token=token,
                 dry_run=args.dry_run,
-                base_branch=args.base_branch,
+                base_branch=base_branch,
                 close_issues=args.close_issues,
             )
             if ok:
