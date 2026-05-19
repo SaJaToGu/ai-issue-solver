@@ -11,6 +11,7 @@
 - [Voraussetzungen](#voraussetzungen)
 - [Setup & Installation](#setup--installation)
 - [Workflow im Überblick](#workflow-im-überblick)
+- [Branch-Modell](#branch-modell)
 - [Scripts im Detail](#scripts-im-detail)
 - [GitHub PAT erstellen](#github-pat-erstellen)
 - [KI-Modelle konfigurieren](#ki-modelle-konfigurieren)
@@ -126,6 +127,16 @@ python scripts/solve_issues.py --model ollama    # Lokales Modell
 │   GitHub PR      │  ← Du reviewst und mergst
 └─────────────────┘
 ```
+
+---
+
+## Branch-Modell
+
+Die Projektarbeit läuft über `develop`: `main` bleibt stabil, `develop` sammelt
+laufende Änderungen, und Feature-Branches referenzieren GitHub Issues, zum
+Beispiel `ai/fix-issue-10`. Pull Requests gehen zurück nach `develop`.
+
+Details stehen in [docs/WORKFLOW.md](docs/WORKFLOW.md#branch-modell).
 
 ---
 

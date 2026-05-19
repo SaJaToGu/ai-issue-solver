@@ -1,5 +1,27 @@
 # 📋 Detaillierter Workflow
 
+## Branch-Modell
+
+Dieses Projekt nutzt ein einfaches `develop`-basiertes Branch-Modell:
+
+- `main` bleibt stabil und enthält nur geprüfte, releasefähige Änderungen.
+- `develop` sammelt die laufende Arbeit und ist der Zielbranch für Pull Requests.
+- Feature- und Fix-Branches werden pro GitHub Issue erstellt und benannt, sodass
+  der Bezug zum Issue sichtbar bleibt, zum Beispiel `ai/fix-issue-10`.
+- Pull Requests werden von Feature-Branches zurück nach `develop` geöffnet.
+- Nach Review und erfolgreicher Prüfung wird in `develop` gemergt. Änderungen aus
+  `develop` gelangen erst nach einer bewussten Stabilisierung oder Release-Vorbereitung
+  nach `main`.
+
+Für den AI Issue Solver ist `develop` der Standard-Zielbranch:
+
+```bash
+python scripts/solve_issues.py --model codex --base-branch develop
+```
+
+Soll ein anderes Ziel verwendet werden, kann es explizit über `--base-branch`
+gesetzt werden.
+
 ## Der vollständige Ablauf
 
 ```
@@ -41,10 +63,11 @@
 │  python scripts/solve_issues.py --model codex                │
 │                                                              │
 │  → Klont jedes Repo in ein Temp-Verzeichnis                  │
-│  → Erstellt Branch: ai/fix-issue-{nummer}                    │
+│  → Klont standardmäßig den Zielbranch develop                │
+│  → Erstellt Issue-Branch: ai/fix-issue-{nummer}              │
 │  → Ruft Codex oder aider mit dem Issue-Text auf              │
 │  → Der KI-Worker ändert Dateien                              │
-│  → Commit + Push + PR erstellen                              │
+│  → Commit + Push + PR zurück nach develop erstellen          │
 │  → Issue schließen mit Kommentar                             │
 └──────────────────────────────────────────────────────────────┘
                           │
