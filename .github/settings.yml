@@ -1,0 +1,14 @@
+# Repository-Metadaten fuer GitHub Settings Apps und als zentrale Referenz.
+repository:
+  description: "Automatisiert GitHub-Repository-Analysen, Issue-Erstellung und KI-gestuetzte Issue-Loesung mit Codex oder aider."
+  topics:
+    - ai
+    - aider
+    - automation
+    - codex
+    - developer-tools
+    - github
+    - github-api
+    - issue-automation
+    - python
+    - repository-analysis

@@ -8,6 +8,7 @@
 ## 📋 Inhaltsverzeichnis
 
 - [Was macht dieses Repo?](#was-macht-dieses-repo)
+- [Repository-Metadaten](#repository-metadaten)
 - [Voraussetzungen](#voraussetzungen)
 - [Setup & Installation](#setup--installation)
 - [Workflow im Überblick](#workflow-im-überblick)
@@ -37,6 +38,19 @@ Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
 **Schritt 3 — Issues lösen:** `solve_issues.py` ruft wahlweise **Codex**, **Claude**,
 **OpenAI** oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code
 und erstellt einen Branch + Commit.
+
+## Repository-Metadaten
+
+**Beschreibung:** Automatisiert GitHub-Repository-Analysen, Issue-Erstellung und
+KI-gestützte Issue-Lösung mit Codex oder aider.
+
+**Empfohlene GitHub Topics:**
+`ai`, `aider`, `automation`, `codex`, `developer-tools`, `github`, `github-api`,
+`issue-automation`, `python`, `repository-analysis`
+
+Die versionierbare Referenz für diese Angaben liegt in
+[.github/settings.yml](.github/settings.yml). Falls eine GitHub Settings App im
+Repo aktiv ist, kann sie daraus das About-Feld und die Topics synchronisieren.
 
 ---
 
