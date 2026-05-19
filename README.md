@@ -14,6 +14,7 @@
 - [Workflow im Überblick](#workflow-im-überblick)
 - [Branch-Modell](#branch-modell)
 - [Scripts im Detail](#scripts-im-detail)
+- [Nächste Ausbaustufe](#nächste-ausbaustufe)
 - [GitHub PAT erstellen](#github-pat-erstellen)
 - [KI-Modelle konfigurieren](#ki-modelle-konfigurieren)
 - [Verzeichnisstruktur](#verzeichnisstruktur)
@@ -234,6 +235,21 @@ externen oder ungültigen Pfade an aider durchgereicht werden.
 
 ---
 
+## Nächste Ausbaustufe
+
+Die erste Workflow-Runde ist abgeschlossen: Analyse, Backlog-Issues,
+KI-Bearbeitung, PR-Erstellung, CI und Tests laufen. Als nächstes soll der
+Morpheus-Style Workflow komfortabler werden:
+
+- mehrere Issues parallel mit begrenzter Worker-Zahl lösen
+- laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen
+- Worker-Logs und Ergebnisse unter `reports/runs/` nachvollziehbar speichern
+- offene PRs und Issues nach einem Lauf automatisch zusammenfassen
+
+Der geplante Backlog dafür liegt in [docs/NEXT_BACKLOG.md](docs/NEXT_BACKLOG.md).
+
+---
+
 ## GitHub PAT erstellen
 
 Ein **Personal Access Token (PAT)** ist dein persönlicher API-Schlüssel für GitHub.
@@ -294,6 +310,10 @@ OLLAMA_MODEL=deepseek-coder:6.7b
 
 ```
 ai-issue-solver/
+├── .github/
+│   ├── settings.yml             # Repo-Beschreibung und Topics als Referenz
+│   └── workflows/
+│       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
 ├── requirements-aider.txt       # Optionale Aider-Dependencies
@@ -303,16 +323,22 @@ ai-issue-solver/
 ├── scripts/
 │   ├── analyze_repos.py         # Schritt 1: Repos analysieren
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
+│   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
 │   ├── solve_issues.py          # Schritt 3: Issues mit KI lösen
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
 │   └── issue_body               # Issue-Text-Vorlage
 ├── reports/                     # Generierte Analyse-Reports (gitignored)
 │   └── .gitkeep
-└── docs/
-    ├── WORKFLOW.md               # Detaillierter Workflow
-    ├── SETUP_AIDER.md            # Aider-Einrichtung
-    └── RASPBERRY_PI.md           # Ollama auf Raspberry Pi
+├── docs/
+│   ├── BACKLOG.md               # Erster Projekt-Backlog
+│   ├── NEXT_BACKLOG.md          # Nächste Ausbaustufe
+│   ├── WORKFLOW.md              # Detaillierter Workflow
+│   ├── SETUP_AIDER.md           # Aider-Einrichtung
+│   └── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
+└── tests/
+    ├── test_analyze_repos.py    # Analyzer-Tests
+    └── test_solve_issues.py     # Solver- und Worker-Tests
 ```
 
 ---

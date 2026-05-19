@@ -1,6 +1,8 @@
 # Backlog
 
-This backlog captures the first issues for the `develop` workflow.
+This backlog captures the first issues for the `develop` workflow. These tasks
+formed the first implementation round and are kept as project history. The next
+planned work lives in [NEXT_BACKLOG.md](NEXT_BACKLOG.md).
 
 Create them as GitHub issues with:
 

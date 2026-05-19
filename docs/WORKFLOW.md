@@ -51,7 +51,7 @@ gesetzt werden.
 │  SCHRITT 2: ISSUES ERSTELLEN                                 │
 │                                                              │
 │  python scripts/create_issues.py --report reports/analysis.json --dry-run  │
-│  python scripts/create_issues.py --report reports/analysis.json            │
+│  python scripts/create_issues.py --report reports/analysis.json --confirm-create │
 │                                                              │
 │  → Erstellt strukturierte GitHub Issues                      │
 │  → Mit Labels, Priorität und Beschreibung                    │
@@ -70,7 +70,7 @@ gesetzt werden.
 │  → Ruft Codex oder aider mit dem Issue-Text auf              │
 │  → Der KI-Worker ändert Dateien                              │
 │  → Commit + Push + PR zurück zum Zielbranch erstellen        │
-│  → Issue schließen mit Kommentar                             │
+│  → Issue optional mit --close-issues schließen               │
 └──────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -83,30 +83,56 @@ gesetzt werden.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Vollständiges Beispiel-Kommando
+## Sicherer Start
 
 ```bash
-# Alles auf einmal (Morpheus-Methode):
-python scripts/analyze_repos.py --user SaJaToGu && \
-python scripts/create_issues.py --report reports/analysis.json && \
-python scripts/solve_issues.py --model codex
+# 1. Repos analysieren
+python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
+
+# 2. Erst prüfen, welche Issues entstehen würden
+python scripts/create_issues.py --report reports/analysis.json --dry-run
+
+# 3. Danach bewusst echte Issues erstellen
+python scripts/create_issues.py --report reports/analysis.json --confirm-create
+
+# 4. Erst einen einzelnen KI-Lauf simulieren
+python scripts/solve_issues.py --model codex --repo ai-issue-solver --issue 1 --base-branch develop --dry-run
+
+# 5. Danach einen einzelnen KI-Lauf ausführen
+python scripts/solve_issues.py --model codex --repo ai-issue-solver --issue 1 --base-branch develop
 ```
 
 ## Nützliche Flags
 
 ```bash
-# Nur bestimmte Priorität analysieren
-python scripts/create_issues.py --priority high
+# Nur bestimmte Priorität aus einem Report als Issues vorbereiten
+python scripts/create_issues.py --report reports/analysis.json --priority high --dry-run
 
 # Nur ein Repo bearbeiten
-python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
-python scripts/solve_issues.py --model ollama --repo BedBoxDrawerRole
+python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole --base-branch develop
+python scripts/solve_issues.py --model ollama --repo BedBoxDrawerRole --base-branch develop
 
 # Einzelnes Issue lösen
-python scripts/solve_issues.py --model claude --repo dustycase --issue 1
+python scripts/solve_issues.py --model claude --repo dustycase --issue 1 --base-branch develop
 
 # Alles erst simulieren
-python scripts/analyze_repos.py --user SaJaToGu
-python scripts/create_issues.py --dry-run
-python scripts/solve_issues.py --model codex --dry-run
+python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
+python scripts/create_issues.py --report reports/analysis.json --dry-run
+python scripts/solve_issues.py --model codex --base-branch develop --dry-run
 ```
+
+## Parallelbetrieb und Status
+
+Der aktuelle Stand löst Issues nacheinander. Das ist bewusst einfach und gut
+prüfbar. Für den nächsten Ausbauschritt soll der Workflow mehrere Issues
+parallel bearbeiten können, ohne den Überblick zu verlieren:
+
+- Ein Batch-Runner startet mehrere Worker mit einem konfigurierbaren Limit.
+- Jeder Worker schreibt Status, Log-Auszug, Branch, PR-Link und Ergebnis in ein
+  Run-Verzeichnis unter `reports/runs/`.
+- Eine lokale HTML-Übersicht zeigt laufende, erfolgreiche und fehlgeschlagene
+  Jobs.
+- Fehlgeschlagene Worker behalten genug Diagnoseinformationen, damit man den
+  Lauf wiederholen oder manuell übernehmen kann.
+
+Die konkreten Aufgaben dazu stehen in [NEXT_BACKLOG.md](NEXT_BACKLOG.md).
