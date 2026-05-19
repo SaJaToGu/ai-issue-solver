@@ -240,7 +240,6 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
         "exec",
         "--cd", repo_path,
         "--sandbox", "workspace-write",
-        "--ask-for-approval", "never",
     ]
     if model_name:
         cmd.extend(["--model", model_name])
@@ -368,7 +367,14 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         )
 
         if result.returncode != 0:
-            print_warn(f"KI-Worker exit code: {result.returncode} (kann trotzdem OK sein)")
+            changed = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_dir, capture_output=True, text=True,
+            )
+            if not changed.stdout.strip():
+                print_warn(f"KI-Worker exit code: {result.returncode}; keine Änderungen erzeugt")
+                return False
+            print_warn(f"KI-Worker exit code: {result.returncode}; Änderungen werden geprüft")
 
         # Committen & pushen
         print(f"      📤 Commit & Push ...", end=" ", flush=True)
