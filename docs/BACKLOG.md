@@ -5,7 +5,8 @@ This backlog captures the first issues for the `develop` workflow.
 Create them as GitHub issues with:
 
 ```bash
-python scripts/create_backlog_issues.py --apply
+python scripts/create_backlog_issues.py
+python scripts/create_backlog_issues.py --apply --confirm-create
 ```
 
 ## 1. Improve GitHub token setup and config validation

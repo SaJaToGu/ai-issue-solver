@@ -4,8 +4,10 @@ Create GitHub issues from docs/BACKLOG.md.
 
 Usage:
     python scripts/create_backlog_issues.py --repo ai-issue-solver
-    python scripts/create_backlog_issues.py --repo ai-issue-solver --apply
+    python scripts/create_backlog_issues.py --repo ai-issue-solver --apply --confirm-create
 """
+
+from __future__ import annotations
 
 import argparse
 import re
@@ -125,6 +127,17 @@ def parse_backlog(path: Path) -> list[dict]:
     return issues
 
 
+def print_issue_preview(repo: str, issue: dict) -> None:
+    """Gibt im Dry-Run alle entscheidenden Issue-Daten prüfbar aus."""
+    print("   [DRY-RUN] Würde Issue erstellen:")
+    print(f"      Repo:   {repo}")
+    print(f"      Titel:  {issue['title']}")
+    print(f"      Labels: {', '.join(issue['labels'])}")
+    print("      Body:")
+    for line in issue["body"].splitlines():
+        print(f"        {line}" if line else "        ")
+
+
 def main() -> int:
     print_banner("BACKLOG-ISSUES ERSTELLEN")
 
@@ -133,9 +146,16 @@ def main() -> int:
     parser.add_argument("--repo", default="ai-issue-solver", help="Ziel-Repo ohne Owner")
     parser.add_argument("--owner", help="GitHub Owner, sonst GITHUB_USER aus config/.env")
     parser.add_argument("--apply", action="store_true", help="Echte GitHub-Issues erstellen")
+    parser.add_argument(
+        "--confirm-create",
+        action="store_true",
+        help="Bestätigt bewusst, dass echte GitHub-Issues erstellt werden dürfen",
+    )
     args = parser.parse_args()
 
-    if requests is None:
+    real_create = args.apply and args.confirm_create
+
+    if requests is None and real_create:
         print_err("Python-Abhängigkeit fehlt: requests")
         print("   → Installieren mit: pip install -r requirements.txt")
         return 1
@@ -152,12 +172,14 @@ def main() -> int:
 
     print_step(1, f"{len(issues)} Backlog-Issue(s) gefunden")
     for issue in issues:
-        print(f"   - {issue['title']} [{', '.join(issue['labels'])}]")
+        print_issue_preview(args.repo, issue)
 
-    if not args.apply:
+    if not real_create:
         print()
         print_warn("DRY-RUN: Keine echten GitHub-Issues wurden erstellt.")
-        print("   → Für echte Issues: python scripts/create_backlog_issues.py --apply")
+        if args.apply:
+            print("   → --apply ist gesetzt, für echte Issues fehlt zusätzlich --confirm-create")
+        print("   → Für echte Issues: python scripts/create_backlog_issues.py --apply --confirm-create")
         return 0
 
     config = load_env()
