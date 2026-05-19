@@ -18,7 +18,7 @@ Verwendung:
 """
 
 import argparse
-import json
+from dataclasses import dataclass
 import os
 import shutil
 import subprocess
@@ -38,7 +38,6 @@ from utils import (
     load_env,
     print_banner,
     print_err,
-    print_ok,
     print_step,
     print_warn,
     handle_github_request_error,
@@ -83,6 +82,23 @@ MODEL_CONFIGS = {
         "default_model_name": "deepseek-coder:6.7b",
     },
 }
+
+WORKER_OUTPUT_TAIL_LINES = 25
+WORKER_OUTPUT_TAIL_CHARS = 4000
+
+
+@dataclass(frozen=True)
+class WorkerRunResult:
+    returncode: int
+    output: str
+
+
+@dataclass(frozen=True)
+class WorkerAssessment:
+    should_continue: bool
+    has_changes: bool
+    reason: str
+
 
 # Prompt-Vorlage für Codex/aider
 AIDER_PROMPT_TEMPLATE = """Löse das folgende GitHub Issue in diesem Repository.
@@ -247,6 +263,91 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
     return cmd
 
 
+def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
+    """Fuehrt den KI-Worker aus, zeigt Output live und haelt ihn fuer Diagnosen fest."""
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=repo_dir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError:
+        print_err(f"KI-Worker nicht gefunden: {cmd[0]}")
+        return WorkerRunResult(returncode=127, output="")
+
+    output_parts = []
+    if process.stdout:
+        for line in process.stdout:
+            print(line, end="")
+            output_parts.append(line)
+        process.stdout.close()
+
+    return WorkerRunResult(
+        returncode=process.wait(),
+        output="".join(output_parts),
+    )
+
+
+def git_status_porcelain(repo_dir: str) -> str:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_dir, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print_warn("Git-Status konnte nicht gelesen werden")
+        return ""
+    return result.stdout
+
+
+def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAssessment:
+    has_changes = bool(git_status.strip())
+    if result.returncode == 0 and has_changes:
+        return WorkerAssessment(True, True, "changed")
+    if result.returncode == 0:
+        return WorkerAssessment(False, False, "no_changes")
+    if has_changes:
+        return WorkerAssessment(True, True, "nonzero_with_changes")
+    return WorkerAssessment(False, False, "nonzero_without_changes")
+
+
+def format_worker_output_tail(output: str) -> str:
+    cleaned = output.strip()
+    if not cleaned:
+        return ""
+
+    tail = "\n".join(cleaned.splitlines()[-WORKER_OUTPUT_TAIL_LINES:])
+    if len(tail) > WORKER_OUTPUT_TAIL_CHARS:
+        tail = tail[-WORKER_OUTPUT_TAIL_CHARS:]
+        return f"...\n{tail}"
+    return tail
+
+
+def print_worker_assessment(result: WorkerRunResult, assessment: WorkerAssessment) -> None:
+    if assessment.reason == "changed":
+        return
+
+    if assessment.reason == "no_changes":
+        print_warn("KI-Worker hat erfolgreich beendet, aber keine Änderungen erzeugt")
+    elif assessment.reason == "nonzero_with_changes":
+        print_warn(
+            f"KI-Worker exit code: {result.returncode}; vorhandene Änderungen werden geprüft"
+        )
+    else:
+        print_warn(
+            f"KI-Worker exit code: {result.returncode}; keine Änderungen erzeugt"
+        )
+
+    tail = format_worker_output_tail(result.output)
+    if tail:
+        print("      Letzte Worker-Ausgabe:")
+        for line in tail.splitlines():
+            print(f"        | {line}")
+
+
 def clone_repo(owner: str, repo: str, token: str, target_dir: str,
                base_branch: str) -> bool:
     url = f"https://{token}@github.com/{owner}/{repo}.git"
@@ -280,7 +381,7 @@ def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
         return False
 
     # Commit
-    subprocess.run(
+    result = subprocess.run(
         ["git", "commit", "-m", message],
         cwd=repo_dir, capture_output=True, text=True,
         env={**os.environ,
@@ -289,6 +390,11 @@ def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
              "GIT_COMMITTER_NAME": "AI Issue Solver",
              "GIT_COMMITTER_EMAIL": "ai@github.com"}
     )
+    if result.returncode != 0:
+        print_warn("Commit fehlgeschlagen")
+        if result.stderr.strip():
+            print(f"      Git meldet: {result.stderr.strip().splitlines()[0][:200]}")
+        return False
 
     # Push
     remote_url = f"https://{token}@github.com/{owner}/{repo}.git"
@@ -332,7 +438,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         # Branch anlegen
         branch_name = f"ai/fix-issue-{number}"
-        create_branch(repo_dir, branch_name)
+        if not create_branch(repo_dir, branch_name):
+            print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
+            return False
 
         # Prompt bauen
         prompt = AIDER_PROMPT_TEMPLATE.format(
@@ -360,21 +468,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             print(f"      🤖 Starte aider ...", flush=True)
             cmd = build_aider_command(model, model_name, prompt, repo_dir)
 
-        result = subprocess.run(
-            cmd, cwd=repo_dir, env=env,
-            capture_output=False,  # Output direkt anzeigen
-            text=True,
-        )
-
-        if result.returncode != 0:
-            changed = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=repo_dir, capture_output=True, text=True,
-            )
-            if not changed.stdout.strip():
-                print_warn(f"KI-Worker exit code: {result.returncode}; keine Änderungen erzeugt")
-                return False
-            print_warn(f"KI-Worker exit code: {result.returncode}; Änderungen werden geprüft")
+        result = run_worker_command(cmd, repo_dir, env)
+        assessment = assess_worker_result(result, git_status_porcelain(repo_dir))
+        print_worker_assessment(result, assessment)
+        if not assessment.should_continue:
+            return False
 
         # Committen & pushen
         print(f"      📤 Commit & Push ...", end=" ", flush=True)
