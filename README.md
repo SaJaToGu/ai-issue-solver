@@ -221,6 +221,11 @@ als No-op behandelt und erzeugt keinen Commit. Falls Codex mit einem
 Nicht-Null-Exitcode beendet, aber Änderungen im Arbeitsbaum liegen, prüft das
 Script diese Änderungen weiter und zeigt die letzten Worker-Zeilen als Diagnose.
 
+Im Aider-Modus begrenzt das Script den Kontext auf den geklonten Arbeitsbaum und
+übergibt plausible Datei-Ziele aus Issue-Titel und Beschreibung als
+Dateiargumente. Pfade werden vorab gegen das Repo validiert, damit keine
+externen oder ungültigen Pfade an aider durchgereicht werden.
+
 **Flags:**
 - `--model` — `codex`, `claude`, `openai`, oder `ollama`
 - `--model-name` — spezifisches Modell, z.B. für Codex oder Ollama

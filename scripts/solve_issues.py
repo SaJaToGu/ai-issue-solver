@@ -20,6 +20,7 @@ Verwendung:
 import argparse
 from dataclasses import dataclass
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -85,6 +86,30 @@ MODEL_CONFIGS = {
 
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
+COMMON_REPO_FILES = {
+    ".dockerignore",
+    ".env.example",
+    ".gitignore",
+    "CHANGELOG.md",
+    "Dockerfile",
+    "LICENSE",
+    "LICENSE.md",
+    "LICENSE.txt",
+    "Makefile",
+    "README.md",
+    "compose.yml",
+    "docker-compose.yml",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.cfg",
+    "setup.py",
+    "tsconfig.json",
+}
+PATH_CANDIDATE_RE = re.compile(
+    r"(?<![\w:/.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.@+~-]+(?:\.[A-Za-z0-9_.+-]+)?"
+)
+CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 
 
 @dataclass(frozen=True)
@@ -275,7 +300,83 @@ def find_codex_executable() -> str | None:
     return next((path for path in candidates if path and Path(path).exists()), None)
 
 
-def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str) -> list:
+def clean_path_candidate(candidate: str) -> str:
+    return candidate.strip().strip(" \t\r\n'\"“”‘’.,;:()[]{}<>")
+
+
+def is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def looks_like_repo_file(path: str) -> bool:
+    basename = Path(path).name
+    return (
+        path in COMMON_REPO_FILES
+        or basename in COMMON_REPO_FILES
+        or "." in basename
+    )
+
+
+def collect_issue_path_candidates(text: str) -> list[str]:
+    """Sammelt plausible Datei-/Pfadangaben aus Issue-Text ohne URLs zu treffen."""
+    candidates = []
+
+    for match in CODE_SPAN_RE.finditer(text):
+        for part in re.split(r"\s+", match.group(1)):
+            candidates.append(part)
+
+    candidates.extend(PATH_CANDIDATE_RE.findall(text))
+
+    for known_file in COMMON_REPO_FILES:
+        if re.search(rf"(?<![\w./-]){re.escape(known_file)}(?![\w./-])", text):
+            candidates.append(known_file)
+
+    return candidates
+
+
+def normalize_aider_target(candidate: str, repo_path: str) -> str | None:
+    candidate = clean_path_candidate(candidate)
+    if not candidate or candidate.startswith("-") or "://" in candidate:
+        return None
+
+    path = Path(candidate)
+    if path.is_absolute() or any(part in ("", ".", "..", ".git") for part in path.parts):
+        return None
+
+    if not looks_like_repo_file(candidate):
+        return None
+
+    repo_root = Path(repo_path).resolve()
+    target = (repo_root / path).resolve()
+    if not is_relative_to(target, repo_root):
+        return None
+
+    if target.exists():
+        if not target.is_file():
+            return None
+    elif path.parent != Path(".") and not (repo_root / path.parent).is_dir():
+        return None
+
+    return target.relative_to(repo_root).as_posix()
+
+
+def infer_aider_targets(prompt: str, repo_path: str) -> list[str]:
+    targets = []
+    seen = set()
+    for candidate in collect_issue_path_candidates(prompt):
+        target = normalize_aider_target(candidate, repo_path)
+        if target and target not in seen:
+            targets.append(target)
+            seen.add(target)
+    return targets
+
+
+def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str,
+                        file_targets: list[str] | None = None) -> list:
     config = MODEL_CONFIGS[model]
     flags = []
 
@@ -285,12 +386,16 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
         else:
             flags.append(flag)
 
+    targets = file_targets if file_targets is not None else infer_aider_targets(prompt, repo_path)
+
     cmd = [
         "aider",
         *flags,
         "--yes",                   # Automatisch ja sagen
         "--no-auto-commits",       # Wir committen selbst
+        "--subtree-only",          # Repo-Kontext auf den geklonten Arbeitsbaum begrenzen
         "--message", prompt,       # Direkt-Prompt (kein interaktiver Modus)
+        *targets,
     ]
 
     return cmd
