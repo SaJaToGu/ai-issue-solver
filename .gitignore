@@ -1,1 +1,22 @@
+# Secrets and local configuration
 .env
+.env.*
+config/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Generated reports
+reports/*
+!reports/.gitkeep
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/

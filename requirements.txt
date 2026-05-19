@@ -3,7 +3,3 @@
 
 # GitHub API
 requests>=2.31.0
-
-# Für aider (KI-Pair-Programmer — Morpheus-Methode)
-# Doku: https://aider.chat
-aider-chat>=0.50.0

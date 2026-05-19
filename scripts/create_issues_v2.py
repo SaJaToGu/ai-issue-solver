@@ -1,55 +1,21 @@
-import requests
-import os
-import json
+#!/usr/bin/env python3
+"""
+Deprecated compatibility entrypoint.
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-USERNAME = "SaJaToGu"
+The old v2 script created real GitHub issues immediately and used a hard-coded
+GitHub user. Keep this file as a safe pointer so existing notes or shell history
+do not accidentally post issues.
+"""
 
-HEADERS = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github+json"
-}
+import sys
 
-def get_repos():
-    url = f"https://api.github.com/users/{USERNAME}/repos"
-    response = requests.get(url, headers=HEADERS)
-    return response.json()
 
-def create_issue(repo_name, title, body):
-    url = f"https://api.github.com/repos/{USERNAME}/{repo_name}/issues"
-    
-    data = {
-        "title": title,
-        "body": body
-    }
+def main() -> int:
+    print("create_issues_v2.py is deprecated.")
+    print("Use first: python scripts/create_issues.py --report reports/analysis.json --dry-run")
+    print("Create real issues only with: python scripts/create_issues.py --report reports/analysis.json --confirm-create")
+    return 1
 
-    response = requests.post(url, headers=HEADERS, json=data)
-    
-    if response.status_code == 201:
-        print(f"Issue erstellt in {repo_name}: {title}")
-    else:
-        print(f"Fehler bei {repo_name}: {response.text}")
-
-def main():
-    repos = get_repos()
-
-    for repo in repos:
-        repo_name = repo["name"]
-
-        # Beispiel Checks
-        if not repo["description"]:
-            create_issue(
-                repo_name,
-                "Add repository description",
-                "This repository has no description. Add a meaningful description."
-            )
-
-        if not repo["topics"]:
-            create_issue(
-                repo_name,
-                "Add repository topics",
-                "This repository has no topics. Add relevant topics for discoverability."
-            )
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

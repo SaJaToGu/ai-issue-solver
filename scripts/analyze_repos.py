@@ -12,17 +12,31 @@ Verwendung:
 """
 
 import argparse
+import fnmatch
 import json
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    requests = None
 
 # ── Projektverzeichnis ins sys.path ──────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_env, print_banner, print_step, print_ok, print_warn, print_err
+from utils import (
+    load_env,
+    print_banner,
+    print_err,
+    print_ok,
+    print_step,
+    print_warn,
+    raise_for_github_response,
+    require_config_value,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -63,7 +77,7 @@ CHECKS = {
     "missing_ci": {
         "title": "Keine CI/CD-Pipeline (GitHub Actions) vorhanden",
         "label": "ci-cd",
-        "priority": "low",
+        "priority": "medium",
         "description": (
             "Es gibt keine GitHub Actions Workflows (.github/workflows/). "
             "CI/CD hilft, Fehler früh zu erkennen und Deployments zu automatisieren. "
@@ -98,6 +112,37 @@ CHECKS = {
             "oder archiviere das Repo offiziell auf GitHub."
         ),
     },
+    "very_stale_repo": {
+        "title": "Repo seit über 4 Jahren nicht aktualisiert",
+        "label": "maintenance",
+        "priority": "medium",
+        "description": (
+            "Dieses Repo wurde seit mehr als 4 Jahren nicht mehr aktualisiert. "
+            "Prüfe aktiv, ob es noch gepflegt werden soll. Falls nicht, ergänze "
+            "einen klaren Archiv-Hinweis in README und Repo-Beschreibung oder "
+            "archiviere das Repo offiziell auf GitHub."
+        ),
+    },
+    "missing_tests": {
+        "title": "Keine Tests im Code-Projekt gefunden",
+        "label": "testing",
+        "priority": "medium",
+        "description": (
+            "Dieses Repo enthält Code, aber keine erkennbaren Testdateien oder "
+            "Testverzeichnisse. Ergänze mindestens Smoke- oder Unit-Tests für die "
+            "wichtigsten Funktionen und dokumentiere, wie sie ausgeführt werden."
+        ),
+    },
+    "risky_generated_files": {
+        "title": "Riskante generierte Dateien sind im Repo getrackt",
+        "label": "best-practice",
+        "priority": "medium",
+        "description": (
+            "Im Repository sind Dateien oder Verzeichnisse eingecheckt, die häufig "
+            "generiert werden oder lokal entstehen. Prüfe, ob sie wirklich versioniert "
+            "werden müssen. Falls nicht: entfernen und über .gitignore ausschließen."
+        ),
+    },
     "fork_no_customization": {
         "title": "Fork ohne eigene Anpassungen oder Dokumentation",
         "label": "documentation",
@@ -109,6 +154,45 @@ CHECKS = {
         ),
     },
 }
+
+CODE_FILE_EXTENSIONS = {
+    ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html", ".java",
+    ".js", ".jsx", ".kt", ".m", ".mm", ".php", ".py", ".rb", ".rs", ".scala",
+    ".scss", ".sh", ".swift", ".ts", ".tsx", ".vue",
+}
+
+PROJECT_MANIFESTS = {
+    "Cargo.toml", "composer.json", "go.mod", "package.json", "pom.xml",
+    "pyproject.toml", "requirements.txt", "setup.cfg", "setup.py",
+}
+
+TEST_PATH_PATTERNS = (
+    "test/*", "tests/*", "__tests__/*", "spec/*",
+    "*_test.*", "test_*.py", "*.test.*", "*.spec.*",
+)
+
+CI_WORKFLOW_PATTERNS = (
+    ".github/workflows/*.yml",
+    ".github/workflows/*.yaml",
+)
+
+RISKY_GENERATED_PATTERNS = (
+    ".DS_Store",
+    "*.egg-info/*",
+    "*.log",
+    "*.min.js",
+    "*.pyc",
+    "*.stl",
+    "*.gcode",
+    "*.3mf",
+    "*.zip",
+    "__pycache__/*",
+    "build/*",
+    "coverage/*",
+    "dist/*",
+    "node_modules/*",
+    "target/*",
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -131,7 +215,7 @@ class GitHubClient:
         resp = self.session.get(url, params=params)
         if resp.status_code == 404:
             return None
-        resp.raise_for_status()
+        raise_for_github_response(resp, f"GET {path}")
         return resp.json()
 
     def get_all_pages(self, path: str, **params) -> list:
@@ -163,22 +247,100 @@ class GitHubClient:
             return 0
         return result.get("size", 0)
 
+    def get_repo_tree_paths(self, owner: str, repo: str, branch: str | None) -> list[str]:
+        if not branch:
+            return []
+        branch_ref = quote(branch, safe="")
+        result = self.get(f"/repos/{owner}/{repo}/git/trees/{branch_ref}", recursive=1)
+        if result is None:
+            return []
+        if result.get("truncated"):
+            print_warn(f"{repo}: Repo-Tree ist gekürzt, einige Datei-Checks können unvollständig sein")
+        return [
+            item["path"]
+            for item in result.get("tree", [])
+            if item.get("type") == "blob"
+        ]
+
 
 # ─────────────────────────────────────────────────────────────
 # Analyse-Logik
 # ─────────────────────────────────────────────────────────────
 
+def normalize_path(path: str) -> str:
+    """Normalisiert GitHub-Tree-Pfade für einfache Pattern-Matches."""
+    return path.strip("/")
+
+
+def path_matches(path: str, patterns: tuple[str, ...]) -> bool:
+    normalized = normalize_path(path)
+    return any(fnmatch.fnmatch(normalized, pattern) for pattern in patterns)
+
+
+def has_ci_workflow(paths: list[str]) -> bool:
+    return any(path_matches(path, CI_WORKFLOW_PATTERNS) for path in paths)
+
+
+def is_code_project(repo: dict, paths: list[str]) -> bool:
+    if repo.get("language"):
+        return True
+    for path in paths:
+        name = Path(path).name
+        if name in PROJECT_MANIFESTS:
+            return True
+        if Path(path).suffix.lower() in CODE_FILE_EXTENSIONS:
+            return True
+    return False
+
+
+def has_tests(paths: list[str]) -> bool:
+    return any(path_matches(path, TEST_PATH_PATTERNS) for path in paths)
+
+
+def find_risky_generated_files(paths: list[str], limit: int = 10) -> list[str]:
+    matches = []
+    for path in paths:
+        if path_matches(path, RISKY_GENERATED_PATTERNS):
+            matches.append(path)
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def with_detail(check: str, detail: str | None = None) -> dict:
+    issue = {
+        "check": check,
+        **CHECKS[check],
+    }
+    if detail:
+        issue["description"] = f"{issue['description']}\n\nKonkrete Beobachtung: {detail}"
+    return issue
+
+
 def analyze_repo(client: GitHubClient, owner: str, repo: dict) -> dict:
     """Analysiert ein einzelnes Repo und gibt Findings zurück."""
     name = repo["name"]
     findings = []
+    finding_details = {}
 
     print(f"   Analysiere: {name} ...", end=" ", flush=True)
+
+    tree_paths = client.get_repo_tree_paths(owner, name, repo.get("default_branch"))
+    code_project = is_code_project(repo, tree_paths)
+
+    def add_finding(check: str, detail: str | None = None):
+        if check not in findings:
+            findings.append(check)
+        if detail:
+            finding_details[check] = detail
 
     # README prüfen
     readme_size = client.get_readme_length(owner, name)
     if readme_size < 200:
-        findings.append("missing_readme")
+        if readme_size == 0:
+            add_finding("missing_readme", "README wurde nicht gefunden.")
+        else:
+            add_finding("missing_readme", f"README ist nur {readme_size} Bytes groß.")
 
     # LICENSE prüfen
     has_license = repo.get("license") is not None
@@ -188,35 +350,53 @@ def analyze_repo(client: GitHubClient, owner: str, repo: dict) -> dict:
                       client.repo_has_file(owner, name, "LICENSE.md") or \
                       client.repo_has_file(owner, name, "LICENSE.txt")
     if not has_license:
-        findings.append("missing_license")
+        add_finding("missing_license")
 
     # .gitignore prüfen
     if not client.repo_has_file(owner, name, ".gitignore"):
-        findings.append("missing_gitignore")
+        add_finding("missing_gitignore")
 
     # GitHub Actions prüfen
-    if not client.repo_has_dir(owner, name, ".github/workflows"):
-        findings.append("missing_ci")
+    if code_project and not has_ci_workflow(tree_paths) and not client.repo_has_dir(owner, name, ".github/workflows"):
+        add_finding("missing_ci", "Es wurden Code-Dateien erkannt, aber kein Workflow unter .github/workflows/.")
 
     # Beschreibung
     if not repo.get("description"):
-        findings.append("no_description")
+        add_finding("no_description", "Das GitHub-About-Feld description ist leer.")
 
     # Topics
     if not repo.get("topics"):
-        findings.append("no_topics")
+        add_finding("no_topics", "Die GitHub API liefert keine Topics für dieses Repo.")
 
     # Stale (>2 Jahre kein Push)
     pushed_at = repo.get("pushed_at")
     if pushed_at:
         pushed = datetime.fromisoformat(pushed_at.replace("Z", "+00:00"))
         age_days = (datetime.now(timezone.utc) - pushed).days
-        if age_days > 730:
-            findings.append("stale_repo")
+        detail = f"Letzter Push: {pushed.date().isoformat()} ({age_days} Tage her)."
+        if age_days > 1460:
+            add_finding("very_stale_repo", detail)
+        elif age_days > 730:
+            add_finding("stale_repo", detail)
+
+    # Tests prüfen
+    if code_project and tree_paths and not has_tests(tree_paths):
+        code_examples = [
+            path for path in tree_paths
+            if Path(path).suffix.lower() in CODE_FILE_EXTENSIONS or Path(path).name in PROJECT_MANIFESTS
+        ][:5]
+        detail = "Erkannte Code-/Manifest-Dateien: " + ", ".join(code_examples)
+        add_finding("missing_tests", detail)
+
+    # Riskante generierte Dateien prüfen
+    generated_files = find_risky_generated_files(tree_paths)
+    if generated_files:
+        detail = "Beispiele: " + ", ".join(generated_files)
+        add_finding("risky_generated_files", detail)
 
     # Fork ohne Eigendoku
     if repo.get("fork") and readme_size < 300:
-        findings.append("fork_no_customization")
+        add_finding("fork_no_customization", f"Fork mit README-Größe {readme_size} Bytes.")
 
     print(f"{'✅' if not findings else f'⚠️  {len(findings)} Findings'}")
 
@@ -228,11 +408,9 @@ def analyze_repo(client: GitHubClient, owner: str, repo: dict) -> dict:
         "stars": repo.get("stargazers_count", 0),
         "last_push": pushed_at,
         "findings": findings,
+        "finding_details": finding_details,
         "issues_to_create": [
-            {
-                "check": f,
-                **CHECKS[f],
-            }
+            with_detail(f, finding_details.get(f))
             for f in findings
             if f in CHECKS
         ],
@@ -282,13 +460,14 @@ def main():
     )
     args = parser.parse_args()
 
+    if requests is None:
+        print_err("Python-Abhängigkeit fehlt: requests")
+        print("   → Installieren mit: pip install -r requirements.txt")
+        sys.exit(1)
+
     # Config laden
     config = load_env()
-    token = config.get("GITHUB_TOKEN")
-    if not token:
-        print_err("GITHUB_TOKEN fehlt in config/.env")
-        print("   → Siehe README.md: Abschnitt 'GitHub PAT erstellen'")
-        sys.exit(1)
+    token = require_config_value(config, "GITHUB_TOKEN", "GitHub Token")
 
     # Output-Verzeichnis anlegen
     output_path = Path(args.output)

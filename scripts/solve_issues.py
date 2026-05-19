@@ -3,11 +3,12 @@
 solve_issues.py — Schritt 3: Issues mit KI lösen (Morpheus-Methode)
 Morpheus-Style AI Issue Solver — github.com/SaJaToGu
 
-Holt offene GitHub Issues, übergibt sie an `aider` mit dem
-gewählten KI-Modell (Claude / OpenAI / Ollama), erstellt
+Holt offene GitHub Issues, übergibt sie an Codex oder `aider` mit dem
+gewählten KI-Modell (Codex / Claude / OpenAI / Ollama), erstellt
 einen Branch und einen Commit mit der Lösung.
 
 Verwendung:
+    python scripts/solve_issues.py --model codex
     python scripts/solve_issues.py --model claude
     python scripts/solve_issues.py --model openai
     python scripts/solve_issues.py --model ollama --model-name deepseek-coder:6.7b
@@ -17,18 +18,33 @@ Verwendung:
 """
 
 import argparse
-import json
+from dataclasses import dataclass
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    requests = None
 
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_env, print_banner, print_step, print_ok, print_warn, print_err
+from utils import (
+    is_placeholder_value,
+    load_env,
+    print_banner,
+    print_err,
+    print_step,
+    print_warn,
+    handle_github_request_error,
+    raise_for_github_response,
+    require_config_value,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -36,6 +52,11 @@ from utils import load_env, print_banner, print_step, print_ok, print_warn, prin
 # ─────────────────────────────────────────────────────────────
 
 MODEL_CONFIGS = {
+    "codex": {
+        "display_name": "Codex CLI",
+        "env_key": None,
+        "env_var": None,
+    },
     "claude": {
         "display_name": "Anthropic Claude (claude-sonnet-4-20250514)",
         "aider_flags": [
@@ -63,7 +84,48 @@ MODEL_CONFIGS = {
     },
 }
 
-# Prompt-Vorlage für aider
+WORKER_OUTPUT_TAIL_LINES = 25
+WORKER_OUTPUT_TAIL_CHARS = 4000
+COMMON_REPO_FILES = {
+    ".dockerignore",
+    ".env.example",
+    ".gitignore",
+    "CHANGELOG.md",
+    "Dockerfile",
+    "LICENSE",
+    "LICENSE.md",
+    "LICENSE.txt",
+    "Makefile",
+    "README.md",
+    "compose.yml",
+    "docker-compose.yml",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.cfg",
+    "setup.py",
+    "tsconfig.json",
+}
+PATH_CANDIDATE_RE = re.compile(
+    r"(?<![\w:/.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.@+~-]+(?:\.[A-Za-z0-9_.+-]+)?"
+)
+CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+
+
+@dataclass(frozen=True)
+class WorkerRunResult:
+    returncode: int
+    output: str
+
+
+@dataclass(frozen=True)
+class WorkerAssessment:
+    should_continue: bool
+    has_changes: bool
+    reason: str
+
+
+# Prompt-Vorlage für Codex/aider
 AIDER_PROMPT_TEMPLATE = """Löse das folgende GitHub Issue in diesem Repository.
 
 === ISSUE #{number}: {title} ===
@@ -75,6 +137,7 @@ Analysiere das Problem und implementiere eine saubere, vollständige Lösung.
 Halte dich an die bestehende Code-Struktur und Konventionen des Projekts.
 Kommentiere deine Änderungen auf Deutsch wenn sinnvoll.
 Erstelle oder verbessere Dateien direkt (README, LICENSE, .gitignore, etc.).
+Erstelle keinen Commit, pushe nichts und öffne keinen Pull Request. Das übernimmt das Wrapper-Script nach deiner Änderung.
 
 Wenn du Dateien erstellst, achte auf:
 - Vollständigkeit (keine Platzhalter wie "TODO" oder "...")
@@ -100,28 +163,87 @@ class GitHubClient:
         })
 
     def get_repos(self) -> list:
-        resp = self.session.get(
-            f"{self.BASE}/users/{self.owner}/repos",
-            params={"type": "owner", "per_page": 100}
-        )
-        resp.raise_for_status()
+        try:
+            resp = self.session.get(
+                f"{self.BASE}/users/{self.owner}/repos",
+                params={"type": "owner", "per_page": 100}
+            )
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, "Repos laden")
+        raise_for_github_response(resp, "Repos laden")
         return resp.json()
 
+    def get_repo(self, repo: str) -> dict | None:
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}")
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Repo laden: {repo}")
+        if resp.status_code == 404:
+            return None
+        raise_for_github_response(resp, f"Repo laden: {repo}")
+        return resp.json()
+
+    def get_default_branch(self, repo: str) -> str | None:
+        repo_info = self.get_repo(repo)
+        if not repo_info:
+            return None
+        return repo_info.get("default_branch")
+
+    def branch_exists(self, repo: str, branch: str) -> bool:
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/branches/{branch}")
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Branch prüfen: {repo}/{branch}")
+        if resp.status_code == 404:
+            return False
+        raise_for_github_response(resp, f"Branch prüfen: {repo}/{branch}")
+        return True
+
+    def resolve_base_branch(self, repo: str, requested_base: str | None = None) -> str | None:
+        """Ermittelt den Zielbranch und nutzt ohne Vorgabe den GitHub-Default-Branch."""
+        if requested_base:
+            if self.branch_exists(repo, requested_base):
+                return requested_base
+
+            default_branch = self.get_default_branch(repo)
+            if default_branch and default_branch != requested_base and self.branch_exists(repo, default_branch):
+                print_warn(
+                    f"Base-Branch '{requested_base}' existiert nicht; nutze Default-Branch '{default_branch}'"
+                )
+                return default_branch
+
+            return requested_base
+
+        default_branch = self.get_default_branch(repo)
+        if default_branch:
+            return default_branch
+
+        for candidate in ("main", "master", "develop"):
+            if self.branch_exists(repo, candidate):
+                return candidate
+        return None
+
     def get_open_issues(self, repo: str, label: str = "ai-generated") -> list:
-        resp = self.session.get(
-            f"{self.BASE}/repos/{self.owner}/{repo}/issues",
-            params={"state": "open", "labels": label, "per_page": 100}
-        )
+        try:
+            resp = self.session.get(
+                f"{self.BASE}/repos/{self.owner}/{repo}/issues",
+                params={"state": "open", "labels": label, "per_page": 100}
+            )
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Issues laden: {repo}")
         if resp.status_code == 404:
             return []
-        resp.raise_for_status()
+        raise_for_github_response(resp, f"Issues laden: {repo}")
         return [i for i in resp.json() if "pull_request" not in i]
 
     def get_single_issue(self, repo: str, number: int) -> dict | None:
-        resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}")
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}")
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Issue laden: {repo}#{number}")
         if resp.status_code == 404:
             return None
-        resp.raise_for_status()
+        raise_for_github_response(resp, f"Issue laden: {repo}#{number}")
         return resp.json()
 
     def close_issue_with_comment(self, repo: str, number: int,
@@ -140,20 +262,20 @@ class GitHubClient:
         )
 
     def create_pull_request(self, repo: str, title: str, body: str,
-                             head: str, base: str = "main",
+                             head: str, base: str | None = None,
                              dry_run: bool = False) -> dict | None:
-        if dry_run:
-            print(f"      [DRY-RUN] Würde PR erstellen: '{title}'")
-            return {"html_url": "https://github.com/dry-run-pr"}
+        resolved_base = self.resolve_base_branch(repo, base)
+        if not resolved_base:
+            print_warn("PR konnte nicht erstellt werden: Kein gültiger Base-Branch gefunden")
+            return None
 
-        # Prüfe ob 'main' oder 'master' existiert
-        resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/branches/{base}")
-        if resp.status_code == 404:
-            base = "master"
+        if dry_run:
+            print(f"      [DRY-RUN] Würde PR erstellen: '{title}' gegen '{resolved_base}'")
+            return {"html_url": "https://github.com/dry-run-pr"}
 
         resp = self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
-            json={"title": title, "body": body, "head": head, "base": base}
+            json={"title": title, "body": body, "head": head, "base": resolved_base}
         )
         if resp.status_code == 201:
             return resp.json()
@@ -166,14 +288,95 @@ class GitHubClient:
 # ─────────────────────────────────────────────────────────────
 
 def check_aider_installed() -> bool:
+    return shutil.which("aider") is not None
+
+
+def find_codex_executable() -> str | None:
+    """Find the Codex CLI installed by the desktop app or available on PATH."""
+    candidates = [
+        shutil.which("codex"),
+        "/Applications/Codex.app/Contents/Resources/codex",
+    ]
+    return next((path for path in candidates if path and Path(path).exists()), None)
+
+
+def clean_path_candidate(candidate: str) -> str:
+    return candidate.strip().strip(" \t\r\n'\"“”‘’.,;:()[]{}<>")
+
+
+def is_relative_to(path: Path, parent: Path) -> bool:
     try:
-        result = subprocess.run(["aider", "--version"], capture_output=True, text=True)
-        return result.returncode == 0
-    except FileNotFoundError:
+        path.relative_to(parent)
+        return True
+    except ValueError:
         return False
 
 
-def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str) -> list:
+def looks_like_repo_file(path: str) -> bool:
+    basename = Path(path).name
+    return (
+        path in COMMON_REPO_FILES
+        or basename in COMMON_REPO_FILES
+        or "." in basename
+    )
+
+
+def collect_issue_path_candidates(text: str) -> list[str]:
+    """Sammelt plausible Datei-/Pfadangaben aus Issue-Text ohne URLs zu treffen."""
+    candidates = []
+
+    for match in CODE_SPAN_RE.finditer(text):
+        for part in re.split(r"\s+", match.group(1)):
+            candidates.append(part)
+
+    candidates.extend(PATH_CANDIDATE_RE.findall(text))
+
+    for known_file in COMMON_REPO_FILES:
+        if re.search(rf"(?<![\w./-]){re.escape(known_file)}(?![\w./-])", text):
+            candidates.append(known_file)
+
+    return candidates
+
+
+def normalize_aider_target(candidate: str, repo_path: str) -> str | None:
+    candidate = clean_path_candidate(candidate)
+    if not candidate or candidate.startswith("-") or "://" in candidate:
+        return None
+
+    path = Path(candidate)
+    if path.is_absolute() or any(part in ("", ".", "..", ".git") for part in path.parts):
+        return None
+
+    if not looks_like_repo_file(candidate):
+        return None
+
+    repo_root = Path(repo_path).resolve()
+    target = (repo_root / path).resolve()
+    if not is_relative_to(target, repo_root):
+        return None
+
+    if target.exists():
+        if not target.is_file():
+            return None
+    elif path.parent != Path(".") and not (repo_root / path.parent).is_dir():
+        return None
+
+    return target.relative_to(repo_root).as_posix()
+
+
+def infer_aider_targets(prompt: str, repo_path: str) -> list[str]:
+    targets = []
+    seen = set()
+    for candidate in collect_issue_path_candidates(prompt):
+        target = normalize_aider_target(candidate, repo_path)
+        if target and target not in seen:
+            targets.append(target)
+            seen.add(target)
+    return targets
+
+
+def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str,
+                        file_targets: list[str] | None = None) -> list:
     config = MODEL_CONFIGS[model]
     flags = []
 
@@ -183,21 +386,128 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
         else:
             flags.append(flag)
 
+    targets = file_targets if file_targets is not None else infer_aider_targets(prompt, repo_path)
+
     cmd = [
         "aider",
         *flags,
         "--yes",                   # Automatisch ja sagen
         "--no-auto-commits",       # Wir committen selbst
+        "--subtree-only",          # Repo-Kontext auf den geklonten Arbeitsbaum begrenzen
         "--message", prompt,       # Direkt-Prompt (kein interaktiver Modus)
+        *targets,
     ]
 
     return cmd
 
 
-def clone_repo(owner: str, repo: str, token: str, target_dir: str) -> bool:
+def build_codex_command(prompt: str, repo_path: str, model_name: str | None = None) -> list:
+    codex = find_codex_executable()
+    if not codex:
+        raise FileNotFoundError("codex")
+
+    cmd = [
+        codex,
+        "exec",
+        "--cd", repo_path,
+        "--sandbox", "workspace-write",
+    ]
+    if model_name:
+        cmd.extend(["--model", model_name])
+    cmd.append(prompt)
+    return cmd
+
+
+def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
+    """Fuehrt den KI-Worker aus, zeigt Output live und haelt ihn fuer Diagnosen fest."""
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=repo_dir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError:
+        print_err(f"KI-Worker nicht gefunden: {cmd[0]}")
+        return WorkerRunResult(returncode=127, output="")
+
+    output_parts = []
+    if process.stdout:
+        for line in process.stdout:
+            print(line, end="")
+            output_parts.append(line)
+        process.stdout.close()
+
+    return WorkerRunResult(
+        returncode=process.wait(),
+        output="".join(output_parts),
+    )
+
+
+def git_status_porcelain(repo_dir: str) -> str:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_dir, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print_warn("Git-Status konnte nicht gelesen werden")
+        return ""
+    return result.stdout
+
+
+def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAssessment:
+    has_changes = bool(git_status.strip())
+    if result.returncode == 0 and has_changes:
+        return WorkerAssessment(True, True, "changed")
+    if result.returncode == 0:
+        return WorkerAssessment(False, False, "no_changes")
+    if has_changes:
+        return WorkerAssessment(True, True, "nonzero_with_changes")
+    return WorkerAssessment(False, False, "nonzero_without_changes")
+
+
+def format_worker_output_tail(output: str) -> str:
+    cleaned = output.strip()
+    if not cleaned:
+        return ""
+
+    tail = "\n".join(cleaned.splitlines()[-WORKER_OUTPUT_TAIL_LINES:])
+    if len(tail) > WORKER_OUTPUT_TAIL_CHARS:
+        tail = tail[-WORKER_OUTPUT_TAIL_CHARS:]
+        return f"...\n{tail}"
+    return tail
+
+
+def print_worker_assessment(result: WorkerRunResult, assessment: WorkerAssessment) -> None:
+    if assessment.reason == "changed":
+        return
+
+    if assessment.reason == "no_changes":
+        print_warn("KI-Worker hat erfolgreich beendet, aber keine Änderungen erzeugt")
+    elif assessment.reason == "nonzero_with_changes":
+        print_warn(
+            f"KI-Worker exit code: {result.returncode}; vorhandene Änderungen werden geprüft"
+        )
+    else:
+        print_warn(
+            f"KI-Worker exit code: {result.returncode}; keine Änderungen erzeugt"
+        )
+
+    tail = format_worker_output_tail(result.output)
+    if tail:
+        print("      Letzte Worker-Ausgabe:")
+        for line in tail.splitlines():
+            print(f"        | {line}")
+
+
+def clone_repo(owner: str, repo: str, token: str, target_dir: str,
+               base_branch: str) -> bool:
     url = f"https://{token}@github.com/{owner}/{repo}.git"
     result = subprocess.run(
-        ["git", "clone", url, target_dir],
+        ["git", "clone", "--branch", base_branch, "--single-branch", url, target_dir],
         capture_output=True, text=True
     )
     return result.returncode == 0
@@ -226,7 +536,7 @@ def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
         return False
 
     # Commit
-    subprocess.run(
+    result = subprocess.run(
         ["git", "commit", "-m", message],
         cwd=repo_dir, capture_output=True, text=True,
         env={**os.environ,
@@ -235,6 +545,11 @@ def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
              "GIT_COMMITTER_NAME": "AI Issue Solver",
              "GIT_COMMITTER_EMAIL": "ai@github.com"}
     )
+    if result.returncode != 0:
+        print_warn("Commit fehlgeschlagen")
+        if result.stderr.strip():
+            print(f"      Git meldet: {result.stderr.strip().splitlines()[0][:200]}")
+        return False
 
     # Push
     remote_url = f"https://{token}@github.com/{owner}/{repo}.git"
@@ -251,7 +566,8 @@ def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
 
 def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 model: str, model_name: str, config: dict,
-                token: str, dry_run: bool) -> bool:
+                token: str, dry_run: bool, base_branch: str,
+                close_issues: bool) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -261,6 +577,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
     if dry_run:
         print(f"      [DRY-RUN] Würde bearbeiten mit {model}")
+        print(f"      [DRY-RUN] Zielbranch: {base_branch}")
         return True
 
     # Repo klonen
@@ -268,14 +585,17 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         repo_dir = os.path.join(tmpdir, repo)
         print(f"      📥 Klone {repo} ...", end=" ", flush=True)
 
-        if not clone_repo(config["owner"], repo, token, repo_dir):
+        if not clone_repo(config["owner"], repo, token, repo_dir, base_branch):
             print_err("Klonen fehlgeschlagen")
+            print(f"      Prüfe, ob der Branch '{base_branch}' in {repo} existiert.")
             return False
         print("✅")
 
         # Branch anlegen
         branch_name = f"ai/fix-issue-{number}"
-        create_branch(repo_dir, branch_name)
+        if not create_branch(repo_dir, branch_name):
+            print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
+            return False
 
         # Prompt bauen
         prompt = AIDER_PROMPT_TEMPLATE.format(
@@ -288,28 +608,26 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         env = os.environ.copy()
         env_key = MODEL_CONFIGS[model]["env_key"]
         if env_key:
-            api_key = config["config"].get(env_key)
-            if not api_key:
-                print_err(f"{env_key} fehlt in config/.env")
-                return False
+            api_key = require_config_value(config["config"], env_key)
             env[MODEL_CONFIGS[model]["env_var"]] = api_key
 
         if model == "ollama":
             ollama_host = config["config"].get("OLLAMA_HOST", "http://localhost:11434")
             env["OLLAMA_API_BASE"] = ollama_host
 
-        # Aider ausführen
-        print(f"      🤖 Starte aider ...", flush=True)
-        cmd = build_aider_command(model, model_name, prompt, repo_dir)
+        # KI-Worker ausführen
+        if model == "codex":
+            print(f"      🤖 Starte Codex ...", flush=True)
+            cmd = build_codex_command(prompt, repo_dir, model_name or None)
+        else:
+            print(f"      🤖 Starte aider ...", flush=True)
+            cmd = build_aider_command(model, model_name, prompt, repo_dir)
 
-        result = subprocess.run(
-            cmd, cwd=repo_dir, env=env,
-            capture_output=False,  # Output direkt anzeigen
-            text=True,
-        )
-
-        if result.returncode != 0:
-            print_warn(f"Aider exit code: {result.returncode} (kann trotzdem OK sein)")
+        result = run_worker_command(cmd, repo_dir, env)
+        assessment = assess_worker_result(result, git_status_porcelain(repo_dir))
+        print_worker_assessment(result, assessment)
+        if not assessment.should_continue:
+            return False
 
         # Committen & pushen
         print(f"      📤 Commit & Push ...", end=" ", flush=True)
@@ -328,7 +646,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config['owner']}/ai-issue-solver) erstellt.
 
 ### Gelöstes Issue
-Closes #{number}: {title}
+{"Closes" if close_issues else "Refs"} #{number}: {title}
 
 ### Verwendetes Modell
 `{MODEL_CONFIGS[model]['display_name']}`
@@ -344,14 +662,15 @@ Closes #{number}: {title}
             title=f"[AI] Fix: {title}",
             body=pr_body,
             head=branch_name,
+            base=base_branch,
             dry_run=dry_run,
         )
         if pr:
             print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
 
-        # Issue schließen
-        close_comment = f"✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\nPR: {pr.get('html_url', '?') if pr else '(kein PR)'}\nModell: {MODEL_CONFIGS[model]['display_name']}"
-        client.close_issue_with_comment(repo, number, close_comment)
+        if close_issues:
+            close_comment = f"✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\nPR: {pr.get('html_url', '?') if pr else '(kein PR)'}\nModell: {MODEL_CONFIGS[model]['display_name']}"
+            client.close_issue_with_comment(repo, number, close_comment)
 
     return True
 
@@ -365,30 +684,45 @@ def main():
 
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
-        "--model", required=True, choices=["claude", "openai", "ollama"],
-        help="KI-Modell: claude, openai oder ollama"
+        "--model", required=True, choices=["codex", "claude", "openai", "ollama"],
+        help="KI-Modell: codex, claude, openai oder ollama"
     )
     parser.add_argument(
         "--model-name",
-        help="Spezifisches Modell (für Ollama z.B. 'deepseek-coder:6.7b', 'llama3.2:3b')"
+        help="Spezifisches Modell (für Codex optional, für Ollama z.B. 'deepseek-coder:6.7b')"
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
+    parser.add_argument(
+        "--base-branch",
+        help="Zielbranch für Klon und PR; ohne Angabe wird der GitHub-Default-Branch genutzt",
+    )
+    parser.add_argument(
+        "--close-issues",
+        action="store_true",
+        help="Issues nach PR-Erstellung direkt schließen",
+    )
     args = parser.parse_args()
+
+    if requests is None:
+        print_err("Python-Abhängigkeit fehlt: requests")
+        print("   → Installieren mit: pip install -r requirements.txt")
+        sys.exit(1)
 
     # Config laden
     cfg = load_env()
-    token = cfg.get("GITHUB_TOKEN")
-    user = cfg.get("GITHUB_USER", "SaJaToGu")
+    token = require_config_value(cfg, "GITHUB_TOKEN", "GitHub Token")
+    user = require_config_value(cfg, "GITHUB_USER", "GitHub User")
 
-    if not token:
-        print_err("GITHUB_TOKEN fehlt in config/.env")
+    # KI-Worker prüfen
+    if args.model == "codex" and not find_codex_executable() and not args.dry_run:
+        print_err("Codex CLI wurde nicht gefunden!")
+        print("   → Codex Desktop App installieren oder `codex` in PATH verfügbar machen")
         sys.exit(1)
 
-    # Aider prüfen
-    if not check_aider_installed() and not args.dry_run:
+    if args.model != "codex" and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert!")
         print("   → Installieren mit: pip install aider-chat")
         print("   → Mehr Infos: docs/SETUP_AIDER.md")
@@ -397,6 +731,12 @@ def main():
     # Modell-Name
     model_config = MODEL_CONFIGS[args.model]
     model_name = args.model_name or model_config.get("default_model_name", "")
+
+    env_key = model_config.get("env_key")
+    if env_key and args.dry_run and is_placeholder_value(cfg.get(env_key)):
+        print_warn(f"{env_key} fehlt oder ist noch ein Platzhalter")
+    elif env_key:
+        require_config_value(cfg, env_key)
 
     solver_config = {"owner": user, "config": cfg}
     client = GitHubClient(token, user)
@@ -434,6 +774,13 @@ def main():
             continue
 
         print(f"\n   📁 {repo_name}: {len(issues)} offene Issue(s)")
+        base_branch = client.resolve_base_branch(repo_name, args.base_branch)
+        if not base_branch:
+            print_warn(f"Kein gültiger Base-Branch für {repo_name} gefunden")
+            failed += len(issues)
+            continue
+        if not args.base_branch:
+            print(f"      Zielbranch: {base_branch} (GitHub-Default-Branch)")
 
         for issue in issues:
             ok = solve_issue(
@@ -445,6 +792,8 @@ def main():
                 config=solver_config,
                 token=token,
                 dry_run=args.dry_run,
+                base_branch=base_branch,
+                close_issues=args.close_issues,
             )
             if ok:
                 solved += 1
