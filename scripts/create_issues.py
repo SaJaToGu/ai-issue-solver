@@ -49,6 +49,7 @@ LABELS = {
     "legal":           {"color": "b60205", "description": "Lizenz und rechtliche Themen"},
     "maintenance":     {"color": "006b75", "description": "Wartung und Pflege"},
     "discoverability": {"color": "0e8a16", "description": "Auffindbarkeit und Topics"},
+    "testing":         {"color": "1d76db", "description": "Tests und Qualitätssicherung"},
     "ai-generated":    {"color": "5319e7", "description": "Von KI generiertes Issue"},
     "priority-high":   {"color": "ee0701", "description": "Hohe Priorität"},
     "priority-medium": {"color": "ff9900", "description": "Mittlere Priorität"},
@@ -111,6 +112,15 @@ RESOURCES = {
 - Für 3D-Druck: `3d-printing`, `openscad`, `raspberry-pi`""",
 
     "stale_repo": """- [GitHub: Repo archivieren](https://docs.github.com/en/repositories/archiving-a-github-repository/archiving-repositories)""",
+
+    "very_stale_repo": """- [GitHub: Repo archivieren](https://docs.github.com/en/repositories/archiving-a-github-repository/archiving-repositories)
+- [GitHub Repo Einstellungen](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/managing-repository-metadata)""",
+
+    "missing_tests": """- [GitHub Actions: Build and test](https://docs.github.com/en/actions/use-cases-and-examples/building-and-testing)
+- [pytest: Getting started](https://docs.pytest.org/en/stable/getting-started.html)""",
+
+    "risky_generated_files": """- [gitignore.io](https://www.toptal.com/developers/gitignore)
+- [GitHub .gitignore Templates](https://github.com/github/gitignore)""",
 
     "fork_no_customization": """- Füge einen Abschnitt "Meine Änderungen" oder "Why I forked this" in die README ein""",
 }
