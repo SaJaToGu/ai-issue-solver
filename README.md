@@ -28,7 +28,8 @@ Repos analysieren  →  Issues erstellen  →  KI löst Issues  →  PR erstelle
 ```
 
 **Schritt 1 — Analyse:** `analyze_repos.py` scannt alle deine GitHub-Repos per API,  
-analysiert Code-Qualität, fehlende Dokumentation, Sicherheit und Best Practices.
+prüft Repo-Metadaten und Dateistruktur auf fehlende Projekt-Basics,
+Wartungssignale und Best-Practice-Auffälligkeiten.
 
 **Schritt 2 — Issues erstellen:** `create_issues.py` legt für jeden gefundenen  
 Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
@@ -107,8 +108,8 @@ python scripts/solve_issues.py --model ollama    # Lokales Modell
          ▼
 ┌─────────────────┐
 │ 1. analyze_repos │  ← Scannt alle Repos per GitHub API
-│    .py           │    Prüft: README, Lizenz, Code-Qualität
-└────────┬────────┘    Sicherheit, CI/CD, Dokumentation
+│    .py           │    Prüft: README, Lizenz, .gitignore,
+└────────┬────────┘    CI, Tests, Topics, Staleness
          │
          ▼
 ┌─────────────────┐
@@ -150,14 +151,20 @@ python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
 ```
 
 **Prüft auf:**
-- Fehlendes README / schlechte README-Qualität
-- Fehlende LICENSE-Datei
+- Fehlende oder sehr kurze README-Datei (`< 200` Bytes)
+- Fehlende LICENSE-Datei (`LICENSE`, `LICENSE.md` oder `LICENSE.txt`)
 - Fehlende `.gitignore`
-- Keine CI/CD-Pipeline (GitHub Actions)
-- Veraltete Dependencies
-- Sicherheitslücken (hardcoded secrets)
-- Fehlende Code-Kommentare
-- Fehlende Issues-Templates
+- Fehlende GitHub-Actions-Workflows bei erkannten Code-Projekten
+- Leeres GitHub-About-Feld (`description`)
+- Fehlende GitHub Topics/Tags
+- Seit über 2 Jahren oder über 4 Jahren nicht aktualisierte Repos
+- Code-Projekte ohne erkennbare Testdateien oder Testverzeichnisse
+- Riskante generierte Dateien im Repo, z.B. `dist/`, `build/`, `*.pyc`, `*.zip`
+- Forks ohne eigene README-Anpassung oder Beschreibung
+
+Die Analyse ist bewusst heuristisch: Sie wertet GitHub-Metadaten und den
+Repository-Tree aus. Sie führt aktuell keine Dependency-Audits, Secret-Scans,
+statische Codequalitätsanalyse oder Kommentar-Vollständigkeitsprüfung aus.
 
 ---
 
@@ -278,7 +285,7 @@ ai-issue-solver/
 │   ├── solve_issues.py          # Schritt 3: Issues mit KI lösen
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
-│   └── issue_body.md            # Issue-Text-Vorlage
+│   └── issue_body               # Issue-Text-Vorlage
 ├── reports/                     # Generierte Analyse-Reports (gitignored)
 │   └── .gitkeep
 └── docs/
