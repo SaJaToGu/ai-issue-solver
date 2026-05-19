@@ -2,18 +2,20 @@
 
 ## Branch-Modell
 
-Dieses Projekt nutzt ein einfaches `develop`-basiertes Branch-Modell:
+Dieses Projekt kann ein einfaches `develop`-basiertes Branch-Modell nutzen:
 
 - `main` bleibt stabil und enthält nur geprüfte, releasefähige Änderungen.
-- `develop` sammelt die laufende Arbeit und ist der Zielbranch für Pull Requests.
+- `develop` sammelt die laufende Arbeit und kann der Zielbranch für Pull Requests sein.
 - Feature- und Fix-Branches werden pro GitHub Issue erstellt und benannt, sodass
   der Bezug zum Issue sichtbar bleibt, zum Beispiel `ai/fix-issue-10`.
-- Pull Requests werden von Feature-Branches zurück nach `develop` geöffnet.
+- Pull Requests werden von Feature-Branches zurück zum gewählten Zielbranch geöffnet.
 - Nach Review und erfolgreicher Prüfung wird in `develop` gemergt. Änderungen aus
   `develop` gelangen erst nach einer bewussten Stabilisierung oder Release-Vorbereitung
   nach `main`.
 
-Für den AI Issue Solver ist `develop` der Standard-Zielbranch:
+Für den AI Issue Solver ist ohne weitere Angabe der GitHub-Default-Branch des
+Ziel-Repositories der Zielbranch. In vielen Repos ist das `main`; für ein
+`develop`-basiertes Modell wird der Zielbranch explizit gesetzt:
 
 ```bash
 python scripts/solve_issues.py --model codex --base-branch develop
@@ -63,11 +65,11 @@ gesetzt werden.
 │  python scripts/solve_issues.py --model codex                │
 │                                                              │
 │  → Klont jedes Repo in ein Temp-Verzeichnis                  │
-│  → Klont standardmäßig den Zielbranch develop                │
+│  → Klont standardmäßig den GitHub-Default-Branch             │
 │  → Erstellt Issue-Branch: ai/fix-issue-{nummer}              │
 │  → Ruft Codex oder aider mit dem Issue-Text auf              │
 │  → Der KI-Worker ändert Dateien                              │
-│  → Commit + Push + PR zurück nach develop erstellen          │
+│  → Commit + Push + PR zurück zum Zielbranch erstellen        │
 │  → Issue schließen mit Kommentar                             │
 └──────────────────────────────────────────────────────────────┘
                           │
