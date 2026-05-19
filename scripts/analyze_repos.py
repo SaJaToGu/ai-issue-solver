@@ -326,7 +326,7 @@ def main():
         if repo["findings"]:
             print(f"    • {repo['repo']}: {', '.join(repo['findings'][:3])}")
     print("─" * 50)
-    print(f"\n✅ Weiter mit: python scripts/create_issues.py --report {args.output}\n")
+    print(f"\n✅ Weiter mit: python scripts/create_issues.py --report {args.output} --dry-run\n")
 
 
 if __name__ == "__main__":

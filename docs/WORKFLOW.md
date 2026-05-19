@@ -27,10 +27,11 @@
 │  SCHRITT 2: ISSUES ERSTELLEN                                 │
 │                                                              │
 │  python scripts/create_issues.py --report reports/analysis.json --dry-run  │
-│  python scripts/create_issues.py --report reports/analysis.json            │
+│  python scripts/create_issues.py --report reports/analysis.json --apply    │
 │                                                              │
 │  → Erstellt strukturierte GitHub Issues                      │
 │  → Mit Labels, Priorität und Beschreibung                    │
+│  → Echte Issues nur mit explizitem --apply                   │
 │  → Vermeidet doppelte Issues                                 │
 └──────────────────────────────────────────────────────────────┘
                           │
@@ -61,9 +62,12 @@
 ## Vollständiges Beispiel-Kommando
 
 ```bash
-# Alles auf einmal (Morpheus-Methode):
+# Sicherer Ablauf mit Vorschau:
 python scripts/analyze_repos.py --user SaJaToGu && \
-python scripts/create_issues.py --report reports/analysis.json && \
+python scripts/create_issues.py --report reports/analysis.json --dry-run
+
+# Nach Prüfung der Vorschau:
+python scripts/create_issues.py --report reports/analysis.json --apply && \
 python scripts/solve_issues.py --model codex
 ```
 

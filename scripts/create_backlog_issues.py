@@ -125,6 +125,15 @@ def parse_backlog(path: Path) -> list[dict]:
     return issues
 
 
+def print_issue_preview(issue: dict) -> None:
+    """Zeigt im Dry-run Titel, Labels und Body vor dem Erstellen."""
+    print(f"   - {issue['title']}")
+    print(f"     Labels: {', '.join(issue['labels'])}")
+    print("     Body:")
+    for line in issue["body"].splitlines():
+        print(f"       {line}" if line else "")
+
+
 def main() -> int:
     print_banner("BACKLOG-ISSUES ERSTELLEN")
 
@@ -135,7 +144,7 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Echte GitHub-Issues erstellen")
     args = parser.parse_args()
 
-    if requests is None:
+    if args.apply and requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")
         print("   → Installieren mit: pip install -r requirements.txt")
         return 1
@@ -151,14 +160,18 @@ def main() -> int:
         return 0
 
     print_step(1, f"{len(issues)} Backlog-Issue(s) gefunden")
-    for issue in issues:
-        print(f"   - {issue['title']} [{', '.join(issue['labels'])}]")
 
     if not args.apply:
+        for issue in issues:
+            print_issue_preview(issue)
+            print()
         print()
         print_warn("DRY-RUN: Keine echten GitHub-Issues wurden erstellt.")
-        print("   → Für echte Issues: python scripts/create_backlog_issues.py --apply")
+        print("   → Prüfe die Vorschau und starte danach bewusst mit --apply.")
         return 0
+
+    for issue in issues:
+        print(f"   - {issue['title']} [{', '.join(issue['labels'])}]")
 
     config = load_env()
     owner = args.owner or config.get("GITHUB_USER")

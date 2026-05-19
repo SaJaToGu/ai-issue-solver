@@ -8,8 +8,8 @@ GitHub Issues für jedes gefundene Problem.
 
 Verwendung:
     python scripts/create_issues.py --report reports/analysis.json --dry-run
-    python scripts/create_issues.py --report reports/analysis.json
-    python scripts/create_issues.py --report reports/analysis.json --repo BedBoxDrawerRole
+    python scripts/create_issues.py --report reports/analysis.json --apply
+    python scripts/create_issues.py --report reports/analysis.json --repo BedBoxDrawerRole --apply
 """
 
 import argparse
@@ -191,7 +191,16 @@ def build_issue_body(issue: dict, generated_at: str) -> str:
     )
 
 
-def create_issues_for_repo(client: GitHubClient, repo_data: dict,
+def print_issue_preview(title: str, labels: list[str], body: str) -> None:
+    """Gibt im Dry-run alle prüfrelevanten Issue-Daten aus."""
+    print(f"      [DRY-RUN] Würde Issue erstellen: {title}")
+    print(f"         Labels: {', '.join(labels)}")
+    print("         Body:")
+    for line in body.splitlines():
+        print(f"           {line}" if line else "")
+
+
+def create_issues_for_repo(client: GitHubClient | None, repo_data: dict,
                            dry_run: bool, priority_filter: str | None) -> int:
     repo = repo_data["repo"]
     issues = repo_data.get("issues_to_create", [])
@@ -214,17 +223,26 @@ def create_issues_for_repo(client: GitHubClient, repo_data: dict,
         title = f"[AI] {issue['title']}"
 
         # Doppelte vermeiden
-        if not dry_run and client.issue_exists(repo, title):
+        if not dry_run and client and client.issue_exists(repo, title):
             print(f"      ⏭️  Bereits vorhanden: {title}")
             continue
 
         # Labels anlegen
         labels = [issue["label"], "ai-generated", f"priority-{issue['priority']}"]
-        for label in labels:
-            client.ensure_label(repo, label, dry_run=dry_run)
 
         # Issue-Body bauen
         body = build_issue_body(issue, now)
+
+        if dry_run:
+            print_issue_preview(title, labels, body)
+            created += 1
+            continue
+
+        if client is None:
+            raise RuntimeError("GitHubClient fehlt für echte Issue-Erstellung")
+
+        for label in labels:
+            client.ensure_label(repo, label, dry_run=dry_run)
 
         # Issue erstellen
         result = client.create_issue(repo, title, body, labels, dry_run=dry_run)
@@ -250,11 +268,17 @@ def main():
     parser = argparse.ArgumentParser(description="GitHub Issues aus Analysis-Report erstellen")
     parser.add_argument("--report", default="reports/analysis.json", help="Pfad zum JSON-Report")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts erstellen")
+    parser.add_argument("--apply", action="store_true", help="Echte GitHub-Issues erstellen")
     parser.add_argument("--repo", help="Nur für dieses Repo Issues erstellen")
     parser.add_argument("--priority", choices=["high", "medium", "low"], help="Nur diese Priorität")
     args = parser.parse_args()
 
-    if requests is None:
+    dry_run = not args.apply
+    if args.dry_run and args.apply:
+        print_err("--dry-run und --apply können nicht gemeinsam verwendet werden")
+        sys.exit(1)
+
+    if args.apply and requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")
         print("   → Installieren mit: pip install -r requirements.txt")
         sys.exit(1)
@@ -269,15 +293,18 @@ def main():
     with open(report_path, encoding="utf-8") as f:
         report = json.load(f)
 
-    # Config laden
-    config = load_env()
-    token = require_config_value(config, "GITHUB_TOKEN", "GitHub Token")
-
     user = report["user"]
-    client = GitHubClient(token, user)
+    client = None
 
-    if args.dry_run:
-        print_warn("DRY-RUN Modus: Keine echten Issues werden erstellt\n")
+    if args.apply:
+        # GitHub-Zugangsdaten werden nur für echte Schreibzugriffe benötigt.
+        config = load_env()
+        token = require_config_value(config, "GITHUB_TOKEN", "GitHub Token")
+        client = GitHubClient(token, user)
+
+    if dry_run:
+        print_warn("DRY-RUN Modus: Keine echten Issues werden erstellt")
+        print("   → Prüfe die Vorschau und starte danach bewusst mit --apply.\n")
 
     print_step(1, f"Verarbeite Report: {args.report}")
     print(f"   User: @{user} | Repos: {report['total_repos']} | Findings: {report['total_findings']}")
@@ -289,19 +316,21 @@ def main():
         if args.repo and repo_data["repo"] != args.repo:
             continue
         total_created += create_issues_for_repo(
-            client, repo_data, dry_run=args.dry_run, priority_filter=args.priority
+            client, repo_data, dry_run=dry_run, priority_filter=args.priority
         )
 
     # Zusammenfassung
     print("\n" + "─" * 50)
-    mode = "[DRY-RUN] " if args.dry_run else ""
-    print(f"  {mode}✅ Issues erstellt: {total_created}")
+    if dry_run:
+        print(f"  [DRY-RUN] ✅ Issues geplant: {total_created}")
+    else:
+        print(f"  ✅ Issues erstellt: {total_created}")
     print("─" * 50)
 
-    if not args.dry_run:
+    if not dry_run:
         print(f"\n✅ Weiter mit: python scripts/solve_issues.py --model claude\n")
     else:
-        print(f"\n💡 Ohne --dry-run ausführen, um echte Issues zu erstellen.\n")
+        print(f"\n💡 Für echte Issues nach der Prüfung erneut mit --apply ausführen.\n")
 
 
 if __name__ == "__main__":
