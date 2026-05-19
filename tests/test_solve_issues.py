@@ -15,8 +15,10 @@ from solve_issues import (  # noqa: E402
     GitHubClient,
     WorkerRunResult,
     assess_worker_result,
+    build_aider_command,
     format_worker_output_tail,
     git_status_porcelain,
+    infer_aider_targets,
     run_worker_command,
 )
 
@@ -116,6 +118,45 @@ class WorkerAssessmentTests(unittest.TestCase):
         self.assertFalse(assessment.should_continue)
         self.assertFalse(assessment.has_changes)
         self.assertEqual(assessment.reason, "nonzero_without_changes")
+
+
+class AiderCommandTests(unittest.TestCase):
+    def test_aider_command_adds_valid_issue_file_targets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir()
+            (repo / "scripts" / "solve_issues.py").write_text("print('x')\n", encoding="utf-8")
+            prompt = "Bitte `scripts/solve_issues.py` und README.md prüfen."
+
+            cmd = build_aider_command("claude", "", prompt, str(repo))
+
+        self.assertIn("--subtree-only", cmd)
+        self.assertIn("--message", cmd)
+        self.assertIn("scripts/solve_issues.py", cmd)
+        self.assertIn("README.md", cmd)
+
+    def test_aider_target_inference_rejects_paths_outside_repo(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            prompt = "Ändere `README.md`, `../secret.txt` und https://example.test/file.py"
+
+            targets = infer_aider_targets(prompt, str(repo))
+
+        self.assertEqual(targets, ["README.md"])
+
+    def test_aider_command_can_use_explicit_file_targets(self):
+        cmd = build_aider_command(
+            "ollama",
+            "llama3.2:3b",
+            "Fix",
+            "/tmp/repo",
+            file_targets=["src/app.py"],
+        )
+
+        self.assertIn("--model", cmd)
+        self.assertIn("ollama/llama3.2:3b", cmd)
+        self.assertEqual(cmd[-1], "src/app.py")
 
 
 class WorkerOutputTests(unittest.TestCase):

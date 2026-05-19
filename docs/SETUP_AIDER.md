@@ -59,12 +59,16 @@ Das Script `solve_issues.py` ruft aider nicht-interaktiv auf:
 aider --model claude-sonnet-4-20250514 \
       --yes \
       --no-auto-commits \
-      --message "Löse Issue #3: Fehlende README"
+      --subtree-only \
+      --message "Löse Issue #3: Fehlende README" \
+      README.md
 ```
 
 - `--yes` — beantwortet alle Rückfragen automatisch mit Ja
 - `--no-auto-commits` — das Script übernimmt das Committen
+- `--subtree-only` — begrenzt den Repo-Kontext auf den geklonten Arbeitsbaum
 - `--message` — direkter Prompt ohne interaktive Eingabe
+- Dateiargumente wie `README.md` — werden automatisch aus dem Issue-Text erkannt, gegen das Repo validiert und nur bei plausiblen Treffern übergeben
 
 ---
 
