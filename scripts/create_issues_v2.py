@@ -12,7 +12,8 @@ import sys
 
 def main() -> int:
     print("create_issues_v2.py is deprecated.")
-    print("Use: python scripts/create_issues.py --report reports/analysis.json --dry-run")
+    print("Use first: python scripts/create_issues.py --report reports/analysis.json --dry-run")
+    print("Create real issues only with: python scripts/create_issues.py --report reports/analysis.json --confirm-create")
     return 1
 
 
