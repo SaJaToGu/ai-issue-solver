@@ -230,6 +230,18 @@ Wenn Codex das Nachrichtenlimit meldet und eine Reset-Zeit ausgibt, pausiert
 `solve_issues.py` bis zu diesem Zeitpunkt und versucht dasselbe Issue danach
 erneut, statt die restlichen Issues sofort als Fehler zu zählen.
 
+Vor jedem Worker-Lauf und auch im Dry-Run prüft das Script vorhandene
+Issue-Branches mit dem Präfix `ai/fix-issue-{nummer}` und zugehörige Pull
+Requests. Einen vorhandenen
+Branch ohne PR nutzt es weiter; enthält er bereits Änderungen gegen den
+Zielbranch, erstellt das Script direkt den fehlenden PR. So kann ein
+abgebrochener Lauf nach Push oder vor der PR-Erstellung fortgesetzt werden.
+Gibt es bereits einen offenen oder
+gemergten PR, wird das Issue nicht erneut bearbeitet und der gefundene PR
+ausgegeben. Bei einem geschlossenen, nicht gemergten PR startet das Script in
+nicht-interaktiven Läufen automatisch mit einem neuen Branch; im Terminal kann
+man stattdessen bewusst überspringen.
+
 Im Aider-Modus begrenzt das Script den Kontext auf den geklonten Arbeitsbaum und
 übergibt plausible Datei-Ziele aus Issue-Titel und Beschreibung als
 Dateiargumente. Pfade werden vorab gegen das Repo validiert, damit keine

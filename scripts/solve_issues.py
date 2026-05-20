@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 try:
     import requests
@@ -163,6 +164,24 @@ class CodexRateLimit:
     reset_text: str | None
 
 
+@dataclass(frozen=True)
+class PullRequestState:
+    number: int | None
+    html_url: str
+    state: str
+    merged: bool
+
+
+@dataclass(frozen=True)
+class BranchRecoveryPlan:
+    action: str
+    branch: str
+    message: str
+    pull_request: PullRequestState | None = None
+    found_branches: tuple[str, ...] = ()
+    found_pull_requests: tuple[tuple[str, PullRequestState], ...] = ()
+
+
 # Prompt-Vorlage für Codex/aider
 AIDER_PROMPT_TEMPLATE = """Löse das folgende GitHub Issue in diesem Repository.
 
@@ -228,14 +247,70 @@ class GitHubClient:
         return repo_info.get("default_branch")
 
     def branch_exists(self, repo: str, branch: str) -> bool:
+        encoded_branch = quote(branch, safe="")
         try:
-            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/branches/{branch}")
+            resp = self.session.get(
+                f"{self.BASE}/repos/{self.owner}/{repo}/branches/{encoded_branch}"
+            )
         except requests.RequestException as exc:
             handle_github_request_error(exc, f"Branch prüfen: {repo}/{branch}")
         if resp.status_code == 404:
             return False
         raise_for_github_response(resp, f"Branch prüfen: {repo}/{branch}")
         return True
+
+    def get_issue_branches(self, repo: str, issue_number: int) -> list[str]:
+        branch_prefix = f"ai/fix-issue-{issue_number}"
+        branches = []
+        page = 1
+        while True:
+            try:
+                resp = self.session.get(
+                    f"{self.BASE}/repos/{self.owner}/{repo}/branches",
+                    params={"per_page": 100, "page": page},
+                )
+            except requests.RequestException as exc:
+                handle_github_request_error(exc, f"Issue-Branches prüfen: {repo}#{issue_number}")
+            if resp.status_code == 404:
+                return []
+            raise_for_github_response(resp, f"Issue-Branches prüfen: {repo}#{issue_number}")
+            page_branches = resp.json()
+            for branch in page_branches:
+                name = branch.get("name", "")
+                if name == branch_prefix or name.startswith(f"{branch_prefix}-"):
+                    branches.append(name)
+            if len(page_branches) < 100:
+                break
+            page += 1
+        return sorted(set(branches))
+
+    def get_pull_requests_for_branch(self, repo: str, branch: str,
+                                     state: str = "all") -> list[PullRequestState]:
+        try:
+            resp = self.session.get(
+                f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
+                params={
+                    "state": state,
+                    "head": f"{self.owner}:{branch}",
+                    "per_page": 100,
+                },
+            )
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"PRs prüfen: {repo}/{branch}")
+        if resp.status_code == 404:
+            return []
+        raise_for_github_response(resp, f"PRs prüfen: {repo}/{branch}")
+        pull_requests = []
+        for pr in resp.json():
+            pull_requests.append(
+                PullRequestState(
+                    number=pr.get("number"),
+                    html_url=pr.get("html_url", ""),
+                    state=pr.get("state", ""),
+                    merged=bool(pr.get("merged_at")),
+                )
+            )
+        return pull_requests
 
     def resolve_base_branch(self, repo: str, requested_base: str | None = None) -> str | None:
         """Ermittelt den Zielbranch und nutzt ohne Vorgabe den GitHub-Default-Branch."""
@@ -813,6 +888,42 @@ def create_branch(repo_dir: str, branch_name: str) -> bool:
     return result.returncode == 0
 
 
+def checkout_existing_remote_branch(repo_dir: str, branch_name: str) -> bool:
+    fetch = subprocess.run(
+        ["git", "fetch", "origin", f"{branch_name}:refs/remotes/origin/{branch_name}"],
+        cwd=repo_dir, capture_output=True, text=True
+    )
+    if fetch.returncode != 0:
+        return False
+
+    result = subprocess.run(
+        ["git", "checkout", "-B", branch_name, f"origin/{branch_name}"],
+        cwd=repo_dir, capture_output=True, text=True
+    )
+    return result.returncode == 0
+
+
+def branch_has_changes_against_base(repo_dir: str, base_branch: str) -> bool:
+    base_ref = f"origin/{base_branch}"
+    verify = subprocess.run(
+        ["git", "rev-parse", "--verify", base_ref],
+        cwd=repo_dir, capture_output=True, text=True
+    )
+    if verify.returncode != 0:
+        base_ref = base_branch
+
+    result = subprocess.run(
+        ["git", "diff", "--quiet", f"{base_ref}...HEAD", "--"],
+        cwd=repo_dir, capture_output=True, text=True
+    )
+    if result.returncode not in (0, 1):
+        result = subprocess.run(
+            ["git", "diff", "--quiet", base_ref, "HEAD", "--"],
+            cwd=repo_dir, capture_output=True, text=True
+        )
+    return result.returncode == 1
+
+
 def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
                     owner: str, repo: str) -> bool:
     # Alle Änderungen stagen
@@ -852,6 +963,223 @@ def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
     return result.returncode == 0
 
 
+def retry_branch_name(issue_number: int, now_fn=datetime.now,
+                      existing_branches: set[str] | None = None) -> str:
+    base_name = f"ai/fix-issue-{issue_number}-{now_fn().strftime('%Y%m%d-%H%M%S')}"
+    if not existing_branches or base_name not in existing_branches:
+        return base_name
+
+    suffix = 2
+    while f"{base_name}-{suffix}" in existing_branches:
+        suffix += 1
+    return f"{base_name}-{suffix}"
+
+
+def newest_pull_request(pull_requests: list[PullRequestState]) -> PullRequestState | None:
+    return pull_requests[0] if pull_requests else None
+
+
+def newest_branch(branches: list[str]) -> str:
+    return sorted(branches)[-1]
+
+
+def describe_pull_request(pr: PullRequestState) -> str:
+    number = f"#{pr.number}" if pr.number else "(ohne Nummer)"
+    url = f" {pr.html_url}" if pr.html_url else ""
+    if pr.state == "open":
+        state = "offen"
+    elif pr.merged:
+        state = "gemergt"
+    else:
+        state = "geschlossen, nicht gemergt"
+    return f"PR {number} ({state}){url}"
+
+
+def choose_recovery_action(prompt_fn=input) -> str:
+    print("      Wiederherstellung: bestehenden Branch nicht automatisch weiterverwenden.")
+    print("      [n] Neuer Run mit neuem Branch  [s] Issue überspringen")
+    while True:
+        choice = prompt_fn("      Auswahl [n/s]: ").strip().lower()
+        if choice in ("", "n", "new", "neu"):
+            return "new"
+        if choice in ("s", "skip", "überspringen", "ueberspringen"):
+            return "skip"
+        print("      Bitte 'n' für neuen Run oder 's' zum Überspringen eingeben.")
+
+
+def plan_branch_recovery(client: GitHubClient, repo: str, issue_number: int,
+                         issue_branch: str,
+                         prompt_fn=input,
+                         stdin_isatty_fn=sys.stdin.isatty,
+                         now_fn=datetime.now) -> BranchRecoveryPlan:
+    """Prueft vorhandene Remote-Artefakte und waehlt einen sicheren Branch."""
+    discovered_branches = client.get_issue_branches(repo, issue_number)
+    default_exists = client.branch_exists(repo, issue_branch)
+    existing_branches = set(discovered_branches)
+    if default_exists:
+        existing_branches.add(issue_branch)
+
+    branches_to_check = sorted(existing_branches | {issue_branch}, reverse=True)
+    pull_requests_by_branch = {
+        branch: client.get_pull_requests_for_branch(repo, branch, state="all")
+        for branch in branches_to_check
+    }
+    found_pull_requests = tuple(
+        (branch, pr)
+        for branch in branches_to_check
+        for pr in pull_requests_by_branch[branch]
+    )
+
+    def recovery_plan(action: str, branch: str, message: str,
+                      pull_request: PullRequestState | None = None) -> BranchRecoveryPlan:
+        return BranchRecoveryPlan(
+            action=action,
+            branch=branch,
+            message=message,
+            pull_request=pull_request,
+            found_branches=tuple(sorted(existing_branches)),
+            found_pull_requests=found_pull_requests,
+        )
+
+    for branch in branches_to_check:
+        pr = next((candidate for candidate in pull_requests_by_branch[branch]
+                   if candidate.state == "open"), None)
+        if pr:
+            return recovery_plan(
+                "skip_existing_pr",
+                branch,
+                f"Vorhandener Branch '{branch}' hat bereits einen offenen {describe_pull_request(pr)}.",
+                pr,
+            )
+
+    for branch in branches_to_check:
+        pr = next((candidate for candidate in pull_requests_by_branch[branch]
+                   if candidate.merged), None)
+        if pr:
+            return recovery_plan(
+                "skip_merged_pr",
+                branch,
+                f"Vorhandener Branch '{branch}' wurde bereits über {describe_pull_request(pr)} gemergt.",
+                pr,
+            )
+
+    reusable_branches = [
+        branch for branch in existing_branches
+        if not pull_requests_by_branch.get(branch)
+    ]
+    if reusable_branches:
+        branch = newest_branch(reusable_branches)
+        return recovery_plan(
+            "reuse_branch",
+            branch,
+            f"Vorhandener Branch '{branch}' ohne PR gefunden; verwende ihn weiter.",
+        )
+
+    closed_pr = None
+    closed_pr_branch = issue_branch
+    for branch in branches_to_check:
+        pr = newest_pull_request(pull_requests_by_branch[branch])
+        if pr:
+            closed_pr = pr
+            closed_pr_branch = branch
+            break
+
+    if closed_pr:
+        if stdin_isatty_fn():
+            action = choose_recovery_action(prompt_fn)
+            if action == "skip":
+                return recovery_plan(
+                    "skip_closed_pr",
+                    closed_pr_branch,
+                    f"Vorhandener Branch '{closed_pr_branch}' gehört zu einem geschlossenen, ungemergten {describe_pull_request(closed_pr)}.",
+                    closed_pr,
+                )
+        new_branch = retry_branch_name(
+            issue_number,
+            now_fn=now_fn,
+            existing_branches=existing_branches,
+        )
+        return recovery_plan(
+            "new",
+            new_branch,
+            (
+                f"Vorhandener Branch '{closed_pr_branch}' gehört zu einem geschlossenen, ungemergten "
+                f"{describe_pull_request(closed_pr)}; starte neuen Run auf '{new_branch}'."
+            ),
+            closed_pr,
+        )
+
+    if not existing_branches:
+        return recovery_plan(
+            "new",
+            issue_branch,
+            f"Kein vorhandener Branch '{issue_branch}' gefunden; starte neuen Run.",
+        )
+
+    branch = newest_branch(list(existing_branches))
+    return recovery_plan(
+        "reuse_branch",
+        branch,
+        f"Vorhandener Branch '{branch}' ohne PR gefunden; verwende ihn weiter.",
+    )
+
+
+def print_branch_recovery_plan(plan: BranchRecoveryPlan) -> None:
+    print(f"      🔎 Recovery: {plan.message}")
+    if plan.found_branches:
+        print(f"      Gefundene Branches: {', '.join(plan.found_branches)}")
+    if plan.found_pull_requests:
+        print("      Gefundene PRs:")
+        for branch, pr in plan.found_pull_requests:
+            print(f"        - {branch}: {describe_pull_request(pr)}")
+
+
+def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
+                        model: str, close_issues: bool) -> str:
+    return f"""## 🤖 AI-generierter Fix für Issue #{number}
+
+Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_owner}/ai-issue-solver) erstellt.
+
+### Gelöstes Issue
+{"Closes" if close_issues else "Refs"} #{number}: {title}
+
+### Verwendetes Modell
+`{MODEL_CONFIGS[model]['display_name']}`
+
+### Änderungen
+*(bitte vor dem Merge reviewen)*
+
+---
+*Erstellt mit dem AI Issue Solver (Morpheus-Methode)*
+"""
+
+
+def create_issue_pull_request(client: GitHubClient, repo: str, number: int, title: str,
+                              model: str, config: dict, branch_name: str,
+                              base_branch: str, close_issues: bool,
+                              dry_run: bool = False) -> dict | None:
+    pr = client.create_pull_request(
+        repo=repo,
+        title=f"[AI] Fix: {title}",
+        body=build_issue_pr_body(config["owner"], repo, number, title, model, close_issues),
+        head=branch_name,
+        base=base_branch,
+        dry_run=dry_run,
+    )
+    if pr:
+        print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
+
+    if close_issues and pr:
+        close_comment = (
+            "✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\n"
+            f"PR: {pr.get('html_url', '?') if pr else '(kein PR)'}\n"
+            f"Modell: {MODEL_CONFIGS[model]['display_name']}"
+        )
+        client.close_issue_with_comment(repo, number, close_comment)
+
+    return pr
+
+
 # ─────────────────────────────────────────────────────────────
 # Issue lösen
 # ─────────────────────────────────────────────────────────────
@@ -863,6 +1191,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
+    default_branch_name = f"ai/fix-issue-{number}"
 
     print(f"\n   🔧 Issue #{number}: {title}")
     print(f"      Modell: {MODEL_CONFIGS[model]['display_name']}")
@@ -870,6 +1199,22 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     if dry_run:
         print(f"      [DRY-RUN] Würde bearbeiten mit {model}")
         print(f"      [DRY-RUN] Zielbranch: {base_branch}")
+        recovery_plan = plan_branch_recovery(
+            client,
+            repo,
+            number,
+            default_branch_name,
+            stdin_isatty_fn=lambda: False,
+        )
+        print_branch_recovery_plan(recovery_plan)
+        print(f"      [DRY-RUN] Geplanter Issue-Branch: {recovery_plan.branch}")
+        return True
+
+    recovery_plan = plan_branch_recovery(client, repo, number, default_branch_name)
+    print_branch_recovery_plan(recovery_plan)
+    if recovery_plan.action.startswith("skip"):
+        if recovery_plan.pull_request and recovery_plan.pull_request.html_url:
+            print(f"      🔀 Vorhandener PR: {recovery_plan.pull_request.html_url}")
         return True
 
     # Repo klonen
@@ -884,8 +1229,30 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         print("✅")
 
         # Branch anlegen
-        branch_name = f"ai/fix-issue-{number}"
-        if not create_branch(repo_dir, branch_name):
+        branch_name = recovery_plan.branch
+        if recovery_plan.action == "reuse_branch":
+            if not checkout_existing_remote_branch(repo_dir, branch_name):
+                print_err(f"Vorhandener Branch konnte nicht ausgecheckt werden: {branch_name}")
+                return False
+            if branch_has_changes_against_base(repo_dir, base_branch):
+                print(
+                    "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
+                    "erstelle fehlenden PR."
+                )
+                pr = create_issue_pull_request(
+                    client=client,
+                    repo=repo,
+                    number=number,
+                    title=title,
+                    model=model,
+                    config=config,
+                    branch_name=branch_name,
+                    base_branch=base_branch,
+                    close_issues=close_issues,
+                    dry_run=dry_run,
+                )
+                return bool(pr)
+        elif not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
             return False
 
@@ -962,37 +1329,19 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             return False
         print("✅")
 
-        # PR erstellen
-        pr_body = f"""## 🤖 AI-generierter Fix für Issue #{number}
-
-Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config['owner']}/ai-issue-solver) erstellt.
-
-### Gelöstes Issue
-{"Closes" if close_issues else "Refs"} #{number}: {title}
-
-### Verwendetes Modell
-`{MODEL_CONFIGS[model]['display_name']}`
-
-### Änderungen
-*(bitte vor dem Merge reviewen)*
-
----
-*Erstellt mit dem AI Issue Solver (Morpheus-Methode)*
-"""
-        pr = client.create_pull_request(
+        pr = create_issue_pull_request(
+            client=client,
             repo=repo,
-            title=f"[AI] Fix: {title}",
-            body=pr_body,
-            head=branch_name,
-            base=base_branch,
+            number=number,
+            title=title,
+            model=model,
+            config=config,
+            branch_name=branch_name,
+            base_branch=base_branch,
+            close_issues=close_issues,
             dry_run=dry_run,
         )
-        if pr:
-            print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
-
-        if close_issues:
-            close_comment = f"✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\nPR: {pr.get('html_url', '?') if pr else '(kein PR)'}\nModell: {MODEL_CONFIGS[model]['display_name']}"
-            client.close_issue_with_comment(repo, number, close_comment)
+        return bool(pr)
 
     return True
 
