@@ -18,12 +18,15 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     build_aider_command,
     detect_codex_rate_limit,
+    format_git_change_summary,
     format_worker_output_tail,
     git_status_porcelain,
     infer_aider_targets,
     parse_codex_reset_datetime,
     run_worker_command,
+    should_surface_worker_line,
     sleep_until_codex_reset,
+    write_worker_diagnostics,
 )
 
 
@@ -229,6 +232,56 @@ class WorkerOutputTests(unittest.TestCase):
         self.assertIn("stdout line", result.output)
         self.assertIn("stderr line", result.output)
 
+    def test_worker_live_filter_keeps_status_and_hides_diff_noise(self):
+        self.assertTrue(should_surface_worker_line("Plan: update solver output\n"))
+        self.assertTrue(should_surface_worker_line("Ergebnis: Tests erfolgreich\n"))
+        self.assertTrue(should_surface_worker_line("WARNING: test command failed\n"))
+        self.assertFalse(should_surface_worker_line("+print('implementation detail')\n"))
+        self.assertFalse(should_surface_worker_line("@@ -1,2 +1,3 @@\n"))
+
+    def test_run_worker_preserves_full_output_while_printing_summary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "worker.py"
+            script.write_text(
+                "print('Plan: change README')\n"
+                "print('+ noisy diff line')\n"
+                "print('Final result: done')\n",
+                encoding="utf-8",
+            )
+
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                result = run_worker_command(
+                    [sys.executable, str(script)],
+                    tmpdir,
+                    os.environ.copy(),
+                )
+
+        self.assertIn("+ noisy diff line", result.output)
+        self.assertIn("Plan: change README", printed.getvalue())
+        self.assertIn("Detailzeilen komprimiert", printed.getvalue())
+        self.assertNotIn("+ noisy diff line", printed.getvalue())
+
+    def test_run_worker_does_not_duplicate_ongoing_suppression_notice(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "worker.py"
+            script.write_text(
+                "for index in range(25):\n"
+                "    print(f'+ noisy diff line {index}')\n"
+                "print('Final result: done')\n",
+                encoding="utf-8",
+            )
+
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                run_worker_command(
+                    [sys.executable, str(script)],
+                    tmpdir,
+                    os.environ.copy(),
+                )
+
+        self.assertEqual(printed.getvalue().count("25 Detailzeilen komprimiert"), 1)
+
 
 class GitStatusTests(unittest.TestCase):
     def test_git_status_porcelain_detects_untracked_files(self):
@@ -285,6 +338,63 @@ class GitStatusTests(unittest.TestCase):
         self.assertEqual(result.returncode, 12)
         self.assertTrue(assessment.should_continue)
         self.assertEqual(assessment.reason, "nonzero_with_changes")
+
+    def test_git_change_summary_contains_status_and_diff_stat(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(["git", "init"], cwd=tmpdir, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.invalid"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test User"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+            )
+            readme = Path(tmpdir) / "README.md"
+            readme.write_text("before\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=tmpdir, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "init"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+            )
+            readme.write_text("before\nafter\n", encoding="utf-8")
+            Path(tmpdir, "notes.txt").write_text("new\n", encoding="utf-8")
+
+            summary = "\n".join(format_git_change_summary(tmpdir))
+
+        self.assertIn("Git-Änderungsübersicht", summary)
+        self.assertIn("README.md", summary)
+        self.assertIn("notes.txt", summary)
+        self.assertIn("Statistik:", summary)
+        self.assertIn("Neue Dateien: 1 Datei, 1 eingefuegte Zeile", summary)
+        self.assertIn("Diff-Vorschau:", summary)
+        self.assertIn("new file, 1 eingefuegte Zeile", summary)
+
+    def test_worker_diagnostics_write_full_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                run_dir = write_worker_diagnostics(
+                    WorkerRunResult(3, "full\nworker\noutput\n"),
+                    repo="demo",
+                    issue_number=28,
+                    model="codex",
+                )
+                run_dir = Path(run_dir).resolve()
+                log = Path(run_dir) / "worker-output.log"
+                summary = Path(run_dir) / "summary.txt"
+            finally:
+                os.chdir(old_cwd)
+
+            self.assertEqual(log.read_text(encoding="utf-8"), "full\nworker\noutput\n")
+            self.assertIn("worker_exit_code: 3", summary.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
