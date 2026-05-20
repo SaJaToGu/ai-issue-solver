@@ -214,6 +214,7 @@ Löst offene Issues automatisch mit KI + Codex oder aider.
 python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model ollama --model-name llama3
+python scripts/solve_issues_batch.py --model codex --repo BedBoxDrawerRole --workers 2
 ```
 
 Das Script verdichtet die Worker-Ausgabe live auf Status-, Planungs-, Warn- und
@@ -241,6 +242,25 @@ externen oder ungültigen Pfade an aider durchgereicht werden.
 - `--dry-run` — zeigt Plan ohne Änderungen
 - `--issue` — nur ein bestimmtes Issue lösen
 
+### `solve_issues_batch.py`
+Löst mehrere Issues parallel, begrenzt durch `--workers`. Das Batch-Skript
+plant die Jobs vorab, überspringt Issue-Branches, die bereits remote existieren,
+und startet pro Issue einen eigenen `solve_issues.py`-Prozess. Die Ausgaben der
+einzelnen Worker werden gesammelt und erst nach Job-Ende blockweise gedruckt,
+damit parallele Läufe im Terminal lesbar bleiben. Scheitert ein Job, laufen die
+anderen Jobs weiter; am Ende zeigt die Zusammenfassung gelöste, fehlgeschlagene
+und übersprungene Jobs.
+
+```bash
+python scripts/solve_issues_batch.py --model codex --repo BedBoxDrawerRole --workers 2
+python scripts/solve_issues_batch.py --model claude --workers 3 --dry-run
+python scripts/solve_issues_batch.py --model ollama --model-name llama3 --repo demo --repo tools --workers 2
+```
+
+**Zusätzliche Flags:**
+- `--workers` — maximale Anzahl paralleler Solver-Prozesse, mindestens `1`
+- `--repo` — mehrfach nutzbar, um mehrere konkrete Repos zu bearbeiten
+
 ---
 
 ## Nächste Ausbaustufe
@@ -249,7 +269,6 @@ Die erste Workflow-Runde ist abgeschlossen: Analyse, Backlog-Issues,
 KI-Bearbeitung, PR-Erstellung, CI und Tests laufen. Als nächstes soll der
 Morpheus-Style Workflow komfortabler werden:
 
-- mehrere Issues parallel mit begrenzter Worker-Zahl lösen
 - laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen
 - Worker-Logs und Ergebnisse unter `reports/runs/` nachvollziehbar speichern
 - offene PRs und Issues nach einem Lauf automatisch zusammenfassen
@@ -333,6 +352,7 @@ ai-issue-solver/
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
 │   ├── solve_issues.py          # Schritt 3: Issues mit KI lösen
+│   ├── solve_issues_batch.py    # Mehrere Solver-Jobs parallel begrenzt ausführen
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
 │   └── issue_body               # Issue-Text-Vorlage

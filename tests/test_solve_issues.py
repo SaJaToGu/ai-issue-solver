@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 from datetime import datetime
 import io
@@ -12,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import solve_issues_batch  # noqa: E402
 from solve_issues import (  # noqa: E402
     GitHubClient,
     WorkerRunResult,
@@ -28,6 +30,14 @@ from solve_issues import (  # noqa: E402
     sleep_until_codex_reset,
     write_worker_diagnostics,
 )
+from solve_issues_batch import (  # noqa: E402
+    BatchJob,
+    build_solver_command,
+    collect_jobs,
+    issue_branch_name,
+    parse_args,
+    positive_worker_count,
+)
 
 
 class FakeResponse:
@@ -43,13 +53,17 @@ class FakeResponse:
 class FakeGitHubSession:
     def __init__(self):
         self.headers = {}
+        self.gets = []
         self.posts = []
 
     def get(self, url, params=None):
+        self.gets.append((url, params))
         if url.endswith("/repos/test-owner/demo"):
             return FakeResponse(200, {"default_branch": "main"})
         if url.endswith("/repos/test-owner/demo/branches/main"):
             return FakeResponse(200, {"name": "main"})
+        if url.endswith("/repos/test-owner/demo/branches/ai%2Ffix-issue-1"):
+            return FakeResponse(200, {"name": "ai/fix-issue-1"})
         if url.endswith("/repos/test-owner/demo/branches/develop"):
             return FakeResponse(404, {"message": "Branch not found"})
         return FakeResponse(404, {"message": "Not found"})
@@ -57,6 +71,32 @@ class FakeGitHubSession:
     def post(self, url, json=None):
         self.posts.append((url, json))
         return FakeResponse(201, {"html_url": "https://github.com/test-owner/demo/pull/1"})
+
+
+class FakeBatchClient:
+    def __init__(self):
+        self.existing_branches = set()
+        self.open_issues = {
+            "demo": [
+                {"number": 1, "title": "Fix README"},
+                {"number": 2, "title": "Add CI"},
+            ],
+            "other": [
+                {"number": 1, "title": "Other fix"},
+            ],
+        }
+        self.single_issues = {
+            ("demo", 3): {"number": 3, "title": "Single issue"},
+        }
+
+    def get_open_issues(self, repo, label="ai-generated"):
+        return self.open_issues.get(repo, [])
+
+    def get_single_issue(self, repo, number):
+        return self.single_issues.get((repo, number))
+
+    def branch_exists(self, repo, branch):
+        return (repo, branch) in self.existing_branches
 
 
 class GitHubClientBranchTests(unittest.TestCase):
@@ -72,6 +112,14 @@ class GitHubClientBranchTests(unittest.TestCase):
         base_branch = client.resolve_base_branch("demo")
 
         self.assertEqual(base_branch, "main")
+
+    def test_branch_exists_encodes_slashes_in_branch_name(self):
+        client = self.make_client()
+
+        exists = client.branch_exists("demo", "ai/fix-issue-1")
+
+        self.assertTrue(exists)
+        self.assertTrue(client.session.gets[-1][0].endswith("/branches/ai%2Ffix-issue-1"))
 
     def test_resolve_base_branch_falls_back_to_default_when_requested_branch_is_missing(self):
         client = self.make_client()
@@ -95,6 +143,100 @@ class GitHubClientBranchTests(unittest.TestCase):
 
         self.assertEqual(pr["html_url"], "https://github.com/test-owner/demo/pull/1")
         self.assertEqual(client.session.posts[0][1]["base"], "main")
+
+
+class BatchRunnerTests(unittest.TestCase):
+    def test_issue_branch_name_matches_solver_branch_convention(self):
+        self.assertEqual(issue_branch_name(23), "ai/fix-issue-23")
+
+    def test_worker_count_must_be_positive(self):
+        self.assertEqual(positive_worker_count("3"), 3)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            positive_worker_count("0")
+
+    def test_collect_jobs_skips_existing_issue_branches(self):
+        client = FakeBatchClient()
+        client.existing_branches.add(("demo", "ai/fix-issue-1"))
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            jobs, skipped = collect_jobs(client, ["demo"], "ai-generated")
+
+        self.assertEqual(skipped, 1)
+        self.assertEqual([(job.repo, job.issue_number) for job in jobs], [("demo", 2)])
+
+    def test_collect_jobs_deduplicates_same_repo_issue(self):
+        client = FakeBatchClient()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            jobs, skipped = collect_jobs(client, ["demo", "demo"], "ai-generated")
+
+        self.assertEqual(skipped, 2)
+        self.assertEqual([(job.repo, job.issue_number) for job in jobs], [("demo", 1), ("demo", 2)])
+
+    def test_build_solver_command_passes_single_issue_to_sequential_solver(self):
+        args = parse_args([
+            "--model", "ollama",
+            "--model-name", "llama3",
+            "--repo", "demo",
+            "--workers", "2",
+            "--base-branch", "develop",
+            "--dry-run",
+        ])
+        job = BatchJob(repo="demo", issue_number=7, title="Fix", branch="ai/fix-issue-7")
+
+        cmd = build_solver_command(Path("/tmp/solve_issues.py"), args, job)
+
+        self.assertIn("--issue", cmd)
+        self.assertIn("7", cmd)
+        self.assertIn("--repo", cmd)
+        self.assertIn("demo", cmd)
+        self.assertIn("--base-branch", cmd)
+        self.assertIn("develop", cmd)
+        self.assertIn("--dry-run", cmd)
+
+    def test_run_jobs_converts_internal_worker_exception_to_failed_result(self):
+        args = parse_args(["--model", "codex", "--workers", "1"])
+        job = BatchJob(repo="demo", issue_number=7, title="Fix", branch="ai/fix-issue-7")
+        original_run_job = solve_issues_batch.run_job
+
+        def broken_run_job(script_path, args, job):
+            raise RuntimeError("kaputt")
+
+        solve_issues_batch.run_job = broken_run_job
+        try:
+            results = solve_issues_batch.run_jobs(Path("/tmp/solve_issues.py"), args, [job])
+        finally:
+            solve_issues_batch.run_job = original_run_job
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].ok)
+        self.assertIn("Batch-Worker intern fehlgeschlagen", results[0].output)
+
+    def test_run_jobs_continues_after_failed_worker(self):
+        args = parse_args(["--model", "codex", "--workers", "2"])
+        jobs = [
+            BatchJob(repo="demo", issue_number=7, title="Broken", branch="ai/fix-issue-7"),
+            BatchJob(repo="demo", issue_number=8, title="Fixed", branch="ai/fix-issue-8"),
+        ]
+        original_run_job = solve_issues_batch.run_job
+
+        def fake_run_job(script_path, args, job):
+            return solve_issues_batch.BatchResult(
+                job=job,
+                returncode=1 if job.issue_number == 7 else 0,
+                output=f"issue {job.issue_number}",
+            )
+
+        solve_issues_batch.run_job = fake_run_job
+        try:
+            results = solve_issues_batch.run_jobs(Path("/tmp/solve_issues.py"), args, jobs)
+        finally:
+            solve_issues_batch.run_job = original_run_job
+
+        by_issue = {result.job.issue_number: result for result in results}
+        self.assertEqual(set(by_issue), {7, 8})
+        self.assertFalse(by_issue[7].ok)
+        self.assertTrue(by_issue[8].ok)
 
 
 class WorkerAssessmentTests(unittest.TestCase):

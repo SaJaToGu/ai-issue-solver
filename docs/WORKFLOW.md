@@ -63,6 +63,7 @@ gesetzt werden.
 │  SCHRITT 3: ISSUES LÖSEN                                     │
 │                                                              │
 │  python scripts/solve_issues.py --model codex                │
+│  python scripts/solve_issues_batch.py --model codex --workers 2 │
 │                                                              │
 │  → Klont jedes Repo in ein Temp-Verzeichnis                  │
 │  → Klont standardmäßig den GitHub-Default-Branch             │
@@ -119,20 +120,35 @@ python scripts/solve_issues.py --model claude --repo dustycase --issue 1 --base-
 python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
 python scripts/create_issues.py --report reports/analysis.json --dry-run
 python scripts/solve_issues.py --model codex --base-branch develop --dry-run
+
+# Mehrere Issues parallel mit maximal zwei Workern lösen
+python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --workers 2 --base-branch develop
 ```
 
 ## Parallelbetrieb und Status
 
-Der aktuelle Stand löst Issues nacheinander. Das ist bewusst einfach und gut
-prüfbar. Für den nächsten Ausbauschritt soll der Workflow mehrere Issues
-parallel bearbeiten können, ohne den Überblick zu verlieren:
+`solve_issues.py` löst Issues weiterhin nacheinander und bleibt damit der
+einfachste Einstieg für einzelne Läufe. Für Batch-Läufe gibt es
+`solve_issues_batch.py`:
 
-- Ein Batch-Runner startet mehrere Worker mit einem konfigurierbaren Limit.
-- Jeder Worker schreibt Status, Log-Auszug, Branch, PR-Link und Ergebnis in ein
-  Run-Verzeichnis unter `reports/runs/`.
-- Eine lokale HTML-Übersicht zeigt laufende, erfolgreiche und fehlgeschlagene
-  Jobs.
-- Fehlgeschlagene Worker behalten genug Diagnoseinformationen, damit man den
-  Lauf wiederholen oder manuell übernehmen kann.
+- `--workers` begrenzt die Anzahl paralleler `solve_issues.py`-Prozesse.
+- Jobs werden vor dem Start geplant; bereits vorhandene Branches wie
+  `ai/fix-issue-10` werden übersprungen, damit keine doppelten PR-Branches
+  entstehen.
+- Worker-Ausgaben werden pro Job gesammelt und blockweise ausgegeben. Das hält
+  parallele Läufe lesbar und bewahrt trotzdem die normale Solver-Diagnose unter
+  `reports/runs/`.
+- Ein fehlschlagender Job stoppt den Batch nicht. Die Zusammenfassung zählt
+  erfolgreiche, fehlgeschlagene und übersprungene Jobs getrennt.
+
+Beispiel:
+
+```bash
+python scripts/solve_issues_batch.py --model codex --workers 2
+python scripts/solve_issues_batch.py --model claude --repo demo --repo tools --workers 3 --dry-run
+```
+
+Für die nächsten Ausbauschritte bleiben noch Status-Persistenz, Dashboard und
+Resume-Logik offen:
 
 Die konkreten Aufgaben dazu stehen in [NEXT_BACKLOG.md](NEXT_BACKLOG.md).

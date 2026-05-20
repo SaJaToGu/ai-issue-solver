@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 try:
     import requests
@@ -228,8 +229,9 @@ class GitHubClient:
         return repo_info.get("default_branch")
 
     def branch_exists(self, repo: str, branch: str) -> bool:
+        encoded_branch = quote(branch, safe="")
         try:
-            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/branches/{branch}")
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/branches/{encoded_branch}")
         except requests.RequestException as exc:
             handle_github_request_error(exc, f"Branch prüfen: {repo}/{branch}")
         if resp.status_code == 404:
@@ -1001,7 +1003,7 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config['
 # Main
 # ─────────────────────────────────────────────────────────────
 
-def main():
+def main() -> int:
     print_banner("SCHRITT 3: ISSUES MIT KI LÖSEN")
 
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
@@ -1128,7 +1130,8 @@ def main():
     print(f"  ✅ Gelöst:  {solved}")
     print(f"  ❌ Fehler:  {failed}")
     print("─" * 50 + "\n")
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
