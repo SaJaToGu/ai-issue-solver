@@ -221,6 +221,9 @@ den Git-Status aus. Ein erfolgreicher Worker-Lauf ohne Dateiänderungen wird
 als No-op behandelt und erzeugt keinen Commit. Falls Codex mit einem
 Nicht-Null-Exitcode beendet, aber Änderungen im Arbeitsbaum liegen, prüft das
 Script diese Änderungen weiter und zeigt die letzten Worker-Zeilen als Diagnose.
+Wenn Codex das Nachrichtenlimit meldet und eine Reset-Zeit ausgibt, pausiert
+`solve_issues.py` bis zu diesem Zeitpunkt und versucht dasselbe Issue danach
+erneut, statt die restlichen Issues sofort als Fehler zu zählen.
 
 Im Aider-Modus begrenzt das Script den Kontext auf den geklonten Arbeitsbaum und
 übergibt plausible Datei-Ziele aus Issue-Titel und Beschreibung als
