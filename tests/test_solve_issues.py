@@ -1,6 +1,7 @@
 import contextlib
 from datetime import datetime
 import io
+import json
 import os
 import subprocess
 import sys
@@ -386,15 +387,102 @@ class GitStatusTests(unittest.TestCase):
                     repo="demo",
                     issue_number=28,
                     model="codex",
+                    branch="ai/fix-issue-28",
+                    pr_url="https://github.com/test-owner/demo/pull/28",
+                    status="completed",
+                    reason="changed",
                 )
                 run_dir = Path(run_dir).resolve()
                 log = Path(run_dir) / "worker-output.log"
+                tail = Path(run_dir) / "output-tail.txt"
+                metadata = Path(run_dir) / "metadata.json"
                 summary = Path(run_dir) / "summary.txt"
             finally:
                 os.chdir(old_cwd)
 
             self.assertEqual(log.read_text(encoding="utf-8"), "full\nworker\noutput\n")
-            self.assertIn("worker_exit_code: 3", summary.read_text(encoding="utf-8"))
+            self.assertEqual(tail.read_text(encoding="utf-8"), "full\nworker\noutput")
+            metadata_json = json.loads(metadata.read_text(encoding="utf-8"))
+            self.assertEqual(metadata_json["repo"], "demo")
+            self.assertEqual(metadata_json["issue_number"], 28)
+            self.assertEqual(metadata_json["branch"], "ai/fix-issue-28")
+            self.assertEqual(metadata_json["model"], "codex")
+            self.assertEqual(metadata_json["worker_exit_code"], 3)
+            self.assertEqual(metadata_json["pr_url"], "https://github.com/test-owner/demo/pull/28")
+            self.assertEqual(metadata_json["status"], "completed")
+            self.assertEqual(metadata_json["reason"], "changed")
+            self.assertEqual(metadata_json["output_tail"], "full\nworker\noutput")
+            summary_text = summary.read_text(encoding="utf-8")
+            self.assertIn("repo: demo", summary_text)
+            self.assertIn("issue_number: 28", summary_text)
+            self.assertIn("branch: ai/fix-issue-28", summary_text)
+            self.assertIn("model: codex", summary_text)
+            self.assertIn("worker_exit_code: 3", summary_text)
+            self.assertIn("pr_url: https://github.com/test-owner/demo/pull/28", summary_text)
+            self.assertIn("status: completed", summary_text)
+            self.assertIn("reason: changed", summary_text)
+            self.assertIn("output_tail:", summary_text)
+
+    def test_worker_diagnostics_can_update_existing_run_with_pr_url(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                result = WorkerRunResult(0, "worker done\n")
+                run_dir = write_worker_diagnostics(
+                    result,
+                    repo="demo",
+                    issue_number=29,
+                    model="claude",
+                    branch="ai/fix-issue-29",
+                    status="worker_finished",
+                )
+
+                updated_dir = write_worker_diagnostics(
+                    result,
+                    repo="demo",
+                    issue_number=29,
+                    model="claude",
+                    branch="ai/fix-issue-29",
+                    pr_url="https://github.com/test-owner/demo/pull/29",
+                    status="completed",
+                    run_dir=run_dir,
+                )
+                run_dir = Path(run_dir).resolve()
+                updated_dir = Path(updated_dir).resolve()
+                summary = updated_dir / "summary.txt"
+                metadata = updated_dir / "metadata.json"
+            finally:
+                os.chdir(old_cwd)
+
+            self.assertEqual(run_dir, updated_dir)
+            summary_text = summary.read_text(encoding="utf-8")
+            self.assertIn("pr_url: https://github.com/test-owner/demo/pull/29", summary_text)
+            self.assertIn("status: completed", summary_text)
+            metadata_json = json.loads(metadata.read_text(encoding="utf-8"))
+            self.assertEqual(metadata_json["pr_url"], "https://github.com/test-owner/demo/pull/29")
+            self.assertEqual(metadata_json["status"], "completed")
+
+    def test_worker_diagnostics_marks_worker_not_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                run_dir = write_worker_diagnostics(
+                    WorkerRunResult(None, "Klonen fehlgeschlagen\n"),
+                    repo="demo",
+                    issue_number=30,
+                    model="codex",
+                    branch="ai/fix-issue-30",
+                    status="clone_failed",
+                )
+                summary = Path(run_dir).resolve() / "summary.txt"
+            finally:
+                os.chdir(old_cwd)
+
+            summary_text = summary.read_text(encoding="utf-8")
+            self.assertIn("worker_exit_code: not_run", summary_text)
+            self.assertIn("status: clone_failed", summary_text)
 
 
 if __name__ == "__main__":

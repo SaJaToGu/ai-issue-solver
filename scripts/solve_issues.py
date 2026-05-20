@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import json
 import os
 import re
 import shutil
@@ -90,6 +91,7 @@ MODEL_CONFIGS = {
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
 WORKER_SUPPRESSED_UPDATE_INTERVAL = 25
+RUN_REPORTS_ROOT = Path("reports") / "runs"
 GIT_SUMMARY_MAX_STATUS_LINES = 20
 GIT_SUMMARY_MAX_STAT_LINES = 12
 GIT_SUMMARY_MAX_DIFF_LINES = 18
@@ -147,7 +149,7 @@ WORKER_NOISY_OUTPUT_RE = re.compile(
 
 @dataclass(frozen=True)
 class WorkerRunResult:
-    returncode: int
+    returncode: int | None
     output: str
 
 
@@ -684,24 +686,100 @@ def print_git_change_summary(repo_dir: str, git_status: str) -> None:
         print(f"      {line}")
 
 
-def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: int,
-                             model: str) -> Path | None:
-    diagnostics_root = Path("reports") / "runs"
+def create_run_report_dir(repo: str, issue_number: int) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "-", repo).strip("-") or "repo"
-    run_dir = diagnostics_root / f"{timestamp}-{safe_repo}-issue-{issue_number}"
+    return RUN_REPORTS_ROOT / f"{timestamp}-{safe_repo}-issue-{issue_number}"
+
+
+def format_run_summary(result: WorkerRunResult, repo: str, issue_number: int,
+                       model: str, branch: str | None = None,
+                       pr_url: str | None = None,
+                       status: str | None = None,
+                       reason: str | None = None) -> str:
+    output_tail = format_worker_output_tail(result.output)
+    lines = [
+        f"repo: {repo}",
+        f"issue_number: {issue_number}",
+        f"branch: {branch or '(nicht erstellt)'}",
+        f"model: {model}",
+        "worker_exit_code: "
+        f"{result.returncode if result.returncode is not None else 'not_run'}",
+        f"pr_url: {pr_url or '(nicht erstellt)'}",
+    ]
+    if status:
+        lines.append(f"status: {status}")
+    if reason:
+        lines.append(f"reason: {reason}")
+
+    lines.extend([
+        "",
+        "output_tail:",
+        output_tail or "(keine Worker-Ausgabe)",
+        "",
+        "Der vollstaendige Worker-Output liegt in worker-output.log.",
+    ])
+    return "\n".join(lines)
+
+
+def build_run_metadata(result: WorkerRunResult, repo: str, issue_number: int,
+                       model: str, branch: str | None = None,
+                       pr_url: str | None = None,
+                       status: str | None = None,
+                       reason: str | None = None) -> dict:
+    return {
+        "repo": repo,
+        "issue_number": issue_number,
+        "branch": branch,
+        "model": model,
+        "worker_exit_code": result.returncode,
+        "pr_url": pr_url,
+        "status": status,
+        "reason": reason,
+        "output_tail": format_worker_output_tail(result.output),
+    }
+
+
+def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: int,
+                             model: str, branch: str | None = None,
+                             pr_url: str | None = None,
+                             status: str | None = None,
+                             reason: str | None = None,
+                             run_dir: Path | None = None) -> Path | None:
+    run_dir = run_dir or create_run_report_dir(repo, issue_number)
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
+        output_tail = format_worker_output_tail(result.output)
         (run_dir / "worker-output.log").write_text(result.output, encoding="utf-8")
+        (run_dir / "output-tail.txt").write_text(output_tail, encoding="utf-8")
+        (run_dir / "metadata.json").write_text(
+            json.dumps(
+                build_run_metadata(
+                    result=result,
+                    repo=repo,
+                    issue_number=issue_number,
+                    model=model,
+                    branch=branch,
+                    pr_url=pr_url,
+                    status=status,
+                    reason=reason,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
         (run_dir / "summary.txt").write_text(
-            "\n".join([
-                f"repo: {repo}",
-                f"issue: {issue_number}",
-                f"model: {model}",
-                f"worker_exit_code: {result.returncode}",
-                "",
-                "Der vollstaendige Worker-Output liegt in worker-output.log.",
-            ]),
+            format_run_summary(
+                result=result,
+                repo=repo,
+                issue_number=issue_number,
+                model=model,
+                branch=branch,
+                pr_url=pr_url,
+                status=status,
+                reason=reason,
+            ),
             encoding="utf-8",
         )
     except OSError as exc:
@@ -888,18 +966,37 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     # Repo klonen
     with tempfile.TemporaryDirectory(prefix="ai-solver-") as tmpdir:
         repo_dir = os.path.join(tmpdir, repo)
+        branch_name = f"ai/fix-issue-{number}"
+        run_dir = create_run_report_dir(repo, number)
         print(f"      📥 Klone {repo} ...", end=" ", flush=True)
 
         if not clone_repo(config["owner"], repo, token, repo_dir, base_branch):
             print_err("Klonen fehlgeschlagen")
             print(f"      Prüfe, ob der Branch '{base_branch}' in {repo} existiert.")
+            write_worker_diagnostics(
+                WorkerRunResult(None, "Klonen fehlgeschlagen; KI-Worker wurde nicht gestartet.\n"),
+                repo=repo,
+                issue_number=number,
+                model=model,
+                branch=branch_name,
+                status="clone_failed",
+                run_dir=run_dir,
+            )
             return False
         print("✅")
 
         # Branch anlegen
-        branch_name = f"ai/fix-issue-{number}"
         if not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
+            write_worker_diagnostics(
+                WorkerRunResult(None, "Branch konnte nicht erstellt werden; KI-Worker wurde nicht gestartet.\n"),
+                repo=repo,
+                issue_number=number,
+                model=model,
+                branch=branch_name,
+                status="branch_failed",
+                run_dir=run_dir,
+            )
             return False
 
         # Prompt bauen
@@ -953,7 +1050,15 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             )
             diagnostic_result = WorkerRunResult(result.returncode, combined_output)
 
-        diagnostics_dir = write_worker_diagnostics(diagnostic_result, repo, number, model)
+        diagnostics_dir = write_worker_diagnostics(
+            diagnostic_result,
+            repo=repo,
+            issue_number=number,
+            model=model,
+            branch=branch_name,
+            status="worker_finished",
+            run_dir=run_dir,
+        )
         if diagnostics_dir:
             print(f"      Worker-Diagnose: {diagnostics_dir}")
 
@@ -962,6 +1067,16 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         assessment = assess_worker_result(result, git_status)
         print_worker_assessment(result, assessment)
         if not assessment.should_continue:
+            write_worker_diagnostics(
+                diagnostic_result,
+                repo=repo,
+                issue_number=number,
+                model=model,
+                branch=branch_name,
+                status="stopped",
+                reason=assessment.reason,
+                run_dir=diagnostics_dir,
+            )
             return False
 
         # Committen & pushen
@@ -972,6 +1087,16 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         if not pushed:
             print_warn("Push fehlgeschlagen oder keine Änderungen")
+            write_worker_diagnostics(
+                diagnostic_result,
+                repo=repo,
+                issue_number=number,
+                model=model,
+                branch=branch_name,
+                status="push_failed",
+                reason=assessment.reason,
+                run_dir=diagnostics_dir,
+            )
             return False
         print("✅")
 
@@ -1002,6 +1127,18 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config['
         )
         if pr:
             print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
+
+        write_worker_diagnostics(
+            diagnostic_result,
+            repo=repo,
+            issue_number=number,
+            model=model,
+            branch=branch_name,
+            pr_url=pr.get("html_url") if pr else None,
+            status="completed" if pr else "pr_failed",
+            reason=assessment.reason,
+            run_dir=diagnostics_dir,
+        )
 
         if close_issues:
             close_comment = f"✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\nPR: {pr.get('html_url', '?') if pr else '(kein PR)'}\nModell: {MODEL_CONFIGS[model]['display_name']}"

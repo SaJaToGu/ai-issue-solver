@@ -219,10 +219,14 @@ python scripts/solve_issues.py --model ollama --model-name llama3
 Das Script verdichtet die Worker-Ausgabe live auf Status-, Planungs-, Warn- und
 Ergebniszeilen. Detailausgaben wie lange Diffs oder Kommando-Logs werden im
 Terminal zusammengefasst; der vollständige Rohoutput landet weiterhin unter
-`reports/runs/` in der Worker-Diagnose. Nach dem Lauf zeigt das Script eine
-kompakte Git-Übersicht mit geänderten Dateien, Einfügungen/Löschungen, Diff-Stat
-und kurzer Diff-Vorschau. Ein erfolgreicher Worker-Lauf ohne Dateiänderungen wird
-als No-op behandelt und erzeugt keinen Commit. Falls Codex mit einem
+`reports/runs/` in einer timestamped Run-Diagnose. Jeder Lauf schreibt dort
+`summary.txt`, `metadata.json`, `worker-output.log` und `output-tail.txt`; die
+Zusammenfassung und die JSON-Metadaten enthalten Repo, Issue-Nummer, Branch,
+Modell, Worker-Exitcode, PR-URL falls erstellt, Status und einen kurzen
+Output-Auszug. Nach dem Lauf zeigt das Script eine kompakte Git-Übersicht mit
+geänderten Dateien, Einfügungen/Löschungen, Diff-Stat und kurzer Diff-Vorschau.
+Ein erfolgreicher Worker-Lauf ohne Dateiänderungen wird als No-op behandelt und
+erzeugt keinen Commit. Falls Codex mit einem
 Nicht-Null-Exitcode beendet, aber Änderungen im Arbeitsbaum liegen, prüft das
 Script diese Änderungen weiter und zeigt die letzten Worker-Zeilen als Diagnose.
 Wenn Codex das Nachrichtenlimit meldet und eine Reset-Zeit ausgibt, pausiert
