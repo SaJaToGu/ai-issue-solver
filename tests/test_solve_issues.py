@@ -1,4 +1,5 @@
 import contextlib
+from datetime import datetime
 import io
 import os
 import subprocess
@@ -16,10 +17,13 @@ from solve_issues import (  # noqa: E402
     WorkerRunResult,
     assess_worker_result,
     build_aider_command,
+    detect_codex_rate_limit,
     format_worker_output_tail,
     git_status_porcelain,
     infer_aider_targets,
+    parse_codex_reset_datetime,
     run_worker_command,
+    sleep_until_codex_reset,
 )
 
 
@@ -118,6 +122,41 @@ class WorkerAssessmentTests(unittest.TestCase):
         self.assertFalse(assessment.should_continue)
         self.assertFalse(assessment.has_changes)
         self.assertEqual(assessment.reason, "nonzero_without_changes")
+
+
+class CodexRateLimitTests(unittest.TestCase):
+    def test_detects_codex_rate_limit_and_parses_reset_time(self):
+        output = (
+            "You have reached the Codex message limit\n"
+            "Your rate limit will be reset on May 20, 2026, at 1:36 AM. "
+            "To continue using Codex, add credits or upgrade to Pro today.\n"
+        )
+
+        rate_limit = detect_codex_rate_limit(output)
+
+        self.assertIsNotNone(rate_limit)
+        self.assertEqual(rate_limit.reset_text, "May 20, 2026, at 1:36 AM")
+        self.assertEqual(rate_limit.reset_at, datetime(2026, 5, 20, 1, 36))
+
+    def test_parse_codex_reset_datetime_accepts_abbreviated_month(self):
+        reset_at = parse_codex_reset_datetime("May 20, 2026, at 1:36 AM")
+
+        self.assertEqual(reset_at, datetime(2026, 5, 20, 1, 36))
+
+    def test_sleep_until_codex_reset_uses_remaining_seconds(self):
+        sleeps = []
+        rate_limit = detect_codex_rate_limit(
+            "Your rate limit will be reset on May 20, 2026, at 1:36 AM."
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            sleep_until_codex_reset(
+                rate_limit,
+                sleep_fn=sleeps.append,
+                now_fn=lambda: datetime(2026, 5, 20, 1, 35, 30),
+            )
+
+        self.assertEqual(sleeps, [30.0])
 
 
 class AiderCommandTests(unittest.TestCase):

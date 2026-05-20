@@ -17,8 +17,11 @@ Verwendung:
     python scripts/solve_issues.py --model claude --dry-run
 """
 
+from __future__ import annotations
+
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
 import os
 import re
 import shutil
@@ -86,6 +89,7 @@ MODEL_CONFIGS = {
 
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
+CODEX_RATE_LIMIT_RETRY_LIMIT = 3
 COMMON_REPO_FILES = {
     ".dockerignore",
     ".env.example",
@@ -110,6 +114,14 @@ PATH_CANDIDATE_RE = re.compile(
     r"(?<![\w:/.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.@+~-]+(?:\.[A-Za-z0-9_.+-]+)?"
 )
 CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+CODEX_RATE_LIMIT_RESET_RE = re.compile(
+    r"rate limit will be reset on\s+(.+?)(?:\.|\n|$)",
+    re.IGNORECASE,
+)
+CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
+    r"(?:reached the codex message limit|rate limit will be reset)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -123,6 +135,12 @@ class WorkerAssessment:
     should_continue: bool
     has_changes: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class CodexRateLimit:
+    reset_at: datetime | None
+    reset_text: str | None
 
 
 # Prompt-Vorlage für Codex/aider
@@ -469,6 +487,59 @@ def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAsse
     return WorkerAssessment(False, False, "nonzero_without_changes")
 
 
+def parse_codex_reset_datetime(reset_text: str) -> datetime | None:
+    """Parst die Reset-Zeit aus der Codex-CLI-Meldung im lokalen Zeitkontext."""
+    normalized = re.sub(r"\s+", " ", reset_text.strip())
+    normalized = normalized.replace(", at ", " ").replace(" at ", " ")
+
+    formats = (
+        "%B %d, %Y %I:%M %p",
+        "%b %d, %Y %I:%M %p",
+        "%B %d %Y %I:%M %p",
+        "%b %d %Y %I:%M %p",
+    )
+    for date_format in formats:
+        try:
+            return datetime.strptime(normalized, date_format)
+        except ValueError:
+            pass
+    return None
+
+
+def detect_codex_rate_limit(output: str) -> CodexRateLimit | None:
+    if not CODEX_RATE_LIMIT_MESSAGE_RE.search(output):
+        return None
+
+    reset_match = CODEX_RATE_LIMIT_RESET_RE.search(output)
+    if not reset_match:
+        return CodexRateLimit(reset_at=None, reset_text=None)
+
+    reset_text = reset_match.group(1).strip()
+    return CodexRateLimit(
+        reset_at=parse_codex_reset_datetime(reset_text),
+        reset_text=reset_text,
+    )
+
+
+def sleep_until_codex_reset(rate_limit: CodexRateLimit,
+                            sleep_fn=time.sleep,
+                            now_fn=datetime.now) -> None:
+    if rate_limit.reset_text:
+        print_warn(f"Codex-Rate-Limit erreicht; Reset laut Codex: {rate_limit.reset_text}")
+    else:
+        print_warn("Codex-Rate-Limit erreicht; keine Reset-Zeit in der Ausgabe gefunden")
+
+    if not rate_limit.reset_at:
+        return
+
+    wait_seconds = max(0.0, (rate_limit.reset_at - now_fn()).total_seconds())
+    if wait_seconds > 0:
+        print(f"      Pausiere bis {rate_limit.reset_at.strftime('%Y-%m-%d %H:%M')} und setze dann fort.")
+        sleep_fn(wait_seconds)
+    else:
+        print("      Reset-Zeit ist bereits erreicht; setze sofort fort.")
+
+
 def format_worker_output_tail(output: str) -> str:
     cleaned = output.strip()
     if not cleaned:
@@ -623,7 +694,21 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             print(f"      🤖 Starte aider ...", flush=True)
             cmd = build_aider_command(model, model_name, prompt, repo_dir)
 
-        result = run_worker_command(cmd, repo_dir, env)
+        rate_limit_retries = 0
+        while True:
+            result = run_worker_command(cmd, repo_dir, env)
+            rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
+            if not rate_limit:
+                break
+            if not rate_limit.reset_at:
+                sleep_until_codex_reset(rate_limit)
+                break
+            rate_limit_retries += 1
+            if rate_limit_retries > CODEX_RATE_LIMIT_RETRY_LIMIT:
+                print_warn("Codex-Rate-Limit wurde mehrfach erreicht; breche dieses Issue ab")
+                break
+            sleep_until_codex_reset(rate_limit)
+
         assessment = assess_worker_result(result, git_status_porcelain(repo_dir))
         print_worker_assessment(result, assessment)
         if not assessment.should_continue:
