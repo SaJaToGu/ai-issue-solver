@@ -50,3 +50,14 @@ Labels: `safety`, `automation`
 Make it easy to resume after a stopped terminal, crashed worker, failed push, or
 closed unmerged PR. The script should detect existing branches and PRs, explain
 what it found, and either reuse them safely or ask the user to choose a new run.
+
+
+## 6. Compress Codex worker output into structured summaries
+
+Labels: `codex`, `automation`, `quality`
+
+Reduce noisy raw Codex output during issue solving. The solver should surface the
+current task, relevant planning or reasoning summary lines, warnings, and final
+results, while collapsing detailed coding changes into a compact Git-like summary
+such as changed files, insertions/deletions, and a short diff/stat preview. Full
+worker output should still be preserved in run diagnostics for debugging.
