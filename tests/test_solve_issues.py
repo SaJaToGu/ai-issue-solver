@@ -259,16 +259,18 @@ class WorkerOutputTests(unittest.TestCase):
 
         self.assertIn("+ noisy diff line", result.output)
         self.assertIn("Plan: change README", printed.getvalue())
-        self.assertIn("Detailzeilen komprimiert", printed.getvalue())
+        self.assertIn("Detailzeilen ausgeblendet", printed.getvalue())
         self.assertNotIn("+ noisy diff line", printed.getvalue())
 
-    def test_run_worker_does_not_duplicate_ongoing_suppression_notice(self):
+    def test_run_worker_prints_single_suppression_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             script = Path(tmpdir) / "worker.py"
             script.write_text(
-                "for index in range(25):\n"
+                "for index in range(75):\n"
                 "    print(f'+ noisy diff line {index}')\n"
-                "print('Final result: done')\n",
+                "print('Final result: done')\n"
+                "for index in range(25):\n"
+                "    print(f'- more noisy diff line {index}')\n",
                 encoding="utf-8",
             )
 
@@ -280,7 +282,10 @@ class WorkerOutputTests(unittest.TestCase):
                     os.environ.copy(),
                 )
 
-        self.assertEqual(printed.getvalue().count("25 Detailzeilen komprimiert"), 1)
+        output = printed.getvalue()
+        self.assertEqual(output.count("Detailzeilen ausgeblendet"), 1)
+        self.assertIn("100 Detailzeilen ausgeblendet", output)
+        self.assertNotIn("bisher", output)
 
 
 class GitStatusTests(unittest.TestCase):

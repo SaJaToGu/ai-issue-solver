@@ -89,7 +89,6 @@ MODEL_CONFIGS = {
 
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
-WORKER_SUPPRESSED_UPDATE_INTERVAL = 25
 GIT_SUMMARY_MAX_STATUS_LINES = 20
 GIT_SUMMARY_MAX_STAT_LINES = 12
 GIT_SUMMARY_MAX_DIFF_LINES = 18
@@ -475,28 +474,16 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
 
     output_parts = []
     suppressed_lines = 0
-    reported_suppressed_lines = 0
     if process.stdout:
         for line in process.stdout:
             output_parts.append(line)
             if should_surface_worker_line(line):
-                if suppressed_lines and suppressed_lines != reported_suppressed_lines:
-                    print_worker_suppression_notice(suppressed_lines)
-                suppressed_lines = 0
-                reported_suppressed_lines = 0
                 print(f"        | {line}", end="")
             else:
                 suppressed_lines += 1
-                if suppressed_lines % WORKER_SUPPRESSED_UPDATE_INTERVAL == 0:
-                    print_worker_suppression_notice(
-                        suppressed_lines,
-                        ongoing=True,
-                    )
-                    reported_suppressed_lines = suppressed_lines
         process.stdout.close()
 
-    if suppressed_lines and suppressed_lines != reported_suppressed_lines:
-        print_worker_suppression_notice(suppressed_lines)
+    print_worker_suppression_summary(suppressed_lines)
 
     return WorkerRunResult(
         returncode=process.wait(),
@@ -514,9 +501,9 @@ def should_surface_worker_line(line: str) -> bool:
     return bool(WORKER_LIVE_OUTPUT_RE.search(stripped))
 
 
-def print_worker_suppression_notice(count: int, ongoing: bool = False) -> None:
-    suffix = " bisher" if ongoing else ""
-    print(f"        | ... {count} Detailzeilen komprimiert{suffix}")
+def print_worker_suppression_summary(count: int) -> None:
+    if count:
+        print(f"        | ... {count} Detailzeilen ausgeblendet; Rohoutput bleibt in der Diagnose erhalten")
 
 
 def git_status_porcelain(repo_dir: str) -> str:
