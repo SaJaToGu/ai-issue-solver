@@ -89,6 +89,10 @@ MODEL_CONFIGS = {
 
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
+WORKER_SUPPRESSED_UPDATE_INTERVAL = 25
+GIT_SUMMARY_MAX_STATUS_LINES = 20
+GIT_SUMMARY_MAX_STAT_LINES = 12
+GIT_SUMMARY_MAX_DIFF_LINES = 18
 CODEX_RATE_LIMIT_RETRY_LIMIT = 3
 COMMON_REPO_FILES = {
     ".dockerignore",
@@ -120,6 +124,23 @@ CODEX_RATE_LIMIT_RESET_RE = re.compile(
 )
 CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
     r"(?:reached the codex message limit|rate limit will be reset)",
+    re.IGNORECASE,
+)
+WORKER_LIVE_OUTPUT_RE = re.compile(
+    r"("
+    r"\b(task|aufgabe|plan|planung|planning|reasoning|reasoning summary|"
+    r"summary|zusammenfassung|warn(?:ing)?|warnung|error|fehler|failed|failure|"
+    r"done|fertig|completed|abgeschlossen|result|ergebnis|final|rate limit|"
+    r"retry|blocked|blockiert|commit|test|tests)\b"
+    r"|^\s*(?:===|##|###|\[.*\])"
+    r")",
+    re.IGNORECASE,
+)
+WORKER_NOISY_OUTPUT_RE = re.compile(
+    r"("
+    r"^\s*(?:diff --git|index [0-9a-f]+\.\.|@@ |[+-]{3}\s|[+-](?!\s*(?:warning|error|failed)\b))"
+    r"|^\s*(?:apply_patch|cat >|sed -n|python - <<|npm |pip |git diff|git status)"
+    r")",
     re.IGNORECASE,
 )
 
@@ -437,7 +458,7 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
 
 
 def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
-    """Fuehrt den KI-Worker aus, zeigt Output live und haelt ihn fuer Diagnosen fest."""
+    """Fuehrt den KI-Worker aus, zeigt verdichteten Output und haelt Rohdaten fest."""
     try:
         process = subprocess.Popen(
             cmd,
@@ -453,16 +474,49 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
         return WorkerRunResult(returncode=127, output="")
 
     output_parts = []
+    suppressed_lines = 0
+    reported_suppressed_lines = 0
     if process.stdout:
         for line in process.stdout:
-            print(line, end="")
             output_parts.append(line)
+            if should_surface_worker_line(line):
+                if suppressed_lines and suppressed_lines != reported_suppressed_lines:
+                    print_worker_suppression_notice(suppressed_lines)
+                suppressed_lines = 0
+                reported_suppressed_lines = 0
+                print(f"        | {line}", end="")
+            else:
+                suppressed_lines += 1
+                if suppressed_lines % WORKER_SUPPRESSED_UPDATE_INTERVAL == 0:
+                    print_worker_suppression_notice(
+                        suppressed_lines,
+                        ongoing=True,
+                    )
+                    reported_suppressed_lines = suppressed_lines
         process.stdout.close()
+
+    if suppressed_lines and suppressed_lines != reported_suppressed_lines:
+        print_worker_suppression_notice(suppressed_lines)
 
     return WorkerRunResult(
         returncode=process.wait(),
         output="".join(output_parts),
     )
+
+
+def should_surface_worker_line(line: str) -> bool:
+    """Filtert laute Detailausgabe und laesst relevante Statuszeilen live durch."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if WORKER_NOISY_OUTPUT_RE.search(stripped):
+        return False
+    return bool(WORKER_LIVE_OUTPUT_RE.search(stripped))
+
+
+def print_worker_suppression_notice(count: int, ongoing: bool = False) -> None:
+    suffix = " bisher" if ongoing else ""
+    print(f"        | ... {count} Detailzeilen komprimiert{suffix}")
 
 
 def git_status_porcelain(repo_dir: str) -> str:
@@ -474,6 +528,186 @@ def git_status_porcelain(repo_dir: str) -> str:
         print_warn("Git-Status konnte nicht gelesen werden")
         return ""
     return result.stdout
+
+
+def git_output(repo_dir: str, args: list[str]) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def changed_status_paths(status_lines: list[str]) -> list[str]:
+    paths = []
+    for line in status_lines:
+        if len(line) < 4:
+            continue
+        paths.append(line[3:])
+    return paths
+
+
+def count_file_lines(path: Path) -> int:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return 0
+    if not data:
+        return 0
+    return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
+
+
+def pluralize_de(count: int, singular: str, plural: str) -> str:
+    return singular if count == 1 else plural
+
+
+def format_untracked_file_stats(repo_dir: str, status_lines: list[str]) -> tuple[list[str], int]:
+    repo_root = Path(repo_dir)
+    stats = []
+    insertions = 0
+    for status_line in status_lines:
+        if not status_line.startswith("?? "):
+            continue
+        relative_path = status_line[3:]
+        path = repo_root / relative_path
+        if not path.is_file():
+            continue
+        line_count = count_file_lines(path)
+        insertions += line_count
+        pluses = "+" * min(max(line_count, 1), 30)
+        stats.append(f"{relative_path} | {line_count} {pluses}")
+    return stats, insertions
+
+
+def format_git_diff_preview(repo_dir: str, status_lines: list[str]) -> list[str]:
+    preview_lines = []
+    diff = git_output(
+        repo_dir,
+        ["diff", "--unified=3", "--no-ext-diff", "HEAD", "--"],
+    )
+    for line in diff.splitlines():
+        if line.startswith("index "):
+            continue
+        preview_lines.append(line)
+        if len(preview_lines) >= GIT_SUMMARY_MAX_DIFF_LINES:
+            break
+
+    if len(preview_lines) < GIT_SUMMARY_MAX_DIFF_LINES:
+        for status_line in status_lines:
+            if not status_line.startswith("?? "):
+                continue
+            relative_path = status_line[3:]
+            path = Path(repo_dir) / relative_path
+            if not path.is_file():
+                continue
+            line_count = count_file_lines(path)
+            preview_lines.append(f"diff --git a/{relative_path} b/{relative_path}")
+            preview_lines.append(
+                f"new file, {line_count} "
+                f"{pluralize_de(line_count, 'eingefuegte Zeile', 'eingefuegte Zeilen')}"
+            )
+            if len(preview_lines) >= GIT_SUMMARY_MAX_DIFF_LINES:
+                break
+
+    return preview_lines
+
+
+def format_git_change_summary(repo_dir: str, git_status: str | None = None) -> list[str]:
+    status = git_status if git_status is not None else git_status_porcelain(repo_dir)
+    status_lines = [line for line in status.splitlines() if line.strip()]
+    if not status_lines:
+        return []
+
+    summary = ["Git-Änderungsübersicht:"]
+    summary.append(f"  Dateien geändert: {len(status_lines)}")
+    changed_paths = changed_status_paths(status_lines)
+    if changed_paths:
+        summary.append("  Dateien:")
+        for path in changed_paths[:GIT_SUMMARY_MAX_STATUS_LINES]:
+            summary.append(f"    {path}")
+        if len(changed_paths) > GIT_SUMMARY_MAX_STATUS_LINES:
+            summary.append(
+                f"    ... {len(changed_paths) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
+            )
+
+    shortstat = git_output(repo_dir, ["diff", "--shortstat", "HEAD", "--"])
+    untracked_stats, untracked_insertions = format_untracked_file_stats(
+        repo_dir,
+        status_lines,
+    )
+    if shortstat:
+        summary.append(f"  Statistik: {shortstat}")
+    if untracked_insertions:
+        summary.append(
+            f"  Neue Dateien: {len(untracked_stats)} "
+            f"{pluralize_de(len(untracked_stats), 'Datei', 'Dateien')}, "
+            f"{untracked_insertions} "
+            f"{pluralize_de(untracked_insertions, 'eingefuegte Zeile', 'eingefuegte Zeilen')}"
+        )
+
+    stat = git_output(repo_dir, ["diff", "--stat", "HEAD", "--"])
+    stat_lines = [line for line in stat.splitlines() if line.strip()]
+    stat_lines.extend(untracked_stats)
+    if stat_lines:
+        summary.append("  Diff-Stat:")
+        for line in stat_lines[:GIT_SUMMARY_MAX_STAT_LINES]:
+            summary.append(f"    {line}")
+        if len(stat_lines) > GIT_SUMMARY_MAX_STAT_LINES:
+            summary.append(
+                f"    ... {len(stat_lines) - GIT_SUMMARY_MAX_STAT_LINES} weitere Stat-Zeilen"
+            )
+
+    preview_lines = format_git_diff_preview(repo_dir, status_lines)
+    if preview_lines:
+        summary.append("  Diff-Vorschau:")
+        for line in preview_lines:
+            summary.append(f"    {line}")
+        if len(preview_lines) == GIT_SUMMARY_MAX_DIFF_LINES:
+            summary.append("    ... Diff-Vorschau gekuerzt")
+
+    summary.append("  Status:")
+    for line in status_lines[:GIT_SUMMARY_MAX_STATUS_LINES]:
+        summary.append(f"    {line}")
+    if len(status_lines) > GIT_SUMMARY_MAX_STATUS_LINES:
+        summary.append(
+            f"    ... {len(status_lines) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
+        )
+    return summary
+
+
+def print_git_change_summary(repo_dir: str, git_status: str) -> None:
+    for line in format_git_change_summary(repo_dir, git_status):
+        print(f"      {line}")
+
+
+def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: int,
+                             model: str) -> Path | None:
+    diagnostics_root = Path("reports") / "runs"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "-", repo).strip("-") or "repo"
+    run_dir = diagnostics_root / f"{timestamp}-{safe_repo}-issue-{issue_number}"
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "worker-output.log").write_text(result.output, encoding="utf-8")
+        (run_dir / "summary.txt").write_text(
+            "\n".join([
+                f"repo: {repo}",
+                f"issue: {issue_number}",
+                f"model: {model}",
+                f"worker_exit_code: {result.returncode}",
+                "",
+                "Der vollstaendige Worker-Output liegt in worker-output.log.",
+            ]),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print_warn(f"Worker-Diagnose konnte nicht gespeichert werden: {exc}")
+        return None
+    return run_dir
 
 
 def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAssessment:
@@ -695,8 +929,10 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             cmd = build_aider_command(model, model_name, prompt, repo_dir)
 
         rate_limit_retries = 0
+        diagnostic_outputs = []
         while True:
             result = run_worker_command(cmd, repo_dir, env)
+            diagnostic_outputs.append(result.output)
             rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
             if not rate_limit:
                 break
@@ -709,7 +945,21 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 break
             sleep_until_codex_reset(rate_limit)
 
-        assessment = assess_worker_result(result, git_status_porcelain(repo_dir))
+        diagnostic_result = result
+        if len(diagnostic_outputs) > 1:
+            combined_output = "\n".join(
+                f"--- Worker-Lauf {index} ---\n{output}"
+                for index, output in enumerate(diagnostic_outputs, start=1)
+            )
+            diagnostic_result = WorkerRunResult(result.returncode, combined_output)
+
+        diagnostics_dir = write_worker_diagnostics(diagnostic_result, repo, number, model)
+        if diagnostics_dir:
+            print(f"      Worker-Diagnose: {diagnostics_dir}")
+
+        git_status = git_status_porcelain(repo_dir)
+        print_git_change_summary(repo_dir, git_status)
+        assessment = assess_worker_result(result, git_status)
         print_worker_assessment(result, assessment)
         if not assessment.should_continue:
             return False
