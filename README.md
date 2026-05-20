@@ -40,6 +40,10 @@ Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
 **OpenAI** oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code
 und erstellt einen Branch + Commit.
 
+**Status-Überblick:** `github_summary.py` zeigt offene Issues, offene PRs,
+zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
+GitHub API. Die GitHub CLI wird dafür nicht benötigt.
+
 ## Repository-Metadaten
 
 **Beschreibung:** Automatisiert GitHub-Repository-Analysen, Issue-Erstellung und
@@ -60,7 +64,7 @@ Repo aktiv ist, kann sie daraus das About-Feld und die Topics synchronisieren.
 | Tool | Version | Zweck |
 |------|---------|-------|
 | Python | ≥ 3.10 | Haupt-Scriptsprache |
-| `gh` CLI | aktuell | GitHub-Zugriff |
+| `gh` CLI | optional | Manuelle GitHub-Diagnose außerhalb der Scripts |
 | Codex CLI | optional | KI-Worker über deinen Codex-Zugang |
 | `aider` | optional | KI-Worker für Claude/OpenAI/Ollama |
 | `git` | aktuell | Versionskontrolle |
@@ -243,6 +247,29 @@ externen oder ungültigen Pfade an aider durchgereicht werden.
 
 ---
 
+### `github_summary.py`
+Zeigt eine kompakte Review- und Statusübersicht über die GitHub API.
+
+```bash
+python scripts/github_summary.py
+python scripts/github_summary.py --repo ai-issue-solver
+python scripts/github_summary.py --limit 3 --merged-days 7 --run-days 7
+```
+
+**Enthält pro Repository:**
+- offene Issues
+- offene Pull Requests
+- zuletzt gemergte Pull Requests
+- fehlgeschlagene GitHub-Actions-Runs im gewählten Zeitraum
+
+**Flags:**
+- `--repo` — nur ein bestimmtes Repo anzeigen
+- `--limit` — maximale Einträge pro Abschnitt, Standard: `5`
+- `--merged-days` — Zeitraum für gemergte Pull Requests, Standard: `14`
+- `--run-days` — Zeitraum für fehlgeschlagene Runs, Standard: `14`
+
+---
+
 ## Nächste Ausbaustufe
 
 Die erste Workflow-Runde ist abgeschlossen: Analyse, Backlog-Issues,
@@ -332,6 +359,7 @@ ai-issue-solver/
 │   ├── analyze_repos.py         # Schritt 1: Repos analysieren
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
+│   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
 │   ├── solve_issues.py          # Schritt 3: Issues mit KI lösen
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
@@ -346,6 +374,7 @@ ai-issue-solver/
 │   └── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
 └── tests/
     ├── test_analyze_repos.py    # Analyzer-Tests
+    ├── test_github_summary.py   # GitHub-Übersichts-Tests
     └── test_solve_issues.py     # Solver- und Worker-Tests
 ```
 
