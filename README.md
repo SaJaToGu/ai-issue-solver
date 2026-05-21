@@ -44,6 +44,10 @@ und erstellt einen Branch + Commit.
 zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
 GitHub API. Die GitHub CLI wird dafür nicht benötigt.
 
+**Post-Merge Cleanup:** `post_merge_cleanup.py` fasst gemergte AI-PRs zusammen,
+schließt sicher referenzierte Issues, löscht gemergte AI-Branches und meldet
+alles, was manuell geprüft werden sollte. Ohne `--apply` läuft es als Dry-Run.
+
 ## Repository-Metadaten
 
 **Beschreibung:** Automatisiert GitHub-Repository-Analysen, Issue-Erstellung und
@@ -309,6 +313,35 @@ python scripts/github_summary.py --limit 3 --merged-days 7 --run-days 7
 
 ---
 
+### `post_merge_cleanup.py`
+Räumt nach gemergten AI-Pull-Requests auf. Das Script nutzt dieselbe GitHub
+API-Konfiguration wie die übrigen GitHub-Befehle und läuft standardmäßig als
+Dry-Run, damit geplante Änderungen zuerst geprüft werden können.
+
+```bash
+python scripts/post_merge_cleanup.py
+python scripts/post_merge_cleanup.py --repo ai-issue-solver
+python scripts/post_merge_cleanup.py --repo ai-issue-solver --apply
+```
+
+**Automatisch geplant bzw. mit `--apply` ausgeführt:**
+- gemergte AI-PRs aus dem gewählten Zeitraum zusammenfassen
+- offene Issues schließen, wenn sie per Closing-Keyword oder Branch
+  `ai/fix-issue-{nummer}` eindeutig referenziert sind
+- gemergte AI-Branches im Owner-Repo löschen, sofern kein offener PR mehr daran hängt
+- stale, bereits gemergte AI-Branches auch außerhalb des PR-Zeitfensters löschen
+- stale AI-Branches ohne sichere Merge-Zuordnung als Review-Hinweis melden
+
+**Flags:**
+- `--repo` — nur ein bestimmtes Repo bereinigen
+- `--merged-days` — Zeitraum für gemergte PRs, Standard: `30`
+- `--stale-days` — Alter für stale AI-Branches, Standard: `30`
+- `--branch-prefix` — AI-Branch-Präfix, Standard: `ai/`
+- `--apply` — echte GitHub-Änderungen ausführen
+- `--dry-run` — nur anzeigen; ist ohne `--apply` bereits Standard
+
+---
+
 ### `status_dashboard.py`
 Erzeugt ein lokales HTML-Dashboard aus den Run-Reports unter `reports/runs/`.
 Die Übersicht gruppiert laufende, erfolgreiche, fehlgeschlagene und No-op-Jobs
@@ -349,6 +382,7 @@ Morpheus-Style Workflow komfortabler werden:
 - mehrere Issues parallel mit begrenzter Worker-Zahl lösen
 - laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen
 - offene PRs und Issues nach einem Lauf automatisch zusammenfassen
+- gemergte AI-PRs nach dem Review sicher bereinigen
 
 Der geplante Backlog dafür liegt in [docs/NEXT_BACKLOG.md](docs/NEXT_BACKLOG.md).
 
@@ -429,6 +463,7 @@ ai-issue-solver/
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
+│   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
 │   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
 │   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
 │   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
@@ -447,6 +482,7 @@ ai-issue-solver/
 └── tests/
     ├── test_analyze_repos.py    # Analyzer-Tests
     ├── test_github_summary.py   # GitHub-Übersichts-Tests
+    ├── test_post_merge_cleanup.py # Post-Merge-Cleanup-Tests
     ├── test_status_dashboard.py # Dashboard-Tests
     ├── test_solve_issues_batch.py # Batch-Runner-Tests
     └── test_solve_issues.py     # Solver- und Worker-Tests
