@@ -15,8 +15,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import heapq
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from solve_issues import (  # noqa: E402
     MODEL_CONFIGS,
     detect_codex_rate_limit,
     requests,
+    should_surface_worker_line,
 )
 from utils import (  # noqa: E402
     is_placeholder_value,
@@ -39,6 +42,7 @@ from utils import (  # noqa: E402
 
 
 DEFAULT_WORKERS = 2
+DEFAULT_WORKER_HEALTH_TIMEOUT_MINUTES = 60
 
 
 @dataclass(frozen=True)
@@ -60,10 +64,12 @@ class IssueJobResult:
     rate_limited: bool = False
     delayed_until: datetime | None = None
     delayed_reset_text: str | None = None
+    unhealthy: bool = False
+    unhealthy_reason: str | None = None
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.delayed
+        return self.returncode == 0 and not self.delayed and not self.unhealthy
 
     @property
     def delayed(self) -> bool:
@@ -140,27 +146,102 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
 
 
 def run_issue_job(job: IssueJob, cmd: list[str], project_root: Path,
-                  env: dict[str, str]) -> IssueJobResult:
+                  env: dict[str, str],
+                  health_timeout_seconds: float | None = None,
+                  unhealthy_action: str = "warn",
+                  detect_rate_limit_fn=detect_codex_rate_limit,
+                  now_fn=datetime.now) -> IssueJobResult:
     started_at = time.monotonic()
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             cwd=project_root,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
+            bufsize=1,
         )
-        output = (result.stdout or "") + (result.stderr or "")
-        returncode = result.returncode
     except OSError as exc:
         output = f"Worker konnte nicht gestartet werden: {exc}\n"
-        returncode = 127
+        return IssueJobResult(
+            job=job,
+            returncode=127,
+            output=output,
+            duration_seconds=time.monotonic() - started_at,
+            unhealthy=True,
+            unhealthy_reason="Worker-Prozess konnte nicht gestartet werden",
+        )
+
+    output_parts: list[str] = []
+    line_queue: queue.Queue[str | None] = queue.Queue()
+    last_activity = time.monotonic()
+    unhealthy_reason = None
+    unhealthy_seen = False
+
+    def read_output() -> None:
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                line_queue.put(line)
+        finally:
+            line_queue.put(None)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+
+    while True:
+        try:
+            line = line_queue.get(timeout=0.2)
+        except queue.Empty:
+            line = ""
+
+        if line is None:
+            break
+        if line:
+            output_parts.append(line)
+            if should_surface_worker_line(line):
+                last_activity = time.monotonic()
+
+        if process.poll() is not None and line_queue.empty():
+            break
+
+        if (
+            health_timeout_seconds
+            and health_timeout_seconds > 0
+            and not unhealthy_seen
+            and time.monotonic() - last_activity > health_timeout_seconds
+            and not worker_is_known_waiting("".join(output_parts), detect_rate_limit_fn, now_fn)
+        ):
+            unhealthy_seen = True
+            unhealthy_reason = (
+                f"keine Worker-Ausgabe seit {health_timeout_seconds:.0f}s"
+            )
+            output_parts.append(f"\n[batch-health] Unhealthy: {unhealthy_reason}\n")
+            if unhealthy_action in {"stop", "retry"}:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                break
+
+    if process.stdout:
+        process.stdout.close()
+    reader.join(timeout=1)
+    returncode = process.wait()
+    output = "".join(output_parts)
+    if unhealthy_seen and unhealthy_action == "warn":
+        unhealthy_reason = None
 
     return IssueJobResult(
         job=job,
         returncode=returncode,
         output=output,
         duration_seconds=time.monotonic() - started_at,
+        unhealthy=unhealthy_seen and unhealthy_action in {"stop", "retry"},
+        unhealthy_reason=unhealthy_reason,
     )
 
 
@@ -179,6 +260,11 @@ def mark_rate_limited_result(result: IssueJobResult, detect_rate_limit_fn) -> Is
     )
 
 
+def worker_is_known_waiting(output: str, detect_rate_limit_fn, now_fn=datetime.now) -> bool:
+    rate_limit = detect_rate_limit_fn(output)
+    return bool(rate_limit and rate_limit.reset_at and rate_limit.reset_at > now_fn())
+
+
 def run_issue_jobs(jobs: list[IssueJob],
                    workers: int,
                    run_job_fn,
@@ -188,6 +274,8 @@ def run_issue_jobs(jobs: list[IssueJob],
                    detect_rate_limit_fn=detect_codex_rate_limit,
                    sleep_fn=time.sleep,
                    now_fn=datetime.now,
+                   requeue_unhealthy: bool = False,
+                   max_unhealthy_requeues: int = 1,
                    on_result=None,
                    on_delay=None) -> list[IssueJobResult]:
     results = []
@@ -242,9 +330,18 @@ def run_issue_jobs(jobs: list[IssueJob],
                     and result.delayed_until is not None
                     and attempts[job] <= max_rate_limit_requeues
                 )
+                can_requeue_unhealthy = (
+                    result.unhealthy
+                    and requeue_unhealthy
+                    and attempts[job] <= max_unhealthy_requeues
+                )
                 if can_requeue:
                     sequence += 1
                     heapq.heappush(delayed_jobs, (result.delayed_until, sequence, job))
+                    if on_delay:
+                        on_delay(result)
+                elif can_requeue_unhealthy:
+                    pending.append(job)
                     if on_delay:
                         on_delay(result)
                 else:
@@ -258,7 +355,7 @@ def run_issue_jobs(jobs: list[IssueJob],
 
 
 def print_job_result(result: IssueJobResult, completed: int, total: int) -> None:
-    status = "VERZÖGERT" if result.delayed else ("OK" if result.ok else "FEHLER")
+    status = "UNHEALTHY" if result.unhealthy else ("VERZÖGERT" if result.delayed else ("OK" if result.ok else "FEHLER"))
     print("\n" + "─" * 60)
     print(
         f"[{completed}/{total}] {result.job.label} — {status} "
@@ -274,6 +371,8 @@ def print_job_result(result: IssueJobResult, completed: int, total: int) -> None
             "Codex-Rate-Limit erkannt; "
             f"Job bleibt bis {reset or 'zum naechsten Reset'} verzögert."
         )
+    if result.unhealthy:
+        print(f"Worker-Health: {result.unhealthy_reason or 'unhealthy'}")
     print("─" * 60)
     if result.output.strip():
         print(result.output.rstrip())
@@ -282,6 +381,12 @@ def print_job_result(result: IssueJobResult, completed: int, total: int) -> None
 
 
 def print_job_delay(result: IssueJobResult) -> None:
+    if result.unhealthy:
+        print_warn(
+            f"{result.job.label}: Worker unhealthy; "
+            f"Requeue ({result.unhealthy_reason or 'keine Details'})."
+        )
+        return
     reset = (
         result.delayed_until.strftime("%Y-%m-%d %H:%M")
         if result.delayed_until
@@ -343,6 +448,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1,
         help="Maximale Requeue-Versuche pro rate-limitiertem Codex-Job, Standard: 1",
     )
+    parser.add_argument(
+        "--worker-health-timeout-minutes",
+        type=positive_int,
+        default=DEFAULT_WORKER_HEALTH_TIMEOUT_MINUTES,
+        help=(
+            "Minuten ohne Worker-Ausgabe bis zur Health-Warnung, "
+            f"Standard: {DEFAULT_WORKER_HEALTH_TIMEOUT_MINUTES}"
+        ),
+    )
+    parser.add_argument(
+        "--unhealthy-action",
+        choices=("warn", "stop", "retry"),
+        default="warn",
+        help="Aktion bei unhealthy Worker: warn, stop oder retry; Standard: warn",
+    )
+    parser.add_argument(
+        "--unhealthy-retries",
+        type=positive_int,
+        default=1,
+        help="Maximale Retry-Versuche fuer unhealthy Jobs bei --unhealthy-action retry, Standard: 1",
+    )
     return parser.parse_args(argv)
 
 
@@ -387,7 +513,15 @@ def main(argv: list[str] | None = None) -> int:
 
     def run(job: IssueJob) -> IssueJobResult:
         cmd = build_worker_command(args, job, solve_script)
-        return run_issue_job(job, cmd, project_root, env)
+        return run_issue_job(
+            job,
+            cmd,
+            project_root,
+            env,
+            health_timeout_seconds=args.worker_health_timeout_minutes * 60,
+            unhealthy_action=args.unhealthy_action,
+            detect_rate_limit_fn=detect_rate_limit_fn,
+        )
 
     requeue_delayed = args.model == "codex" and args.requeue_rate_limited
     detect_rate_limit_fn = (
@@ -400,8 +534,10 @@ def main(argv: list[str] | None = None) -> int:
         requeue_delayed=requeue_delayed,
         max_rate_limit_requeues=args.rate_limit_retries,
         detect_rate_limit_fn=detect_rate_limit_fn,
+        requeue_unhealthy=args.unhealthy_action == "retry",
+        max_unhealthy_requeues=args.unhealthy_retries,
         on_result=print_job_result,
-        on_delay=print_job_delay if requeue_delayed else None,
+        on_delay=print_job_delay if requeue_delayed or args.unhealthy_action == "retry" else None,
     )
 
     solved = sum(1 for result in results if result.ok)

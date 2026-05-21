@@ -171,6 +171,7 @@ WORKER_NOISY_OUTPUT_RE = re.compile(
 class WorkerRunResult:
     returncode: int
     output: str
+    last_activity_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -579,7 +580,8 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
     return cmd
 
 
-def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
+def run_worker_command(cmd: list, repo_dir: str, env: dict,
+                       run_report: RunReport | None = None) -> WorkerRunResult:
     """Fuehrt den KI-Worker aus, zeigt verdichteten Output und haelt Rohdaten fest."""
     try:
         process = subprocess.Popen(
@@ -597,11 +599,15 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
 
     output_parts = []
     suppressed_lines = 0
+    last_activity_at = datetime.now()
     if process.stdout:
         for line in process.stdout:
             output_parts.append(line)
             if should_surface_worker_line(line):
                 print(f"        | {line}", end="")
+                last_activity_at = datetime.now()
+                if run_report:
+                    write_run_health(run_report, "".join(output_parts), last_activity_at)
             else:
                 suppressed_lines += 1
         process.stdout.close()
@@ -611,6 +617,7 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
     return WorkerRunResult(
         returncode=process.wait(),
         output="".join(output_parts),
+        last_activity_at=last_activity_at,
     )
 
 
@@ -811,6 +818,29 @@ def create_run_report(repo: str, issue_number: int, branch: str, model: str,
     return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
 
 
+def write_run_health(report: RunReport, output: str = "",
+                     last_activity_at: datetime | None = None,
+                     status: str = "running") -> None:
+    """Speichert leichte Health-Daten, ohne den eigentlichen Summary-Report umzubauen."""
+    last_activity_at = last_activity_at or datetime.now()
+    tail = format_worker_output_tail(output)
+    payload = {
+        "status": status,
+        "last_activity_at": last_activity_at.isoformat(timespec="seconds"),
+        "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
+        "output_tail": tail,
+    }
+    try:
+        (report.path / "health.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        if tail:
+            (report.path / "output-tail.log").write_text(tail + "\n", encoding="utf-8")
+    except OSError as exc:
+        print_warn(f"Run-Health konnte nicht gespeichert werden: {exc}")
+
+
 def preserved_worktree_cleanup_command(retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS) -> str:
     return (
         "python scripts/solve_issues.py --cleanup-preserved-worktrees "
@@ -930,6 +960,7 @@ def write_run_report(report: RunReport, status: str,
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
+    last_activity_at = worker_result.last_activity_at if worker_result else None
     pr_value = pr_url or ""
     preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
     cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
@@ -950,6 +981,8 @@ def write_run_report(report: RunReport, status: str,
             "branch": report.branch,
             "model": report.model,
             "worker_exit_code": worker_exit_code,
+            "last_activity_at": last_activity_at.isoformat(timespec="seconds") if last_activity_at else "",
+            "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
             "pr_url": pr_value,
             "note": note or "",
             "preserved_worktree": preserved_value,
@@ -970,6 +1003,8 @@ def write_run_report(report: RunReport, status: str,
             f"branch: {report.branch}",
             f"model: {report.model}",
             f"worker_exit_code: {worker_exit_code}",
+            f"last_activity_at: {last_activity_at.isoformat(timespec='seconds') if last_activity_at else ''}",
+            f"last_report_update_at: {datetime.now().isoformat(timespec='seconds')}",
             f"pr_url: {pr_value}",
             f"preserved_worktree: {preserved_value}",
         ]
@@ -1478,6 +1513,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     )
     if run_report:
         write_run_report(run_report, "started")
+        write_run_health(run_report, status="running")
         print(f"      Run-Report: {run_report.path}")
     if recovery_plan.action.startswith("skip"):
         if recovery_plan.pull_request and recovery_plan.pull_request.html_url:
@@ -1585,7 +1621,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         rate_limit_deferred_note = None
         diagnostic_outputs = []
         while True:
-            result = run_worker_command(cmd, repo_dir, env)
+            result = run_worker_command(cmd, repo_dir, env, run_report=run_report)
             diagnostic_outputs.append(result.output)
             rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
             if not rate_limit:
