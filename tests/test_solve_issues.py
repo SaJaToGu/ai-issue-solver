@@ -762,7 +762,7 @@ class GitStatusTests(unittest.TestCase):
 
             self.assertTrue(branch_has_changes_against_base(tmpdir, "main"))
 
-    def test_git_change_summary_contains_status_and_diff_stat(self):
+    def test_git_change_summary_uses_diff_stat_table(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             subprocess.run(["git", "init"], cwd=tmpdir, check=True, capture_output=True)
             subprocess.run(
@@ -792,12 +792,24 @@ class GitStatusTests(unittest.TestCase):
             summary = "\n".join(format_git_change_summary(tmpdir))
 
         self.assertIn("Git-Änderungsübersicht", summary)
-        self.assertIn("README.md", summary)
-        self.assertIn("notes.txt", summary)
-        self.assertIn("Statistik:", summary)
-        self.assertIn("Neue Dateien: 1 Datei, 1 eingefuegte Zeile", summary)
-        self.assertIn("Diff-Vorschau:", summary)
-        self.assertIn("new file, 1 eingefuegte Zeile", summary)
+        self.assertRegex(summary, r"README\.md\s+\|\s+1 \+")
+        self.assertRegex(summary, r"notes\.txt\s+\|\s+1 \+")
+        self.assertIn("1 neue Datei, 1 eingefuegte Zeile", summary)
+        self.assertNotIn("Diff-Vorschau:", summary)
+        self.assertNotIn("Status:", summary)
+
+    def test_git_change_summary_truncates_large_diff_stat(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(["git", "init"], cwd=tmpdir, check=True, capture_output=True)
+            for index in range(15):
+                Path(tmpdir, f"file-{index:02d}.txt").write_text("new\n", encoding="utf-8")
+            git_status = "\n".join(f"?? file-{index:02d}.txt" for index in range(15))
+
+            summary = "\n".join(format_git_change_summary(tmpdir, git_status))
+
+        self.assertIn("file-00.txt", summary)
+        self.assertNotIn("file-14.txt", summary)
+        self.assertIn("... 3 weitere Stat-Zeilen", summary)
 
     def test_worker_diagnostics_write_full_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -840,6 +852,10 @@ class GitStatusTests(unittest.TestCase):
                         "\n".join(f"line {index}" for index in range(40)) + "\n",
                     ),
                     pr_url="https://github.com/test-owner/demo/pull/24",
+                    git_change_summary=[
+                        "Git-Änderungsübersicht:",
+                        "  README.md | 1 +",
+                    ],
                 )
                 run_dir = Path(run_dir).resolve()
                 summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
@@ -859,7 +875,13 @@ class GitStatusTests(unittest.TestCase):
         self.assertIn("worker_exit_code: 0", summary)
         self.assertIn("pr_url: https://github.com/test-owner/demo/pull/24", summary)
         self.assertIn("preserved_worktree: \n", summary)
+        self.assertIn("git_diff_stat:", summary)
+        self.assertIn("README.md | 1 +", summary)
         self.assertIn("output_tail:", summary)
+        self.assertEqual(metadata["git_change_summary"], [
+            "Git-Änderungsübersicht:",
+            "  README.md | 1 +",
+        ])
         self.assertEqual(metadata["status"], "pr_created")
         self.assertEqual(metadata["repo"], "demo/repo")
         self.assertEqual(metadata["issue_title"], "Show issue titles in the status dashboard")
