@@ -107,7 +107,7 @@ PRESERVED_WORKTREES_ROOT = Path("reports") / "preserved-worktrees"
 PRESERVED_WORKTREE_RETENTION_DAYS = 14
 GIT_SUMMARY_MAX_STATUS_LINES = 20
 GIT_SUMMARY_MAX_STAT_LINES = 12
-GIT_SUMMARY_MAX_DIFF_LINES = 18
+GIT_SUMMARY_STAT_GRAPH_WIDTH = 30
 CODEX_RATE_LIMIT_RETRY_LIMIT = 3
 PRESERVE_WORKTREE_STATUSES = {
     "nonzero_without_changes",
@@ -682,7 +682,7 @@ def pluralize_de(count: int, singular: str, plural: str) -> str:
     return singular if count == 1 else plural
 
 
-def format_untracked_file_stats(repo_dir: str, status_lines: list[str]) -> tuple[list[str], int]:
+def format_untracked_file_stats(repo_dir: str, status_lines: list[str]) -> tuple[list[tuple[str, int]], int]:
     repo_root = Path(repo_dir)
     stats = []
     insertions = 0
@@ -695,42 +695,36 @@ def format_untracked_file_stats(repo_dir: str, status_lines: list[str]) -> tuple
             continue
         line_count = count_file_lines(path)
         insertions += line_count
-        pluses = "+" * min(max(line_count, 1), 30)
-        stats.append(f"{relative_path} | {line_count} {pluses}")
+        stats.append((relative_path, line_count))
     return stats, insertions
 
 
-def format_git_diff_preview(repo_dir: str, status_lines: list[str]) -> list[str]:
-    preview_lines = []
-    diff = git_output(
-        repo_dir,
-        ["diff", "--unified=3", "--no-ext-diff", "HEAD", "--"],
-    )
-    for line in diff.splitlines():
-        if line.startswith("index "):
+def format_untracked_diff_stat_lines(untracked_stats: list[tuple[str, int]],
+                                     path_width: int = 0) -> list[str]:
+    if not untracked_stats:
+        return []
+    path_width = max(path_width, max(len(path) for path, _line_count in untracked_stats))
+    lines = []
+    for relative_path, line_count in untracked_stats:
+        pluses = "+" * min(max(line_count, 1), GIT_SUMMARY_STAT_GRAPH_WIDTH)
+        lines.append(f"{relative_path:<{path_width}} | {line_count:>3} {pluses}")
+    return lines
+
+
+def normalize_diff_stat_lines(stat_lines: list[str],
+                              untracked_stats: list[tuple[str, int]]) -> list[str]:
+    file_lines = []
+    summary_lines = []
+    path_width = 0
+    for line in stat_lines:
+        if "|" not in line:
+            summary_lines.append(line)
             continue
-        preview_lines.append(line)
-        if len(preview_lines) >= GIT_SUMMARY_MAX_DIFF_LINES:
-            break
+        path_width = max(path_width, len(line.split("|", 1)[0].rstrip()))
+        file_lines.append(line)
 
-    if len(preview_lines) < GIT_SUMMARY_MAX_DIFF_LINES:
-        for status_line in status_lines:
-            if not status_line.startswith("?? "):
-                continue
-            relative_path = status_line[3:]
-            path = Path(repo_dir) / relative_path
-            if not path.is_file():
-                continue
-            line_count = count_file_lines(path)
-            preview_lines.append(f"diff --git a/{relative_path} b/{relative_path}")
-            preview_lines.append(
-                f"new file, {line_count} "
-                f"{pluralize_de(line_count, 'eingefuegte Zeile', 'eingefuegte Zeilen')}"
-            )
-            if len(preview_lines) >= GIT_SUMMARY_MAX_DIFF_LINES:
-                break
-
-    return preview_lines
+    untracked_lines = format_untracked_diff_stat_lines(untracked_stats, path_width)
+    return file_lines + untracked_lines + summary_lines
 
 
 def format_git_change_summary(repo_dir: str, git_status: str | None = None) -> list[str]:
@@ -740,58 +734,37 @@ def format_git_change_summary(repo_dir: str, git_status: str | None = None) -> l
         return []
 
     summary = ["Git-Änderungsübersicht:"]
-    summary.append(f"  Dateien geändert: {len(status_lines)}")
-    changed_paths = changed_status_paths(status_lines)
-    if changed_paths:
-        summary.append("  Dateien:")
-        for path in changed_paths[:GIT_SUMMARY_MAX_STATUS_LINES]:
-            summary.append(f"    {path}")
-        if len(changed_paths) > GIT_SUMMARY_MAX_STATUS_LINES:
-            summary.append(
-                f"    ... {len(changed_paths) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
-            )
-
-    shortstat = git_output(repo_dir, ["diff", "--shortstat", "HEAD", "--"])
     untracked_stats, untracked_insertions = format_untracked_file_stats(
         repo_dir,
         status_lines,
     )
-    if shortstat:
-        summary.append(f"  Statistik: {shortstat}")
+    stat = git_output(repo_dir, ["diff", "--stat", "HEAD", "--"])
+    stat_lines = normalize_diff_stat_lines(
+        [line for line in stat.splitlines() if line.strip()],
+        untracked_stats,
+    )
+    if stat_lines:
+        for line in stat_lines[:GIT_SUMMARY_MAX_STAT_LINES]:
+            summary.append(f"  {line}")
+        if len(stat_lines) > GIT_SUMMARY_MAX_STAT_LINES:
+            summary.append(
+                f"  ... {len(stat_lines) - GIT_SUMMARY_MAX_STAT_LINES} weitere Stat-Zeilen"
+            )
+    else:
+        changed_paths = changed_status_paths(status_lines)
+        for path in changed_paths[:GIT_SUMMARY_MAX_STATUS_LINES]:
+            summary.append(f"  {path}")
+        if len(changed_paths) > GIT_SUMMARY_MAX_STATUS_LINES:
+            summary.append(
+                f"  ... {len(changed_paths) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
+            )
+
     if untracked_insertions:
         summary.append(
-            f"  Neue Dateien: {len(untracked_stats)} "
+            f"  {len(untracked_stats)} neue "
             f"{pluralize_de(len(untracked_stats), 'Datei', 'Dateien')}, "
             f"{untracked_insertions} "
             f"{pluralize_de(untracked_insertions, 'eingefuegte Zeile', 'eingefuegte Zeilen')}"
-        )
-
-    stat = git_output(repo_dir, ["diff", "--stat", "HEAD", "--"])
-    stat_lines = [line for line in stat.splitlines() if line.strip()]
-    stat_lines.extend(untracked_stats)
-    if stat_lines:
-        summary.append("  Diff-Stat:")
-        for line in stat_lines[:GIT_SUMMARY_MAX_STAT_LINES]:
-            summary.append(f"    {line}")
-        if len(stat_lines) > GIT_SUMMARY_MAX_STAT_LINES:
-            summary.append(
-                f"    ... {len(stat_lines) - GIT_SUMMARY_MAX_STAT_LINES} weitere Stat-Zeilen"
-            )
-
-    preview_lines = format_git_diff_preview(repo_dir, status_lines)
-    if preview_lines:
-        summary.append("  Diff-Vorschau:")
-        for line in preview_lines:
-            summary.append(f"    {line}")
-        if len(preview_lines) == GIT_SUMMARY_MAX_DIFF_LINES:
-            summary.append("    ... Diff-Vorschau gekuerzt")
-
-    summary.append("  Status:")
-    for line in status_lines[:GIT_SUMMARY_MAX_STATUS_LINES]:
-        summary.append(f"    {line}")
-    if len(status_lines) > GIT_SUMMARY_MAX_STATUS_LINES:
-        summary.append(
-            f"    ... {len(status_lines) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
         )
     return summary
 
@@ -956,7 +929,8 @@ def write_run_report(report: RunReport, status: str,
                      pr_url: str | None = None,
                      note: str | None = None,
                      preserved_worktree_path: Path | str | None = None,
-                     base_branch: str | None = None) -> Path | None:
+                     base_branch: str | None = None,
+                     git_change_summary: list[str] | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -987,6 +961,7 @@ def write_run_report(report: RunReport, status: str,
             "note": note or "",
             "preserved_worktree": preserved_value,
             "cleanup_command": cleanup_command,
+            "git_change_summary": git_change_summary or [],
         }
         (report.path / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -1018,6 +993,8 @@ def write_run_report(report: RunReport, status: str,
             summary_lines.extend(["", f"note: {note}"])
         if worker_result is not None:
             summary_lines.extend(["", "Der vollstaendige Worker-Output liegt in worker-output.log."])
+        if git_change_summary:
+            summary_lines.extend(["", "git_diff_stat:", *git_change_summary])
         if output_tail:
             summary_lines.extend(["", "output_tail:", output_tail])
 
@@ -1551,6 +1528,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     write_run_report(run_report, "checkout_failed")
                 return False
             if branch_has_changes_against_base(repo_dir, base_branch):
+                git_status = git_status_porcelain(repo_dir)
+                git_change_summary = format_git_change_summary(repo_dir, git_status)
                 print(
                     "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
                     "erstelle fehlenden PR."
@@ -1591,6 +1570,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                         pr_url=pr.get("html_url") if pr else None,
                         preserved_worktree_path=preserved_worktree,
                         base_branch=base_branch,
+                        git_change_summary=git_change_summary,
                     )
                 return bool(pr)
         elif not create_branch(repo_dir, branch_name):
@@ -1661,7 +1641,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             diagnostic_result = WorkerRunResult(result.returncode, combined_output)
 
         git_status = git_status_porcelain(repo_dir)
-        print_git_change_summary(repo_dir, git_status)
+        git_change_summary = format_git_change_summary(repo_dir, git_status)
+        for line in git_change_summary:
+            print(f"      {line}")
         assessment = assess_worker_result(result, git_status)
         print_worker_assessment(result, assessment)
         if rate_limit_deferred_note:
@@ -1690,6 +1672,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     note=rate_limit_deferred_note,
                     preserved_worktree_path=preserved_worktree,
                     base_branch=base_branch,
+                    git_change_summary=git_change_summary,
                 )
             return False
         if not assessment.should_continue:
@@ -1717,6 +1700,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     worker_result=diagnostic_result,
                     preserved_worktree_path=preserved_worktree,
                     base_branch=base_branch,
+                    git_change_summary=git_change_summary,
                 )
             return False
 
@@ -1752,6 +1736,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     worker_result=diagnostic_result,
                     preserved_worktree_path=preserved_worktree,
                     base_branch=base_branch,
+                    git_change_summary=git_change_summary,
                 )
             return False
         print("✅")
@@ -1793,6 +1778,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 pr_url=pr.get("html_url") if pr else None,
                 preserved_worktree_path=preserved_worktree,
                 base_branch=base_branch,
+                git_change_summary=git_change_summary,
             )
         return bool(pr)
     finally:

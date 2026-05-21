@@ -109,6 +109,7 @@ class DashboardRun:
     pr_url: str
     preserved_worktree: str
     note: str
+    git_diff_stat: str
     output_tail: str
 
 
@@ -126,21 +127,29 @@ def parse_summary(path: Path) -> dict[str, str]:
     if not path.exists():
         return fields
 
+    multiline_keys = {"git_diff_stat", "output_tail"}
     current_multiline_key = None
     multiline_parts: list[str] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = raw_line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        starts_multiline_key = bool(separator and key in multiline_keys)
+
         if current_multiline_key:
+            if starts_multiline_key:
+                fields[current_multiline_key] = "\n".join(multiline_parts).strip()
+                current_multiline_key = key
+                multiline_parts = [value] if value else []
+                continue
             multiline_parts.append(raw_line)
             continue
 
         if not raw_line.strip():
             continue
-        key, separator, value = raw_line.partition(":")
         if not separator:
             continue
-        key = key.strip()
-        value = value.strip()
-        if key == "output_tail":
+        if key in multiline_keys:
             current_multiline_key = key
             if value:
                 multiline_parts.append(value)
@@ -332,6 +341,7 @@ def read_runs(runs_dir: Path,
                 pr_url=fields.get("pr_url", ""),
                 preserved_worktree=fields.get("preserved_worktree", ""),
                 note=fields.get("note") or fields.get("cleanup_note", ""),
+                git_diff_stat=fields.get("git_diff_stat", ""),
                 output_tail=output_tail,
             )
         )
@@ -492,8 +502,13 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         actions.append(f"<code>{escape(run.preserved_worktree)}</code>")
 
     tail = ""
+    if run.git_diff_stat:
+        tail += (
+            "<details><summary>Diff stat</summary>"
+            f"<pre>{escape(run.git_diff_stat)}</pre></details>"
+        )
     if run.output_tail:
-        tail = (
+        tail += (
             "<details><summary>Output tail</summary>"
             f"<pre>{escape(run.output_tail)}</pre></details>"
         )

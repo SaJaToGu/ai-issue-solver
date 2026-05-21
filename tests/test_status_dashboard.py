@@ -104,6 +104,31 @@ worker_exit_code: 0
         self.assertEqual(runs[0].issue_number, "25")
         self.assertEqual(runs[0].issue_title, "")
 
+    def test_read_runs_parses_diff_stat_before_output_tail(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "reports" / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-123456-demo-issue-25",
+                """status: pr_created
+repo: demo
+issue_number: 25
+worker_exit_code: 0
+
+git_diff_stat:
+Git-Änderungsübersicht:
+  README.md | 1 +
+
+output_tail:
+line 1
+line 2
+""",
+            )
+
+            runs = read_runs(runs_dir)
+
+        self.assertEqual(runs[0].git_diff_stat, "Git-Änderungsübersicht:\n  README.md | 1 +")
+        self.assertEqual(runs[0].output_tail, "line 1\nline 2")
+
     def test_github_links_use_owner_and_encode_branch_slashes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runs_dir = Path(tmpdir) / "runs"
@@ -142,6 +167,9 @@ branch: ai/fix-issue-25
 model: codex
 worker_exit_code: 0
 pr_url: https://github.com/test-owner/demo/pull/25
+git_diff_stat:
+Git-Änderungsübersicht:
+  README.md | 1 +
 """,
             )
             self.write_summary(
@@ -180,6 +208,8 @@ preserved_worktree: reports/preserved-worktrees/run/demo
         self.assertNotIn("Fix <unsafe>", html)
         self.assertIn("https://github.com/test-owner/demo/issues/26", html)
         self.assertIn("https://github.com/test-owner/demo/pull/25", html)
+        self.assertIn("Diff stat", html)
+        self.assertIn("README.md | 1 +", html)
         self.assertIn("Recovery-Worktree", html)
         self.assertIn("reports/preserved-worktrees/run/demo", html)
         self.assertTrue(output_exists)
