@@ -1240,7 +1240,8 @@ def create_issue_pull_request(client: GitHubClient, repo: str, number: int, titl
 def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 model: str, model_name: str, config: dict,
                 token: str, dry_run: bool, base_branch: str,
-                close_issues: bool) -> bool:
+                close_issues: bool,
+                defer_codex_rate_limit: bool = False) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -1366,6 +1367,18 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
             if not rate_limit:
                 break
+            if defer_codex_rate_limit:
+                if rate_limit.reset_text:
+                    print_warn(
+                        "Codex-Rate-Limit erreicht; "
+                        f"Batch-Runner soll nach {rate_limit.reset_text} neu einplanen"
+                    )
+                else:
+                    print_warn(
+                        "Codex-Rate-Limit erreicht; "
+                        "Batch-Runner soll diesen Job verzögern"
+                    )
+                break
             if not rate_limit.reset_at:
                 sleep_until_codex_reset(rate_limit)
                 break
@@ -1466,6 +1479,11 @@ def main():
         action="store_true",
         help="Issues nach PR-Erstellung direkt schließen",
     )
+    parser.add_argument(
+        "--defer-codex-rate-limit",
+        action="store_true",
+        help="Bei Codex-Rate-Limits nicht schlafen; Batch-Runner kann den Job verzögern",
+    )
     args = parser.parse_args()
 
     if requests is None:
@@ -1556,6 +1574,7 @@ def main():
                 dry_run=args.dry_run,
                 base_branch=base_branch,
                 close_issues=args.close_issues,
+                defer_codex_rate_limit=args.defer_codex_rate_limit,
             )
             if ok:
                 solved += 1

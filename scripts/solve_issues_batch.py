@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
+import heapq
 import os
 import subprocess
 import sys
@@ -19,7 +21,12 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from solve_issues import GitHubClient, MODEL_CONFIGS, requests  # noqa: E402
+from solve_issues import (  # noqa: E402
+    GitHubClient,
+    MODEL_CONFIGS,
+    detect_codex_rate_limit,
+    requests,
+)
 from utils import (  # noqa: E402
     is_placeholder_value,
     load_env,
@@ -50,10 +57,17 @@ class IssueJobResult:
     returncode: int
     output: str
     duration_seconds: float
+    rate_limited: bool = False
+    delayed_until: datetime | None = None
+    delayed_reset_text: str | None = None
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0
+        return self.returncode == 0 and not self.delayed
+
+    @property
+    def delayed(self) -> bool:
+        return self.rate_limited
 
 
 def positive_int(value: str) -> int:
@@ -119,6 +133,8 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
         cmd.append("--dry-run")
     if args.close_issues:
         cmd.append("--close-issues")
+    if args.model == "codex":
+        cmd.append("--defer-codex-rate-limit")
 
     return cmd
 
@@ -148,38 +164,133 @@ def run_issue_job(job: IssueJob, cmd: list[str], project_root: Path,
     )
 
 
-def run_issue_jobs(jobs: list[IssueJob], workers: int, run_job_fn) -> list[IssueJobResult]:
+def mark_rate_limited_result(result: IssueJobResult, detect_rate_limit_fn) -> IssueJobResult:
+    if result.returncode == 0:
+        return result
+
+    rate_limit = detect_rate_limit_fn(result.output)
+    if not rate_limit:
+        return result
+    return replace(
+        result,
+        rate_limited=True,
+        delayed_until=rate_limit.reset_at,
+        delayed_reset_text=rate_limit.reset_text,
+    )
+
+
+def run_issue_jobs(jobs: list[IssueJob],
+                   workers: int,
+                   run_job_fn,
+                   *,
+                   requeue_delayed: bool = False,
+                   max_rate_limit_requeues: int = 1,
+                   detect_rate_limit_fn=detect_codex_rate_limit,
+                   sleep_fn=time.sleep,
+                   now_fn=datetime.now,
+                   on_result=None,
+                   on_delay=None) -> list[IssueJobResult]:
     results = []
+    pending = list(jobs)
+    delayed_jobs: list[tuple[datetime, int, IssueJob]] = []
+    attempts = {job: 0 for job in jobs}
+    sequence = 0
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_job = {executor.submit(run_job_fn, job): job for job in jobs}
-        for future in as_completed(future_to_job):
-            job = future_to_job[future]
-            try:
-                results.append(future.result())
-            except Exception as exc:  # pragma: no cover - defensiver Schutz fuer Batch-Laeufe
-                results.append(
-                    IssueJobResult(
+        future_to_job = {}
+
+        def promote_ready_delayed_jobs() -> None:
+            now = now_fn()
+            while delayed_jobs and delayed_jobs[0][0] <= now:
+                _, _, ready_job = heapq.heappop(delayed_jobs)
+                pending.append(ready_job)
+
+        def submit_ready_jobs() -> None:
+            promote_ready_delayed_jobs()
+            while pending and len(future_to_job) < workers:
+                job = pending.pop(0)
+                attempts[job] += 1
+                future_to_job[executor.submit(run_job_fn, job)] = job
+
+        submit_ready_jobs()
+        while future_to_job or pending or delayed_jobs:
+            if not future_to_job:
+                delayed_until, _, delayed_job = heapq.heappop(delayed_jobs)
+                wait_seconds = max(0.0, (delayed_until - now_fn()).total_seconds())
+                if wait_seconds > 0:
+                    sleep_fn(wait_seconds)
+                pending.append(delayed_job)
+                submit_ready_jobs()
+                continue
+
+            for future in as_completed(list(future_to_job), timeout=None):
+                job = future_to_job.pop(future)
+                try:
+                    result = future.result()
+                except Exception as exc:  # pragma: no cover - defensiver Schutz fuer Batch-Laeufe
+                    result = IssueJobResult(
                         job=job,
                         returncode=1,
                         output=f"Unerwarteter Worker-Fehler: {exc}\n",
                         duration_seconds=0.0,
                     )
+
+                result = mark_rate_limited_result(result, detect_rate_limit_fn)
+                can_requeue = (
+                    result.delayed
+                    and requeue_delayed
+                    and result.delayed_until is not None
+                    and attempts[job] <= max_rate_limit_requeues
                 )
+                if can_requeue:
+                    sequence += 1
+                    heapq.heappush(delayed_jobs, (result.delayed_until, sequence, job))
+                    if on_delay:
+                        on_delay(result)
+                else:
+                    results.append(result)
+                    if on_result:
+                        on_result(result, len(results), len(jobs))
+
+                submit_ready_jobs()
+                break
     return results
 
 
 def print_job_result(result: IssueJobResult, completed: int, total: int) -> None:
-    status = "OK" if result.ok else "FEHLER"
+    status = "VERZÖGERT" if result.delayed else ("OK" if result.ok else "FEHLER")
     print("\n" + "─" * 60)
     print(
         f"[{completed}/{total}] {result.job.label} — {status} "
         f"({result.duration_seconds:.1f}s, Exit {result.returncode})"
     )
+    if result.delayed:
+        reset = (
+            result.delayed_until.strftime("%Y-%m-%d %H:%M")
+            if result.delayed_until
+            else result.delayed_reset_text
+        )
+        print(
+            "Codex-Rate-Limit erkannt; "
+            f"Job bleibt bis {reset or 'zum naechsten Reset'} verzögert."
+        )
     print("─" * 60)
     if result.output.strip():
         print(result.output.rstrip())
     else:
         print("(keine Worker-Ausgabe)")
+
+
+def print_job_delay(result: IssueJobResult) -> None:
+    reset = (
+        result.delayed_until.strftime("%Y-%m-%d %H:%M")
+        if result.delayed_until
+        else result.delayed_reset_text
+    )
+    print_warn(
+        f"{result.job.label}: Codex-Rate-Limit erkannt; "
+        f"Requeue nach {reset or 'unbekanntem Reset'}."
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -217,6 +328,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=positive_int,
         default=DEFAULT_WORKERS,
         help=f"Maximale parallele Worker, Standard: {DEFAULT_WORKERS}",
+    )
+    parser.add_argument(
+        "--requeue-rate-limited",
+        action="store_true",
+        help="Codex-Jobs nach erkannter Reset-Zeit erneut einplanen statt nur als verzögert zu melden",
+    )
+    parser.add_argument(
+        "--rate-limit-retries",
+        type=positive_int,
+        default=1,
+        help="Maximale Requeue-Versuche pro rate-limitiertem Codex-Job, Standard: 1",
     )
     return parser.parse_args(argv)
 
@@ -264,29 +386,32 @@ def main(argv: list[str] | None = None) -> int:
         cmd = build_worker_command(args, job, solve_script)
         return run_issue_job(job, cmd, project_root, env)
 
-    completed = 0
-    results = []
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        future_to_job = {executor.submit(run, job): job for job in jobs}
-        for future in as_completed(future_to_job):
-            completed += 1
-            job = future_to_job[future]
-            try:
-                result = future.result()
-            except Exception as exc:  # pragma: no cover - Schutz gegen unerwartete Runner-Fehler
-                result = IssueJobResult(job, 1, f"Unerwarteter Worker-Fehler: {exc}\n", 0.0)
-            results.append(result)
-            print_job_result(result, completed, len(jobs))
+    requeue_delayed = args.model == "codex" and args.requeue_rate_limited
+    detect_rate_limit_fn = (
+        detect_codex_rate_limit if args.model == "codex" else (lambda output: None)
+    )
+    results = run_issue_jobs(
+        jobs,
+        workers=args.workers,
+        run_job_fn=run,
+        requeue_delayed=requeue_delayed,
+        max_rate_limit_requeues=args.rate_limit_retries,
+        detect_rate_limit_fn=detect_rate_limit_fn,
+        on_result=print_job_result,
+        on_delay=print_job_delay if requeue_delayed else None,
+    )
 
     solved = sum(1 for result in results if result.ok)
-    failed = len(results) - solved
+    delayed = sum(1 for result in results if result.delayed)
+    failed = len(results) - solved - delayed
 
     print("\n" + "─" * 50)
     print(f"  ✅ Erfolgreich: {solved}")
+    print(f"  ⏳ Verzögert:   {delayed}")
     print(f"  ❌ Fehler:      {failed}")
     print("─" * 50 + "\n")
 
-    return 0 if failed == 0 else 1
+    return 0 if failed == 0 and delayed == 0 else 1
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 import sys
 import threading
 import time
@@ -96,6 +97,13 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertIn("--dry-run", cmd)
         self.assertIn("--close-issues", cmd)
 
+    def test_build_worker_command_defers_codex_rate_limits_to_batch_runner(self):
+        args = self.make_args(model="codex")
+
+        cmd = build_worker_command(args, IssueJob("demo", 7), Path("scripts/solve_issues.py"))
+
+        self.assertIn("--defer-codex-rate-limit", cmd)
+
     def test_run_issue_jobs_continues_after_worker_failure(self):
         jobs = [IssueJob("demo", 1), IssueJob("demo", 2), IssueJob("demo", 3)]
         started = []
@@ -132,6 +140,175 @@ class BatchRunnerTests(unittest.TestCase):
         run_issue_jobs(jobs, workers=2, run_job_fn=run)
 
         self.assertLessEqual(max_active, 2)
+
+    def test_run_issue_jobs_marks_codex_rate_limited_job_delayed_without_retry(self):
+        jobs = [IssueJob("demo", 1), IssueJob("demo", 2)]
+        started = []
+
+        def run(job):
+            started.append(job.issue_number)
+            if job.issue_number == 1:
+                return IssueJobResult(
+                    job,
+                    1,
+                    "You have reached the Codex message limit\n"
+                    "Your rate limit will be reset on May 20, 2026, at 1:36 AM.\n",
+                    0.0,
+                )
+            return IssueJobResult(job, 0, "ok", 0.0)
+
+        results = run_issue_jobs(jobs, workers=1, run_job_fn=run)
+
+        self.assertEqual(started, [1, 2])
+        self.assertEqual(len(results), 2)
+        delayed = [result for result in results if result.delayed]
+        self.assertEqual(len(delayed), 1)
+        self.assertEqual(delayed[0].job, IssueJob("demo", 1))
+        self.assertEqual(delayed[0].delayed_until, datetime(2026, 5, 20, 1, 36))
+
+    def test_run_issue_jobs_does_not_delay_successful_worker_with_rate_limit_text(self):
+        jobs = [IssueJob("demo", 1)]
+
+        def run(job):
+            return IssueJobResult(
+                job,
+                0,
+                "PR erstellt\nYour rate limit will be reset on May 20, 2026, at 1:36 AM.\n",
+                0.0,
+            )
+
+        results = run_issue_jobs(jobs, workers=1, run_job_fn=run)
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].ok)
+        self.assertFalse(results[0].delayed)
+
+    def test_run_issue_jobs_requeues_rate_limited_job_after_other_available_jobs(self):
+        jobs = [IssueJob("demo", 1), IssueJob("demo", 2)]
+        started = []
+
+        def run(job):
+            started.append(job.issue_number)
+            if job.issue_number == 1 and started.count(1) == 1:
+                return IssueJobResult(
+                    job,
+                    1,
+                    "Your rate limit will be reset on May 20, 2026, at 1:36 AM.\n",
+                    0.0,
+                )
+            return IssueJobResult(job, 0, f"ok {job.issue_number}", 0.0)
+
+        results = run_issue_jobs(
+            jobs,
+            workers=1,
+            run_job_fn=run,
+            requeue_delayed=True,
+            now_fn=lambda: datetime(2026, 5, 20, 1, 36),
+        )
+
+        self.assertEqual(started, [1, 2, 1])
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(not result.delayed for result in results))
+        self.assertEqual(sum(1 for result in results if result.ok), 2)
+
+    def test_run_issue_jobs_stops_requeueing_after_retry_limit(self):
+        jobs = [IssueJob("demo", 1)]
+        started = []
+
+        def run(job):
+            started.append(job.issue_number)
+            return IssueJobResult(
+                job,
+                1,
+                "Your rate limit will be reset on May 20, 2026, at 1:36 AM.\n",
+                0.0,
+            )
+
+        results = run_issue_jobs(
+            jobs,
+            workers=1,
+            run_job_fn=run,
+            requeue_delayed=True,
+            max_rate_limit_requeues=1,
+            now_fn=lambda: datetime(2026, 5, 20, 1, 36),
+        )
+
+        self.assertEqual(started, [1, 1])
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].delayed)
+        self.assertEqual(results[0].job, IssueJob("demo", 1))
+
+    def test_run_issue_jobs_sleeps_until_reset_when_only_delayed_jobs_remain(self):
+        jobs = [IssueJob("demo", 1)]
+        started = []
+        sleeps = []
+
+        def run(job):
+            started.append(job.issue_number)
+            if len(started) == 1:
+                return IssueJobResult(
+                    job,
+                    1,
+                    "Your rate limit will be reset on May 20, 2026, at 1:36 AM.\n",
+                    0.0,
+                )
+            return IssueJobResult(job, 0, "ok", 0.0)
+
+        results = run_issue_jobs(
+            jobs,
+            workers=1,
+            run_job_fn=run,
+            requeue_delayed=True,
+            sleep_fn=sleeps.append,
+            now_fn=lambda: datetime(2026, 5, 20, 1, 35, 30),
+        )
+
+        self.assertEqual(started, [1, 1])
+        self.assertEqual(sleeps, [30.0])
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].ok)
+
+    def test_run_issue_jobs_submits_ready_requeue_when_worker_slot_opens(self):
+        jobs = [IssueJob("demo", 1), IssueJob("demo", 2)]
+        started = []
+        active = set()
+        retried_while_second_job_active = False
+        lock = threading.Lock()
+
+        def run(job):
+            nonlocal retried_while_second_job_active
+            with lock:
+                started.append(job.issue_number)
+                active.add(job.issue_number)
+                if job.issue_number == 1 and started.count(1) == 2 and 2 in active:
+                    retried_while_second_job_active = True
+            try:
+                if job.issue_number == 1 and started.count(1) == 1:
+                    return IssueJobResult(
+                        job,
+                        1,
+                        "Your rate limit will be reset on May 20, 2026, at 1:36 AM.\n",
+                        0.0,
+                    )
+                if job.issue_number == 2:
+                    time.sleep(0.05)
+                return IssueJobResult(job, 0, f"ok {job.issue_number}", 0.0)
+            finally:
+                with lock:
+                    active.discard(job.issue_number)
+
+        results = run_issue_jobs(
+            jobs,
+            workers=2,
+            run_job_fn=run,
+            requeue_delayed=True,
+            now_fn=lambda: datetime(2026, 5, 20, 1, 36),
+        )
+
+        self.assertEqual(started.count(1), 2)
+        self.assertTrue(retried_while_second_job_active)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sum(1 for result in results if result.ok), 2)
 
 
 if __name__ == "__main__":
