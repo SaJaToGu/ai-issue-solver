@@ -225,6 +225,7 @@ python scripts/solve_issues.py --model mistral --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model mistral --model-name magistral-small-2509
 python scripts/solve_issues.py --model ollama --model-name llama3
 python scripts/solve_issues_batch.py --model codex --repo BedBoxDrawerRole --workers 2
+python scripts/run_overnight.py --model codex --base-branch develop --workers 2
 ```
 
 Das Script verdichtet die Worker-Ausgabe live auf Status-, Planungs-, Warn- und
@@ -345,6 +346,38 @@ python scripts/solve_issues_batch.py --model codex --workers 2 --unhealthy-actio
   `--unhealthy-action retry`, Standard: `1`
 - alle relevanten Solver-Flags wie `--model`, `--model-name`, `--repo`,
   `--label`, `--base-branch`, `--dry-run` und `--close-issues`
+
+---
+
+### `run_overnight.py`
+Startet einen längeren unbeaufsichtigten Lauf mit Preflight und Abschlussbericht.
+Der Wrapper zieht zuerst den Basis-Branch per `git pull --ff-only`, führt die
+Tests aus, startet danach `solve_issues_batch.py` mit Worker-Limit und
+regeneriert am Ende das lokale Status-Dashboard. Jeder Schritt schreibt ein
+eigenes Log unter `reports/overnight/<timestamp>/`; die finale `summary.txt`
+verlinkt Pull-, Test-, Batch- und Dashboard-Log für die Kontrolle am nächsten
+Morgen.
+
+```bash
+python scripts/run_overnight.py --model codex --base-branch develop --workers 2
+python scripts/run_overnight.py --model claude --repo BedBoxDrawerRole --workers 3
+python scripts/run_overnight.py --model codex --issue 23 --issue 24 --dry-run --skip-pull
+```
+
+Wenn Pull oder Tests fehlschlagen, startet der Batch nicht. Das Dashboard und die
+finale Summary werden trotzdem geschrieben, damit der Abbruchgrund sichtbar
+bleibt.
+
+**Flags:**
+- `--workers` — maximale parallele Batch-Worker, Standard: `2`
+- `--base-branch` — Branch für Pull und Solver-Basis, Standard: `main`
+- `--test-command` — Preflight-Testbefehl, Standard:
+  `python -m unittest discover -s tests`
+- `--skip-pull` / `--skip-tests` — einzelne Preflight-Schritte bewusst auslassen
+- `--log-root` — Zielverzeichnis für Overnight-Logs, Standard:
+  `reports/overnight`
+- alle relevanten Batch-Flags wie `--model`, `--model-name`, `--repo`,
+  `--issue`, `--label`, `--dry-run`, `--close-issues` und Dashboard-Optionen
 
 ---
 
@@ -571,6 +604,7 @@ ai-issue-solver/
 │   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
 │   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
 │   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
+│   ├── run_overnight.py         # Unbeaufsichtigter Batch mit Preflight und Logs
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
 │   └── issue_body               # Issue-Text-Vorlage
