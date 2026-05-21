@@ -171,3 +171,19 @@ Dashboard ausgewertet werden:
 ```bash
 python scripts/status_dashboard.py
 ```
+
+Für unbeaufsichtigte längere Läufe bündelt `run_overnight.py` die wichtigsten
+Schritte in einem Wrapper: Basis-Branch aktualisieren, Tests ausführen,
+begrenzten Batch-Solver starten, Dashboard regenerieren und eine finale Summary
+mit Log-Pfaden schreiben.
+
+```bash
+python scripts/run_overnight.py --model codex --base-branch develop --workers 2
+python scripts/run_overnight.py --model claude --repo BedBoxDrawerRole --workers 3
+python scripts/run_overnight.py --model codex --issue 23 --issue 24 --dry-run --skip-pull
+```
+
+Die Logs liegen pro Lauf unter `reports/overnight/<timestamp>/`:
+`pull.log`, `tests.log`, `batch.log`, `dashboard.log` und `summary.txt`.
+Wenn Pull oder Tests fehlschlagen, wird der Batch nicht gestartet; Dashboard und
+Summary werden trotzdem geschrieben.
