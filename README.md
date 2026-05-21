@@ -286,6 +286,29 @@ python scripts/github_summary.py --limit 3 --merged-days 7 --run-days 7
 
 ---
 
+### `status_dashboard.py`
+Erzeugt ein lokales HTML-Dashboard aus den Run-Reports unter `reports/runs/`.
+Die Übersicht gruppiert laufende, erfolgreiche, fehlgeschlagene und No-op-Jobs
+und verlinkt GitHub Issues, Branches und Pull Requests, wenn genug Metadaten
+vorliegen.
+
+```bash
+python scripts/status_dashboard.py
+python scripts/status_dashboard.py --owner SaJaToGu
+python scripts/status_dashboard.py --runs-dir reports/runs --output reports/status-dashboard.html
+```
+
+Ohne `--owner` nutzt das Script `GITHUB_USER` aus `config/.env` oder leitet den
+Owner aus vorhandenen PR-URLs ab. Die erzeugte Datei liegt standardmäßig unter
+`reports/status-dashboard.html` und kann direkt im Browser geöffnet werden.
+
+**Flags:**
+- `--runs-dir` — Verzeichnis mit Run-Reports, Standard: `reports/runs`
+- `--output` — Zielpfad der HTML-Datei, Standard: `reports/status-dashboard.html`
+- `--owner` — GitHub Owner für Issue- und Branch-Links
+
+---
+
 ## Nächste Ausbaustufe
 
 Die erste Workflow-Runde ist abgeschlossen: Analyse, Backlog-Issues,
@@ -375,6 +398,7 @@ ai-issue-solver/
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
+│   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
 │   ├── solve_issues.py          # Schritt 3: Issues mit KI lösen
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
@@ -390,6 +414,7 @@ ai-issue-solver/
 └── tests/
     ├── test_analyze_repos.py    # Analyzer-Tests
     ├── test_github_summary.py   # GitHub-Übersichts-Tests
+    ├── test_status_dashboard.py # Dashboard-Tests
     └── test_solve_issues.py     # Solver- und Worker-Tests
 ```
 
