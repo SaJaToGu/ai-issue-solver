@@ -319,16 +319,21 @@ vorliegen.
 python scripts/status_dashboard.py
 python scripts/status_dashboard.py --owner SaJaToGu
 python scripts/status_dashboard.py --runs-dir reports/runs --output reports/status-dashboard.html
+python scripts/serve_dashboard.py --port 8765
 ```
 
 Ohne `--owner` nutzt das Script `GITHUB_USER` aus `config/.env` oder leitet den
 Owner aus vorhandenen PR-URLs ab. Die erzeugte Datei liegt standardmäßig unter
 `reports/status-dashboard.html` und kann direkt im Browser geöffnet werden.
+`serve_dashboard.py` erzeugt das Dashboard ebenfalls, serviert es lokal und zeigt
+einen Beenden-Knopf im Dashboard an. Der einfache `python -m http.server` kann
+Dateien ausliefern, aber nicht per Browser-Button beendet werden.
 
 **Flags:**
 - `--runs-dir` — Verzeichnis mit Run-Reports, Standard: `reports/runs`
 - `--output` — Zielpfad der HTML-Datei, Standard: `reports/status-dashboard.html`
 - `--owner` — GitHub Owner für Issue- und Branch-Links
+- `serve_dashboard.py --port` — lokaler Port für den Dashboard-Server, Standard: `8765`
 
 ---
 
@@ -422,6 +427,7 @@ ai-issue-solver/
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
 │   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
+│   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
 │   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
 │   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen

@@ -249,7 +249,8 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
 
 
 def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: Path,
-                     generated_at: datetime | None = None) -> str:
+                     generated_at: datetime | None = None,
+                     allow_shutdown: bool = False) -> str:
     generated_at = generated_at or datetime.now()
     counts = {category: 0 for category in STATUS_ORDER}
     for run in runs:
@@ -270,6 +271,42 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
         "</section>"
         for category in STATUS_ORDER
     )
+
+    shutdown_button = ""
+    shutdown_script = ""
+    if allow_shutdown:
+        shutdown_button = (
+            '<button class="shutdown-button" type="button" onclick="shutdownServer()">'
+            'Dashboard-Server beenden'
+            '</button>'
+        )
+        shutdown_script = """
+  <script>
+    async function shutdownServer() {
+      const button = document.querySelector('.shutdown-button');
+      if (button) {
+        button.disabled = true;
+        button.textContent = 'Server wird beendet...';
+      }
+      try {
+        await fetch('/__shutdown__', { method: 'POST' });
+        const notice = document.querySelector('.shutdown-notice');
+        if (notice) {
+          notice.textContent = 'Dashboard-Server wurde beendet. Dieses Fenster kann offen bleiben.';
+        }
+      } catch (error) {
+        const notice = document.querySelector('.shutdown-notice');
+        if (notice) {
+          notice.textContent = 'Server konnte nicht per Button beendet werden. Terminal mit Ctrl+C stoppen.';
+        }
+        if (button) {
+          button.disabled = false;
+          button.textContent = 'Dashboard-Server beenden';
+        }
+      }
+    }
+  </script>
+"""
 
     return f"""<!doctype html>
 <html lang="de">
@@ -304,6 +341,18 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     }}
     h1 {{ margin: 0 0 6px; font-size: 26px; letter-spacing: 0; }}
     .meta {{ color: var(--muted); }}
+    .header-row {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }}
+    .shutdown-button {{
+      border: 1px solid #b42318;
+      background: #c92a2a;
+      color: #fff;
+      border-radius: 6px;
+      padding: 9px 12px;
+      font: inherit;
+      cursor: pointer;
+    }}
+    .shutdown-button:disabled {{ opacity: .65; cursor: default; }}
+    .shutdown-notice {{ margin-top: 6px; color: var(--muted); min-height: 20px; }}
     main {{ padding: 24px 32px 36px; }}
     .metrics {{
       display: grid;
@@ -373,8 +422,14 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
 </head>
 <body>
   <header>
-    <h1>AI Issue Solver Status Dashboard</h1>
-    <div class="meta">Generiert: {escape(format_datetime(generated_at))} · Runs: {len(runs)}</div>
+    <div class="header-row">
+      <div>
+        <h1>AI Issue Solver Status Dashboard</h1>
+        <div class="meta">Generiert: {escape(format_datetime(generated_at))} · Runs: {len(runs)}</div>
+        <div class="shutdown-notice" aria-live="polite"></div>
+      </div>
+      <div>{shutdown_button}</div>
+    </div>
   </header>
   <main>
     <section class="metrics" aria-label="Status-Zusammenfassung">
@@ -401,17 +456,19 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       </table>
     </section>
   </main>
+  {shutdown_script}
 </body>
 </html>
 """
 
 
 def write_dashboard(runs: list[DashboardRun], output_path: Path,
-                    owner: str | None = None) -> Path:
+                    owner: str | None = None,
+                    allow_shutdown: bool = False) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_owner = owner or infer_owner_from_runs(runs)
     output_path.write_text(
-        render_dashboard(runs, effective_owner, output_path),
+        render_dashboard(runs, effective_owner, output_path, allow_shutdown=allow_shutdown),
         encoding="utf-8",
     )
     return output_path

@@ -122,6 +122,12 @@ pr_url:
         self.assertIn("https://github.com/test-owner/demo/pull/25", html)
         self.assertTrue(output_exists)
 
+    def test_render_dashboard_can_include_shutdown_button(self):
+        html = render_dashboard([], None, Path("reports/status-dashboard.html"), allow_shutdown=True)
+
+        self.assertIn("Dashboard-Server beenden", html)
+        self.assertIn("/__shutdown__", html)
+
 
 if __name__ == "__main__":
     unittest.main()
