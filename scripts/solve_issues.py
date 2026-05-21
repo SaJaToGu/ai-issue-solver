@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import json
 import os
 import re
 import shutil
@@ -91,10 +92,19 @@ MODEL_CONFIGS = {
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
 RUN_REPORTS_ROOT = Path("reports") / "runs"
+PRESERVED_WORKTREES_ROOT = Path("reports") / "preserved-worktrees"
+PRESERVED_WORKTREE_RETENTION_DAYS = 14
 GIT_SUMMARY_MAX_STATUS_LINES = 20
 GIT_SUMMARY_MAX_STAT_LINES = 12
 GIT_SUMMARY_MAX_DIFF_LINES = 18
 CODEX_RATE_LIMIT_RETRY_LIMIT = 3
+PRESERVE_WORKTREE_STATUSES = {
+    "nonzero_without_changes",
+    "pr_failed",
+    "pr_failed_from_existing_branch",
+    "push_failed",
+    "rate_limit_deferred",
+}
 COMMON_REPO_FILES = {
     ".dockerignore",
     ".env.example",
@@ -772,20 +782,153 @@ def create_run_report(repo: str, issue_number: int, branch: str, model: str,
     return RunReport(run_dir, repo, issue_number, branch, model)
 
 
+def preserved_worktree_cleanup_command(retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS) -> str:
+    return (
+        "python scripts/solve_issues.py --cleanup-preserved-worktrees "
+        f"--retention-days {retention_days}"
+    )
+
+
+def preserved_worktree_recovery_note(path: Path, branch: str, base_branch: str | None = None) -> str:
+    diff_base = f"origin/{base_branch}...HEAD" if base_branch else "origin/main...HEAD"
+    return "\n".join([
+        "Manuelle Recovery:",
+        f"  cd {path}",
+        "  git status --short",
+        f"  git diff --stat {diff_base}",
+        f"  git push origin HEAD:{branch}",
+        "  # Danach PR manuell erstellen oder den Solver erneut starten.",
+    ])
+
+
+def write_preserved_worktree_readme(path: Path, repo: str, issue_number: int,
+                                    branch: str, status: str,
+                                    base_branch: str | None = None) -> None:
+    content = "\n".join([
+        "# Preserved AI Solver Worktree",
+        "",
+        f"- Repository: `{repo}`",
+        f"- Issue: `#{issue_number}`",
+        f"- Branch: `{branch}`",
+        f"- Failure status: `{status}`",
+        "",
+        preserved_worktree_recovery_note(path, branch, base_branch),
+        "",
+        "Aufraeumen:",
+        "",
+        f"```bash\n{preserved_worktree_cleanup_command()}\n```",
+        "",
+    ])
+    (path / "RECOVERY.md").write_text(content, encoding="utf-8")
+
+
+def sanitize_preserved_remote(repo_dir: Path, owner: str, repo: str) -> None:
+    public_url = f"https://github.com/{owner}/{repo}.git"
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", public_url],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "--unset-all", "remote.origin.pushurl"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+
+
+def unique_preserved_worktree_path(report: RunReport, repo: str) -> Path:
+    base = PRESERVED_WORKTREES_ROOT / report.path.name / safe_run_repo_name(repo)
+    candidate = base
+    suffix = 2
+    while candidate.exists():
+        candidate = base.with_name(f"{base.name}-{suffix}")
+        suffix += 1
+    return candidate
+
+
+def worktree_has_recoverable_changes(repo_dir: str, base_branch: str) -> bool:
+    return bool(git_status_porcelain(repo_dir).strip()) or branch_has_changes_against_base(
+        repo_dir, base_branch
+    )
+
+
+def should_preserve_worktree(status: str, repo_dir: str, base_branch: str,
+                             changes_exist: bool = False) -> bool:
+    if status not in PRESERVE_WORKTREE_STATUSES:
+        return False
+    return changes_exist or worktree_has_recoverable_changes(repo_dir, base_branch)
+
+
+def preserve_worker_worktree(repo_dir: str, report: RunReport, owner: str, repo: str,
+                             issue_number: int, branch: str, status: str,
+                             base_branch: str) -> Path | None:
+    source = Path(repo_dir)
+    if not source.exists():
+        return None
+
+    destination = unique_preserved_worktree_path(report, repo)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        sanitize_preserved_remote(source, owner, repo)
+        shutil.move(str(source), str(destination))
+    except (OSError, shutil.Error) as exc:
+        print_warn(f"Worktree konnte nicht gesichert werden: {exc}")
+        return None
+
+    try:
+        write_preserved_worktree_readme(
+            destination,
+            repo=repo,
+            issue_number=issue_number,
+            branch=branch,
+            status=status,
+            base_branch=base_branch,
+        )
+    except OSError as exc:
+        print_warn(f"Recovery-Hinweis konnte nicht geschrieben werden: {exc}")
+    print_warn(f"Worktree fuer Recovery gesichert: {destination}")
+    return destination
+
+
 def write_run_report(report: RunReport, status: str,
                      worker_result: WorkerRunResult | None = None,
                      pr_url: str | None = None,
-                     note: str | None = None) -> Path | None:
+                     note: str | None = None,
+                     preserved_worktree_path: Path | str | None = None,
+                     base_branch: str | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
     pr_value = pr_url or ""
+    preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
+    cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
 
     try:
         if worker_result is not None:
             (report.path / "worker-output.log").write_text(worker_output, encoding="utf-8")
         if output_tail:
             (report.path / "output-tail.log").write_text(output_tail + "\n", encoding="utf-8")
+
+        metadata = {
+            "status": status,
+            "selected_repo": report.repo,
+            "repo": report.repo,
+            "issue_number": report.issue_number,
+            "issue": report.issue_number,
+            "branch": report.branch,
+            "model": report.model,
+            "worker_exit_code": worker_exit_code,
+            "pr_url": pr_value,
+            "note": note or "",
+            "preserved_worktree": preserved_value,
+            "cleanup_command": cleanup_command,
+        }
+        (report.path / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
 
         summary_lines = [
             f"status: {status}",
@@ -797,7 +940,14 @@ def write_run_report(report: RunReport, status: str,
             f"model: {report.model}",
             f"worker_exit_code: {worker_exit_code}",
             f"pr_url: {pr_value}",
+            f"preserved_worktree: {preserved_value}",
         ]
+        if cleanup_command:
+            summary_lines.append(f"cleanup_command: {cleanup_command}")
+            summary_lines.extend([
+                "",
+                preserved_worktree_recovery_note(Path(preserved_value), report.branch, base_branch),
+            ])
         if note:
             summary_lines.extend(["", f"note: {note}"])
         if worker_result is not None:
@@ -823,6 +973,27 @@ def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: i
     if not report:
         return None
     return write_run_report(report, status, worker_result=result, pr_url=pr_url)
+
+
+def cleanup_preserved_worktrees(root: Path = PRESERVED_WORKTREES_ROOT,
+                                retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS,
+                                dry_run: bool = True,
+                                now_fn=time.time) -> list[Path]:
+    if not root.exists():
+        return []
+
+    cutoff = now_fn() - max(retention_days, 0) * 24 * 60 * 60
+    stale_paths: list[Path] = []
+    for path in sorted(item for item in root.iterdir() if item.is_dir()):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime <= cutoff:
+            stale_paths.append(path)
+            if not dry_run:
+                shutil.rmtree(path)
+    return stale_paths
 
 
 def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAssessment:
@@ -1283,7 +1454,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         return True
 
     # Repo klonen
-    with tempfile.TemporaryDirectory(prefix="ai-solver-") as tmpdir:
+    tmpdir = tempfile.mkdtemp(prefix="ai-solver-")
+    preserved_worktree: Path | None = None
+    try:
         repo_dir = os.path.join(tmpdir, repo)
         print(f"      📥 Klone {repo} ...", end=" ", flush=True)
 
@@ -1320,11 +1493,30 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     close_issues=close_issues,
                     dry_run=dry_run,
                 )
+                status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
+                if not pr and run_report and should_preserve_worktree(
+                    status,
+                    repo_dir,
+                    base_branch,
+                    changes_exist=True,
+                ):
+                    preserved_worktree = preserve_worker_worktree(
+                        repo_dir=repo_dir,
+                        report=run_report,
+                        owner=config["owner"],
+                        repo=repo,
+                        issue_number=number,
+                        branch=branch_name,
+                        status=status,
+                        base_branch=base_branch,
+                    )
                 if run_report:
                     write_run_report(
                         run_report,
-                        "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch",
+                        status,
                         pr_url=pr.get("html_url") if pr else None,
+                        preserved_worktree_path=preserved_worktree,
+                        base_branch=base_branch,
                     )
                 return bool(pr)
         elif not create_branch(repo_dir, branch_name):
@@ -1360,6 +1552,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             cmd = build_aider_command(model, model_name, prompt, repo_dir)
 
         rate_limit_retries = 0
+        rate_limit_deferred_note = None
         diagnostic_outputs = []
         while True:
             result = run_worker_command(cmd, repo_dir, env)
@@ -1380,10 +1573,15 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     )
                 break
             if not rate_limit.reset_at:
+                rate_limit_deferred_note = "Codex-Rate-Limit ohne verwertbare Reset-Zeit"
                 sleep_until_codex_reset(rate_limit)
                 break
             rate_limit_retries += 1
             if rate_limit_retries > CODEX_RATE_LIMIT_RETRY_LIMIT:
+                rate_limit_deferred_note = (
+                    f"Codex-Rate-Limit nach {CODEX_RATE_LIMIT_RETRY_LIMIT} "
+                    "Retries weiter aktiv"
+                )
                 print_warn("Codex-Rate-Limit wurde mehrfach erreicht; breche dieses Issue ab")
                 break
             sleep_until_codex_reset(rate_limit)
@@ -1400,12 +1598,59 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         print_git_change_summary(repo_dir, git_status)
         assessment = assess_worker_result(result, git_status)
         print_worker_assessment(result, assessment)
-        if not assessment.should_continue:
+        if rate_limit_deferred_note:
+            status = "rate_limit_deferred"
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
             if run_report:
                 write_run_report(
                     run_report,
-                    assessment.reason,
+                    status,
                     worker_result=diagnostic_result,
+                    note=rate_limit_deferred_note,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                )
+            return False
+        if not assessment.should_continue:
+            status = assessment.reason
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
+            if run_report:
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
                 )
             return False
 
@@ -1417,11 +1662,30 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         if not pushed:
             print_warn("Push fehlgeschlagen oder keine Änderungen")
+            status = "push_failed"
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
             if run_report:
                 write_run_report(
                     run_report,
-                    "push_failed",
+                    status,
                     worker_result=diagnostic_result,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
                 )
             return False
         print("✅")
@@ -1438,14 +1702,35 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             close_issues=close_issues,
             dry_run=dry_run,
         )
+        status = "pr_created" if pr else "pr_failed"
+        if not pr and run_report and should_preserve_worktree(
+            status,
+            repo_dir,
+            base_branch,
+            changes_exist=assessment.has_changes,
+        ):
+            preserved_worktree = preserve_worker_worktree(
+                repo_dir=repo_dir,
+                report=run_report,
+                owner=config["owner"],
+                repo=repo,
+                issue_number=number,
+                branch=branch_name,
+                status=status,
+                base_branch=base_branch,
+            )
         if run_report:
             write_run_report(
                 run_report,
-                "pr_created" if pr else "pr_failed",
+                status,
                 worker_result=diagnostic_result,
                 pr_url=pr.get("html_url") if pr else None,
+                preserved_worktree_path=preserved_worktree,
+                base_branch=base_branch,
             )
         return bool(pr)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     return True
 
@@ -1459,7 +1744,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
-        "--model", required=True, choices=["codex", "claude", "openai", "ollama"],
+        "--model", choices=["codex", "claude", "openai", "ollama"],
         help="KI-Modell: codex, claude, openai oder ollama"
     )
     parser.add_argument(
@@ -1484,7 +1769,35 @@ def main():
         action="store_true",
         help="Bei Codex-Rate-Limits nicht schlafen; Batch-Runner kann den Job verzögern",
     )
+    parser.add_argument(
+        "--cleanup-preserved-worktrees",
+        action="store_true",
+        help="Alte gesicherte Recovery-Worktrees unter reports/preserved-worktrees aufraeumen",
+    )
+    parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=PRESERVED_WORKTREE_RETENTION_DAYS,
+        help=f"Aufbewahrung fuer gesicherte Worktrees in Tagen (Default: {PRESERVED_WORKTREE_RETENTION_DAYS})",
+    )
     args = parser.parse_args()
+
+    if args.cleanup_preserved_worktrees:
+        stale_paths = cleanup_preserved_worktrees(
+            retention_days=args.retention_days,
+            dry_run=args.dry_run,
+        )
+        action = "Wuerde loeschen" if args.dry_run else "Geloescht"
+        if not stale_paths:
+            print("   Keine alten gesicherten Worktrees gefunden.")
+        for path in stale_paths:
+            print(f"   {action}: {path}")
+        if args.dry_run and stale_paths:
+            print("   Ohne --dry-run ausfuehren, um diese Worktrees zu loeschen.")
+        return
+
+    if not args.model:
+        parser.error("--model ist erforderlich, ausser bei --cleanup-preserved-worktrees")
 
     if requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")

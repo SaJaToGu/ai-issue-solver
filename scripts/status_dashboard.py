@@ -63,6 +63,7 @@ FAILED_STATUSES = {
     "pr_failed_from_existing_branch",
     "push_failed",
     "cleanup_failed",
+    "rate_limit_deferred",
 }
 ARCHIVED_STATUSES = {
     "archived",
@@ -89,6 +90,7 @@ class DashboardRun:
     model: str
     worker_exit_code: str
     pr_url: str
+    preserved_worktree: str
     note: str
     output_tail: str
 
@@ -185,6 +187,7 @@ def read_runs(runs_dir: Path) -> list[DashboardRun]:
                 model=fields.get("model", ""),
                 worker_exit_code=exit_code,
                 pr_url=fields.get("pr_url", ""),
+                preserved_worktree=fields.get("preserved_worktree", ""),
                 note=fields.get("note") or fields.get("cleanup_note", ""),
                 output_tail=fields.get("output_tail", ""),
             )
@@ -329,6 +332,8 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         actions.append(render_link(links["branch"], "Branch"))
     if "pr" in links:
         actions.append(render_link(links["pr"], "Pull Request"))
+    if run.preserved_worktree:
+        actions.append(f"<code>{escape(run.preserved_worktree)}</code>")
 
     tail = ""
     if run.output_tail:
@@ -337,7 +342,12 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
             f"<pre>{escape(run.output_tail)}</pre></details>"
         )
 
-    note = f"<div class=\"note\">{escape(run.note)}</div>" if run.note else ""
+    note_parts = []
+    if run.note:
+        note_parts.append(escape(run.note))
+    if run.preserved_worktree:
+        note_parts.append(f"Recovery-Worktree: <code>{escape(run.preserved_worktree)}</code>")
+    note = f"<div class=\"note\">{'<br>'.join(note_parts)}</div>" if note_parts else ""
     return "\n".join([
         "<tr>",
         f'  <td><span class="badge badge-{escape(run.category)}">{escape(STATUS_LABELS[run.category])}</span></td>',

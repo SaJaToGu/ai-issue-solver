@@ -1,6 +1,7 @@
 import contextlib
 from datetime import datetime
 import io
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
+    cleanup_preserved_worktrees,
     create_run_report,
     create_issue_pull_request,
     detect_codex_rate_limit,
@@ -29,8 +31,10 @@ from solve_issues import (  # noqa: E402
     parse_codex_reset_datetime,
     plan_branch_recovery,
     print_branch_recovery_plan,
+    preserve_worker_worktree,
     retry_branch_name,
     run_worker_command,
+    should_preserve_worktree,
     should_surface_worker_line,
     sleep_until_codex_reset,
     solve_issue,
@@ -796,6 +800,7 @@ class GitStatusTests(unittest.TestCase):
                 run_dir = Path(run_dir).resolve()
                 summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
                 tail = (run_dir / "output-tail.log").read_text(encoding="utf-8")
+                metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
             finally:
                 os.chdir(old_cwd)
 
@@ -808,7 +813,11 @@ class GitStatusTests(unittest.TestCase):
         self.assertIn("model: codex", summary)
         self.assertIn("worker_exit_code: 0", summary)
         self.assertIn("pr_url: https://github.com/test-owner/demo/pull/24", summary)
+        self.assertIn("preserved_worktree: \n", summary)
         self.assertIn("output_tail:", summary)
+        self.assertEqual(metadata["status"], "pr_created")
+        self.assertEqual(metadata["repo"], "demo/repo")
+        self.assertEqual(metadata["preserved_worktree"], "")
         self.assertNotIn("line 0", tail)
         self.assertIn("line 39", tail)
 
@@ -834,6 +843,142 @@ class GitStatusTests(unittest.TestCase):
         self.assertIn("worker_exit_code: \n", summary)
         self.assertIn("note: base_branch: main", summary)
         self.assertFalse((run_dir / "worker-output.log").exists())
+
+    def test_run_report_records_preserved_worktree_and_recovery_command(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                report = create_run_report(
+                    repo="demo",
+                    issue_number=46,
+                    branch="ai/fix-issue-46",
+                    model="codex",
+                    now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+                )
+                preserved = Path(tmpdir) / "reports" / "preserved-worktrees" / "demo"
+                run_dir = write_run_report(
+                    report,
+                    "push_failed",
+                    preserved_worktree_path=preserved,
+                    base_branch="main",
+                )
+                run_dir = Path(run_dir).resolve()
+                summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
+                metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertIn(f"preserved_worktree: {preserved}", summary)
+        self.assertIn("cleanup_command: python scripts/solve_issues.py --cleanup-preserved-worktrees", summary)
+        self.assertIn("git push origin HEAD:ai/fix-issue-46", summary)
+        self.assertEqual(metadata["preserved_worktree"], str(preserved))
+
+    def test_preserve_worker_worktree_moves_clone_and_sanitizes_remote(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                repo_dir = Path(tmpdir) / "tmp-clone" / "demo"
+                repo_dir.mkdir(parents=True)
+                subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+                subprocess.run(
+                    ["git", "remote", "add", "origin", "https://secret-token@github.com/test-owner/demo.git"],
+                    cwd=repo_dir,
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "config", "remote.origin.pushurl", "https://push-token@github.com/test-owner/demo.git"],
+                    cwd=repo_dir,
+                    check=True,
+                    capture_output=True,
+                )
+                (repo_dir / "README.md").write_text("change\n", encoding="utf-8")
+                report = create_run_report(
+                    repo="demo",
+                    issue_number=46,
+                    branch="ai/fix-issue-46",
+                    model="codex",
+                    now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+                )
+
+                preserved = preserve_worker_worktree(
+                    repo_dir=str(repo_dir),
+                    report=report,
+                    owner="test-owner",
+                    repo="demo",
+                    issue_number=46,
+                    branch="ai/fix-issue-46",
+                    status="push_failed",
+                    base_branch="main",
+                )
+                self.assertIsNotNone(preserved)
+                self.assertFalse(repo_dir.exists())
+                self.assertTrue((preserved / "README.md").exists())
+                self.assertTrue((preserved / "RECOVERY.md").exists())
+                remote = subprocess.run(
+                    ["git", "remote", "get-url", "origin"],
+                    cwd=preserved,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                pushurl = subprocess.run(
+                    ["git", "config", "--get", "remote.origin.pushurl"],
+                    cwd=preserved,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(remote, "https://github.com/test-owner/demo.git")
+        self.assertNotIn("secret-token", remote)
+        self.assertEqual(pushurl.returncode, 1)
+        self.assertNotIn("push-token", pushurl.stdout + pushurl.stderr)
+
+    def test_should_preserve_worktree_detects_committed_branch_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "main"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "ai/fix-issue-46"], cwd=repo, check=True, capture_output=True)
+            (repo / "README.md").write_text("base\nchange\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-am", "fix"], cwd=repo, check=True, capture_output=True)
+
+            preserve = should_preserve_worktree(
+                "nonzero_without_changes",
+                str(repo),
+                "main",
+            )
+
+        self.assertTrue(preserve)
+
+    def test_cleanup_preserved_worktrees_deletes_only_expired_dirs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "preserved"
+            old_path = root / "old"
+            fresh_path = root / "fresh"
+            old_path.mkdir(parents=True)
+            fresh_path.mkdir()
+            os.utime(old_path, (1000, 1000))
+            os.utime(fresh_path, (99_000, 99_000))
+
+            stale = cleanup_preserved_worktrees(
+                root=root,
+                retention_days=1,
+                dry_run=False,
+                now_fn=lambda: 100_000,
+            )
+            self.assertEqual(stale, [old_path])
+            self.assertFalse(old_path.exists())
+            self.assertTrue(fresh_path.exists())
 
 
 if __name__ == "__main__":
