@@ -20,6 +20,7 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
+    build_worker_env,
     cleanup_preserved_worktrees,
     create_run_report,
     create_issue_pull_request,
@@ -529,6 +530,48 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn("--model", cmd)
         self.assertIn("ollama/llama3.2:3b", cmd)
         self.assertEqual(cmd[-1], "src/app.py")
+
+    def test_mistral_command_uses_default_magistral_model(self):
+        cmd = build_aider_command(
+            "mistral",
+            "magistral-medium-2509",
+            "Fix",
+            "/tmp/repo",
+            file_targets=[],
+        )
+
+        self.assertIn("--model", cmd)
+        self.assertIn("mistral/magistral-medium-2509", cmd)
+
+    def test_mistral_command_allows_model_name_override(self):
+        cmd = build_aider_command(
+            "mistral",
+            "magistral-small-2509",
+            "Fix",
+            "/tmp/repo",
+            file_targets=[],
+        )
+
+        self.assertIn("mistral/magistral-small-2509", cmd)
+
+    def test_mistral_worker_env_requires_api_key(self):
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit) as raised:
+            build_worker_env("mistral", {"MISTRAL_API_KEY": "sk-DEIN_KEY_HIER"}, base_env={})
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("MISTRAL_API_KEY fehlt", printed.getvalue())
+
+    def test_mistral_worker_env_exports_api_key(self):
+        env = build_worker_env(
+            "mistral",
+            {"MISTRAL_API_KEY": "real-mistral-key"},
+            base_env={"KEEP": "1"},
+        )
+
+        self.assertEqual(env["MISTRAL_API_KEY"], "real-mistral-key")
+        self.assertEqual(env["KEEP"], "1")
 
 
 class WorkerOutputTests(unittest.TestCase):

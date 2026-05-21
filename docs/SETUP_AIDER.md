@@ -28,7 +28,7 @@ aider --version
 
 ---
 
-## Verwendung mit den drei Modellen
+## Verwendung mit den Modellen
 
 ### Claude (Anthropic)
 ```bash
@@ -41,6 +41,21 @@ aider --model claude-sonnet-4-20250514
 export OPENAI_API_KEY=sk-...
 aider --model gpt-4o
 ```
+
+### Mistral AI / Magistral
+```bash
+export MISTRAL_API_KEY=...
+aider --model mistral/magistral-medium-2509
+```
+
+Der AI Issue Solver verwendet für `--model mistral` standardmäßig
+`magistral-medium-2509`. `--model-name magistral-small-2509` ist möglich,
+falls Magistral Small 1.2 im eigenen Account noch verfügbar ist; die aktuelle
+Mistral-Dokumentation markiert es inzwischen als Legacy/Deprecated und nennt
+`mistral-small-2603` als offene Small-Alternative ausserhalb Magistral.
+Mistral/Magistral passt besonders für europäische Sprachen, mehrsprachiges
+Reasoning und Workflows, in denen ein europäischer Anbieter oder
+EU-Souveränitätsaspekte wichtig sind.
 
 ### Ollama (lokal)
 ```bash

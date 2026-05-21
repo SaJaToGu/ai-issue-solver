@@ -299,11 +299,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model", required=True, choices=list(MODEL_CONFIGS.keys()),
-        help="KI-Modell: codex, claude, openai oder ollama"
+        help="KI-Modell: codex, claude, openai, mistral oder ollama"
     )
     parser.add_argument(
         "--model-name",
-        help="Spezifisches Modell (für Codex optional, für Ollama z.B. 'deepseek-coder:6.7b')",
+        help=(
+            "Spezifisches Modell (für Codex optional, für Mistral z.B. "
+            "'magistral-small-2509', für Ollama z.B. 'deepseek-coder:6.7b')"
+        ),
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument(

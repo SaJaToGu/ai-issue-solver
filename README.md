@@ -221,6 +221,8 @@ Löst offene Issues automatisch mit KI + Codex oder aider.
 ```bash
 python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
+python scripts/solve_issues.py --model mistral --repo BedBoxDrawerRole
+python scripts/solve_issues.py --model mistral --model-name magistral-small-2509
 python scripts/solve_issues.py --model ollama --model-name llama3
 python scripts/solve_issues_batch.py --model codex --repo BedBoxDrawerRole --workers 2
 ```
@@ -291,8 +293,8 @@ Dateiargumente. Pfade werden vorab gegen das Repo validiert, damit keine
 externen oder ungültigen Pfade an aider durchgereicht werden.
 
 **Flags:**
-- `--model` — `codex`, `claude`, `openai`, oder `ollama`
-- `--model-name` — spezifisches Modell, z.B. für Codex oder Ollama
+- `--model` — `codex`, `claude`, `openai`, `mistral` oder `ollama`
+- `--model-name` — spezifisches Modell, z.B. für Codex, Mistral oder Ollama
 - `--dry-run` — zeigt Plan ohne Änderungen
 - `--issue` — nur ein bestimmtes Issue lösen
 - `--defer-codex-rate-limit` — bei Codex-Limits nicht im Einzel-Solver
@@ -481,6 +483,26 @@ Ein **Personal Access Token (PAT)** ist dein persönlicher API-Schlüssel für G
 ### OpenAI
 1. API-Key holen: https://platform.openai.com/api-keys
 2. In `.env` eintragen: `OPENAI_API_KEY=sk-...`
+
+### Mistral AI / Magistral
+1. API-Key holen: https://console.mistral.ai/
+2. In `.env` eintragen: `MISTRAL_API_KEY=...`
+3. Starten mit:
+   ```bash
+   python scripts/solve_issues.py --model mistral
+   ```
+
+Der Solver nutzt standardmäßig `magistral-medium-2509`. Nach den offiziellen
+Mistral-Modellübersichten vom 21. Mai 2026 ist Magistral Medium 1.2 als
+aktuelles reasoning-orientiertes Magistral-Modell gelistet; ältere
+Magistral-Versionen `2506` und `2507` sind legacy oder retired.
+`magistral-small-2509` kann per `--model-name magistral-small-2509` gesetzt
+werden, falls es im eigenen Account noch verfügbar ist; die aktuelle
+Mistral-Übersicht markiert Magistral Small 1.2 inzwischen als
+Legacy/Deprecated und nennt `Mistral Small 4` (`mistral-small-2603`) als
+Alternative. Mistral/Magistral ist vor allem sinnvoll für europäische Sprachen,
+mehrsprachige Reasoning-Aufgaben und Workflows, bei denen ein europäischer
+Anbieter oder EU-Souveränitätsaspekte wichtig sind.
 
 ### Ollama (lokal / Raspberry Pi)
 ```bash
