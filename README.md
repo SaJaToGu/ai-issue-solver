@@ -261,6 +261,8 @@ externen oder ungültigen Pfade an aider durchgereicht werden.
 - `--model-name` — spezifisches Modell, z.B. für Codex oder Ollama
 - `--dry-run` — zeigt Plan ohne Änderungen
 - `--issue` — nur ein bestimmtes Issue lösen
+- `--defer-codex-rate-limit` — bei Codex-Limits nicht im Einzel-Solver
+  schlafen; für Batch-Läufe gedacht
 
 ---
 
@@ -271,16 +273,24 @@ startet pro Job einen isolierten `solve_issues.py`-Prozess. Ein fehlschlagender
 Worker stoppt den Batch nicht; die übrigen Jobs laufen weiter. Die Ausgabe wird
 pro Job gesammelt und erst nach Abschluss dieses Jobs gedruckt, damit parallele
 Worker-Logs lesbar bleiben.
+Meldet ein Codex-Worker ein Nachrichtenlimit mit Reset-Zeit, markiert der
+Batch-Runner den betroffenen Job als verzögert und startet ihn nicht sofort
+erneut. Mit `--requeue-rate-limited` wird der Job nach der Reset-Zeit wieder in
+die Queue gelegt; bis dahin laufen andere verfügbare Jobs weiter.
 
 ```bash
 python scripts/solve_issues_batch.py --model codex --workers 2
 python scripts/solve_issues_batch.py --model claude --repo BedBoxDrawerRole --workers 3
 python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --issue 23 --issue 24 --dry-run
+python scripts/solve_issues_batch.py --model codex --workers 2 --requeue-rate-limited
 ```
 
 **Flags:**
 - `--workers` — maximale parallele Worker, Standard: `2`
 - `--issue` — kann mehrfach angegeben werden
+- `--requeue-rate-limited` — Codex-Jobs nach erkanntem Reset erneut einplanen
+- `--rate-limit-retries` — maximale Requeue-Versuche pro rate-limitiertem Job,
+  Standard: `1`
 - alle relevanten Solver-Flags wie `--model`, `--model-name`, `--repo`,
   `--label`, `--base-branch`, `--dry-run` und `--close-issues`
 

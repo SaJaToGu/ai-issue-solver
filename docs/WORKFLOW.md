@@ -159,6 +159,11 @@ damit innerhalb eines Laufs nicht zwei Worker denselben Issue-Branch bearbeiten.
 Worker-Ausgaben werden pro Job gesammelt und erst nach Abschluss dieses Jobs
 gedruckt. Wenn ein Worker fehlschlägt, laufen die übrigen Jobs weiter; am Ende
 meldet das Script erfolgreiche und fehlgeschlagene Jobs separat.
+Wenn Codex ein Nachrichtenlimit mit Reset-Zeit meldet, wird der betroffene Job
+als verzögert erfasst und nicht sofort erneut verbrannt. Mit
+`--requeue-rate-limited` schläft der Batch-Runner erst dann bis zur Reset-Zeit,
+wenn keine anderen Jobs mehr verfügbar sind, und legt den verzögerten Job danach
+wieder in die Queue.
 
 Die Run-Reports unter `reports/runs/` können anschließend mit dem lokalen
 Dashboard ausgewertet werden:
