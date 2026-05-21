@@ -43,6 +43,7 @@ CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
 )
 
 STATUS_LABELS = {
+    "queued": "Queued",
     "running": "Running",
     "unhealthy": "Unhealthy",
     "failed": "Failed",
@@ -52,7 +53,7 @@ STATUS_LABELS = {
     "unknown": "Unknown",
 }
 
-STATUS_ORDER = ("running", "unhealthy", "failed", "successful", "noop", "archived", "unknown")
+STATUS_ORDER = ("queued", "running", "unhealthy", "failed", "successful", "noop", "archived", "unknown")
 SUCCESS_STATUSES = {
     "pr_created",
     "pr_created_from_existing_branch",
@@ -99,6 +100,7 @@ class DashboardRun:
     issue_number: str
     issue_title: str
     branch: str
+    base_branch: str
     model: str
     worker_exit_code: str
     last_activity_at: datetime | None
@@ -242,6 +244,8 @@ def recovery_hint_for_unhealthy(run_dir: Path) -> str:
 def classify_status(status: str, worker_exit_code: str = "") -> str:
     if not status:
         return "unknown"
+    if status == "queued":
+        return "queued"
     if status == "started":
         return "running"
     if status in ARCHIVED_STATUSES:
@@ -331,6 +335,7 @@ def read_runs(runs_dir: Path,
                 issue_number=fields.get("issue_number") or fields.get("issue", ""),
                 issue_title=fields.get("issue_title", ""),
                 branch=fields.get("branch", ""),
+                base_branch=fields.get("base_branch", ""),
                 model=fields.get("model", ""),
                 worker_exit_code=exit_code,
                 last_activity_at=last_activity_at,
@@ -352,7 +357,7 @@ def cleanup_candidates(runs: list[DashboardRun], cutoff: datetime,
                        include_undated: bool = False) -> list[DashboardRun]:
     candidates = []
     for run in runs:
-        if run.category not in {"running", "unhealthy", "unknown"}:
+        if run.category not in {"queued", "running", "unhealthy", "unknown"}:
             continue
         if run.created_at is None:
             if include_undated:
@@ -514,6 +519,8 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         )
 
     note_parts = []
+    if run.base_branch:
+        note_parts.append(f"Base-Branch: <code>{escape(run.base_branch)}</code>")
     if run.note:
         note_parts.append(escape(run.note))
     if run.health_reason:
@@ -621,6 +628,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       --text: #172026;
       --muted: #64707d;
       --line: #d8dee6;
+      --queued: #946200;
       --running: #276ef1;
       --unhealthy: #d97706;
       --success: #18794e;
@@ -672,6 +680,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     }}
     .metric span {{ display: block; color: var(--muted); font-size: 13px; }}
     .metric strong {{ display: block; margin-top: 4px; font-size: 28px; }}
+    .metric-queued {{ border-color: var(--queued); }}
     .metric-running {{ border-color: var(--running); }}
     .metric-unhealthy {{ border-color: var(--unhealthy); }}
     .metric-successful {{ border-color: var(--success); }}
@@ -701,6 +710,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       font-size: 12px;
       text-align: center;
     }}
+    .badge-queued {{ background: var(--queued); }}
     .badge-running {{ background: var(--running); }}
     .badge-unhealthy {{ background: var(--unhealthy); }}
     .badge-successful {{ background: var(--success); }}

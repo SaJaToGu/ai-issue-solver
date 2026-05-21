@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from datetime import datetime
 import heapq
+import json
 import os
 import queue
 import subprocess
@@ -26,8 +27,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from solve_issues import (  # noqa: E402
     GitHubClient,
     MODEL_CONFIGS,
+    RUN_REPORTS_ROOT,
     detect_codex_rate_limit,
+    format_worker_output_tail,
     requests,
+    safe_run_repo_name,
     should_surface_worker_line,
 )
 from utils import (  # noqa: E402
@@ -76,6 +80,15 @@ class IssueJobResult:
         return self.rate_limited
 
 
+@dataclass(frozen=True)
+class QueuedRunReport:
+    job: IssueJob
+    path: Path
+    model: str
+    base_branch: str
+    queued_at: datetime
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -117,7 +130,8 @@ def discover_issue_jobs(client: GitHubClient, repos: list[str],
 
 
 def build_worker_command(args: argparse.Namespace, job: IssueJob,
-                         solve_script: Path) -> list[str]:
+                         solve_script: Path,
+                         run_report_dir: Path | None = None) -> list[str]:
     cmd = [
         sys.executable,
         str(solve_script),
@@ -141,8 +155,152 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
         cmd.append("--close-issues")
     if args.model == "codex":
         cmd.append("--defer-codex-rate-limit")
+    if run_report_dir:
+        cmd.extend(["--run-report-dir", str(run_report_dir)])
 
     return cmd
+
+
+def create_queued_run_report(job: IssueJob, model: str,
+                             base_branch: str | None = None,
+                             now_fn=datetime.now,
+                             reports_root: Path = RUN_REPORTS_ROOT) -> QueuedRunReport | None:
+    queued_at = now_fn()
+    run_name = f"{queued_at.strftime('%Y%m%d-%H%M%S-%f')}-{safe_run_repo_name(job.repo)}-issue-{job.issue_number}"
+    run_dir = reports_root / run_name
+    suffix = 2
+    while run_dir.exists():
+        run_dir = reports_root / f"{run_name}-{suffix}"
+        suffix += 1
+    base_value = base_branch or ""
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+        metadata = {
+            "status": "queued",
+            "selected_repo": job.repo,
+            "repo": job.repo,
+            "issue_number": job.issue_number,
+            "issue": job.issue_number,
+            "branch": "",
+            "base_branch": base_value,
+            "model": model,
+            "worker_exit_code": "",
+            "pr_url": "",
+            "queued_at": queued_at.isoformat(timespec="seconds"),
+            "note": "Batch-Job wartet auf einen freien Worker-Slot.",
+            "preserved_worktree": "",
+        }
+        (run_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        summary_lines = [
+            "status: queued",
+            f"selected_repo: {job.repo}",
+            f"repo: {job.repo}",
+            f"issue_number: {job.issue_number}",
+            f"issue: {job.issue_number}",
+            "branch: ",
+            f"base_branch: {base_value}",
+            f"model: {model}",
+            "worker_exit_code: ",
+            "pr_url: ",
+            f"queued_at: {queued_at.isoformat(timespec='seconds')}",
+            "preserved_worktree: ",
+            "",
+            "note: Batch-Job wartet auf einen freien Worker-Slot.",
+        ]
+        (run_dir / "summary.txt").write_text(
+            "\n".join(summary_lines) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print_warn(f"Queue-Report konnte nicht angelegt werden: {exc}")
+        return None
+    return QueuedRunReport(job, run_dir, model, base_value, queued_at)
+
+
+def queued_report_status(report: QueuedRunReport) -> str:
+    summary_path = report.path / "summary.txt"
+    if not summary_path.exists():
+        return ""
+    for line in summary_path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == "status":
+            return value.strip()
+    return ""
+
+
+def finalize_unclaimed_queued_report(report: QueuedRunReport,
+                                     result: IssueJobResult) -> Path | None:
+    if queued_report_status(report) != "queued":
+        return None
+
+    status = "rate_limit_deferred" if result.delayed else "worker_finished"
+    output_tail = format_worker_output_tail(result.output)
+    try:
+        if result.output:
+            (report.path / "worker-output.log").write_text(result.output, encoding="utf-8")
+        if output_tail:
+            (report.path / "output-tail.log").write_text(output_tail + "\n", encoding="utf-8")
+
+        metadata = {
+            "status": status,
+            "selected_repo": report.job.repo,
+            "repo": report.job.repo,
+            "issue_number": report.job.issue_number,
+            "issue": report.job.issue_number,
+            "branch": "",
+            "base_branch": report.base_branch,
+            "model": report.model,
+            "worker_exit_code": str(result.returncode),
+            "pr_url": "",
+            "queued_at": report.queued_at.isoformat(timespec="seconds"),
+            "note": "Worker endete, bevor solve_issues.py einen normalen Run-Report geschrieben hat.",
+            "preserved_worktree": "",
+        }
+        (report.path / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        summary_lines = [
+            f"status: {status}",
+            f"selected_repo: {report.job.repo}",
+            f"repo: {report.job.repo}",
+            f"issue_number: {report.job.issue_number}",
+            f"issue: {report.job.issue_number}",
+            "branch: ",
+            f"base_branch: {report.base_branch}",
+            f"model: {report.model}",
+            f"worker_exit_code: {result.returncode}",
+            "pr_url: ",
+            f"queued_at: {report.queued_at.isoformat(timespec='seconds')}",
+            "preserved_worktree: ",
+            "",
+            "note: Worker endete, bevor solve_issues.py einen normalen Run-Report geschrieben hat.",
+        ]
+        if output_tail:
+            summary_lines.extend(["", "output_tail:", output_tail])
+        (report.path / "summary.txt").write_text(
+            "\n".join(summary_lines) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print_warn(f"Queue-Report konnte nicht finalisiert werden: {exc}")
+        return None
+    return report.path
+
+
+def resolve_batch_base_branches(client: GitHubClient, repos: list[str],
+                                requested_base: str | None) -> dict[str, str]:
+    base_branches: dict[str, str] = {}
+    for repo in repos:
+        base_branch = client.resolve_base_branch(repo, requested_base)
+        if base_branch:
+            base_branches[repo] = base_branch
+        elif requested_base:
+            base_branches[repo] = requested_base
+    return base_branches
 
 
 def run_issue_job(job: IssueJob, cmd: list[str], project_root: Path,
@@ -503,7 +661,31 @@ def main(argv: list[str] | None = None) -> int:
         print_warn("Keine passenden Issues gefunden")
         return 0
 
-    print_step(2, f"Starte {len(jobs)} Job(s) mit maximal {args.workers} Worker(n)")
+    queued_reports = {}
+    if args.dry_run:
+        print_step(2, "Queue-Reports im Dry-run uebersprungen")
+    else:
+        print_step(2, "Schreibe Queue-Reports")
+        base_branches = resolve_batch_base_branches(
+            client,
+            sorted({job.repo for job in jobs}),
+            args.base_branch,
+        )
+        queued_reports = {
+            report.job: report
+            for report in (
+                create_queued_run_report(
+                    job,
+                    args.model,
+                    base_branch=base_branches.get(job.repo),
+                )
+                for job in jobs
+            )
+            if report is not None
+        }
+        print(f"   Queue-Reports: {len(queued_reports)}/{len(jobs)}")
+
+    print_step(3, f"Starte {len(jobs)} Job(s) mit maximal {args.workers} Worker(n)")
     for job in jobs:
         print(f"   - {job.label}")
 
@@ -512,7 +694,13 @@ def main(argv: list[str] | None = None) -> int:
     env = os.environ.copy()
 
     def run(job: IssueJob) -> IssueJobResult:
-        cmd = build_worker_command(args, job, solve_script)
+        queued_report = queued_reports.get(job)
+        cmd = build_worker_command(
+            args,
+            job,
+            solve_script,
+            run_report_dir=queued_report.path if queued_report else None,
+        )
         return run_issue_job(
             job,
             cmd,
@@ -522,6 +710,12 @@ def main(argv: list[str] | None = None) -> int:
             unhealthy_action=args.unhealthy_action,
             detect_rate_limit_fn=detect_rate_limit_fn,
         )
+
+    def handle_result(result: IssueJobResult, completed: int, total: int) -> None:
+        queued_report = queued_reports.get(result.job)
+        if queued_report:
+            finalize_unclaimed_queued_report(queued_report, result)
+        print_job_result(result, completed, total)
 
     requeue_delayed = args.model == "codex" and args.requeue_rate_limited
     detect_rate_limit_fn = (
@@ -536,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
         detect_rate_limit_fn=detect_rate_limit_fn,
         requeue_unhealthy=args.unhealthy_action == "retry",
         max_unhealthy_requeues=args.unhealthy_retries,
-        on_result=print_job_result,
+        on_result=handle_result,
         on_delay=print_job_delay if requeue_delayed or args.unhealthy_action == "retry" else None,
     )
 

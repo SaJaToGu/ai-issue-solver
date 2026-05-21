@@ -26,6 +26,7 @@ class StatusDashboardTests(unittest.TestCase):
 
     def test_classify_status_groups_known_solver_states(self):
         self.assertEqual(classify_status(""), "unknown")
+        self.assertEqual(classify_status("queued"), "queued")
         self.assertEqual(classify_status("started"), "running")
         self.assertEqual(classify_status("pr_created"), "successful")
         self.assertEqual(classify_status("pr_created_from_existing_branch"), "successful")
@@ -129,6 +130,32 @@ line 2
         self.assertEqual(runs[0].git_diff_stat, "Git-Änderungsübersicht:\n  README.md | 1 +")
         self.assertEqual(runs[0].output_tail, "line 1\nline 2")
 
+    def test_read_runs_parses_queued_reports(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-123456-demo-issue-25",
+                """status: queued
+repo: demo
+issue_number: 25
+branch:
+base_branch: main
+model: codex
+worker_exit_code:
+queued_at: 2026-05-21T09:08:07
+
+note: Batch-Job wartet auf einen freien Worker-Slot.
+""",
+            )
+
+            runs = read_runs(runs_dir)
+
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0].category, "queued")
+        self.assertEqual(runs[0].repo, "demo")
+        self.assertEqual(runs[0].issue_number, "25")
+        self.assertEqual(runs[0].base_branch, "main")
+
     def test_github_links_use_owner_and_encode_branch_slashes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runs_dir = Path(tmpdir) / "runs"
@@ -202,6 +229,7 @@ preserved_worktree: reports/preserved-worktrees/run/demo
             output_exists = output_path.exists()
 
         self.assertIn("Successful", html)
+        self.assertIn("Queued", html)
         self.assertIn("No-op", html)
         self.assertIn("#25", html)
         self.assertIn("Fix &lt;unsafe&gt; &amp; &quot;quoted&quot; dashboard title", html)
@@ -340,6 +368,7 @@ worker_exit_code:
             old_run = runs_dir / "20260501-090807-demo-issue-28"
             fresh_run = runs_dir / "20260521-090807-demo-issue-29"
             done_run = runs_dir / "20260501-090807-demo-issue-30"
+            queued_run = runs_dir / "20260501-090807-demo-issue-31"
             self.write_summary(
                 old_run,
                 """status: started
@@ -364,6 +393,14 @@ issue_number: 30
 worker_exit_code: 0
 """,
             )
+            self.write_summary(
+                queued_run,
+                """status: queued
+repo: demo
+issue_number: 31
+worker_exit_code:
+""",
+            )
 
             result = cleanup_stale_runs(
                 runs_dir,
@@ -374,12 +411,13 @@ worker_exit_code: 0
             )
             runs = {run.issue_number: run for run in read_runs(runs_dir)}
 
-        self.assertEqual(len(result.candidates), 1)
-        self.assertEqual(len(result.changed), 1)
+        self.assertEqual(len(result.candidates), 2)
+        self.assertEqual(len(result.changed), 2)
         self.assertEqual(runs["28"].status, "cleanup_noop")
         self.assertEqual(runs["28"].category, "noop")
         self.assertEqual(runs["29"].status, "started")
         self.assertEqual(runs["30"].status, "pr_created")
+        self.assertEqual(runs["31"].status, "cleanup_noop")
 
     def test_cleanup_stale_runs_can_include_undated_reports_explicitly(self):
         with tempfile.TemporaryDirectory() as tmpdir:
