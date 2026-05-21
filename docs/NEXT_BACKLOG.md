@@ -1,7 +1,8 @@
 # Next Backlog
 
-This backlog captures the next phase after the initial issue-solver workflow:
-parallel execution, run visibility, and smoother review loops.
+This backlog captures the next phase after the parallel workflow is available:
+running longer unattended sessions, keeping the dashboard truthful, and reducing
+manual review cleanup after generated PRs.
 
 Create them as GitHub issues with:
 
@@ -10,54 +11,38 @@ python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md
 python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-create
 ```
 
-## 1. Add a bounded parallel issue runner
+## 1. Add a dashboard cleanup command for stale and legacy runs
+
+Labels: `workflow`, `quality`
+
+Add a small command or status-dashboard option that can mark old legacy run
+reports as successful, failed, no-op, or archived. It should avoid editing recent
+active runs by default, show a dry-run preview first, and make the dashboard stop
+counting incomplete historical reports as active work.
+
+## 2. Add an unattended overnight runner
 
 Labels: `automation`, `workflow`
 
-Allow `solve_issues.py` or a dedicated batch script to process multiple issues in
-parallel with a configurable worker limit. The runner should avoid duplicate
-branches, keep output readable, and continue processing other issues when one
-worker fails.
+Create a wrapper command for longer unattended sessions. It should pull the base
+branch, run tests before starting, invoke the bounded batch solver with a worker
+limit, regenerate the dashboard, write a final summary, and keep enough logs to
+review the run the next morning.
 
-## 2. Persist run status and worker diagnostics
+## 3. Reschedule batch jobs after Codex rate limits
 
-Labels: `automation`, `quality`
+Labels: `codex`, `automation`, `safety`
 
-Write every solve run to a timestamped directory under `reports/runs/`. Store the
-selected repo, issue number, branch, model, worker exit code, PR URL if created,
-and a short output tail for debugging failed or partial runs.
+When a worker hits the Codex message limit, the batch runner should not burn the
+same issue repeatedly. It should recognize the reset time from the worker output,
+record the issue as delayed, sleep or requeue it for after the reset when
+configured, and continue processing other available jobs.
 
-## 3. Build a local status dashboard
-
-Labels: `documentation`, `workflow`
-
-Generate a simple local HTML dashboard from `reports/runs/` that shows running,
-successful, failed, and no-op jobs. The dashboard should link to GitHub issues,
-branches, and pull requests where available.
-
-## 4. Add a PR and issue summary command
+## 4. Add a post-merge cleanup helper
 
 Labels: `github`, `workflow`
 
-Add a command that prints a compact overview of open issues, open PRs, merged
-PRs, and recently failed runs. It should work without requiring the GitHub CLI,
-using the existing GitHub API configuration.
-
-## 5. Improve interrupted-run recovery
-
-Labels: `safety`, `automation`
-
-Make it easy to resume after a stopped terminal, crashed worker, failed push, or
-closed unmerged PR. The script should detect existing branches and PRs, explain
-what it found, and either reuse them safely or ask the user to choose a new run.
-
-
-## 6. Compress Codex worker output into structured summaries
-
-Labels: `codex`, `automation`, `quality`
-
-Reduce noisy raw Codex output during issue solving. The solver should surface the
-current task, relevant planning or reasoning summary lines, warnings, and final
-results, while collapsing detailed coding changes into a compact Git-like summary
-such as changed files, insertions/deletions, and a short diff/stat preview. Full
-worker output should still be preserved in run diagnostics for debugging.
+Add a command that summarizes merged AI PRs, closes their referenced issues when
+safe, deletes stale AI branches, and reports anything that still needs manual
+review. It should use the existing GitHub API configuration and support a dry-run
+mode before changing GitHub state.
