@@ -4,13 +4,15 @@ solve_issues.py — Schritt 3: Issues mit KI lösen (Morpheus-Methode)
 Morpheus-Style AI Issue Solver — github.com/SaJaToGu
 
 Holt offene GitHub Issues, übergibt sie an Codex oder `aider` mit dem
-gewählten KI-Modell (Codex / Claude / OpenAI / Ollama), erstellt
+gewählten KI-Modell (Codex / Claude / OpenAI / Mistral / Ollama), erstellt
 einen Branch und einen Commit mit der Lösung.
 
 Verwendung:
     python scripts/solve_issues.py --model codex
     python scripts/solve_issues.py --model claude
     python scripts/solve_issues.py --model openai
+    python scripts/solve_issues.py --model mistral
+    python scripts/solve_issues.py --model mistral --model-name magistral-small-2509
     python scripts/solve_issues.py --model ollama --model-name deepseek-coder:6.7b
     python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
     python scripts/solve_issues.py --model claude --issue 3
@@ -77,6 +79,15 @@ MODEL_CONFIGS = {
         ],
         "env_key": "OPENAI_API_KEY",
         "env_var": "OPENAI_API_KEY",
+    },
+    "mistral": {
+        "display_name": "Mistral AI Magistral (magistral-medium-2509)",
+        "aider_flags": [
+            "--model", "mistral/{model_name}",
+        ],
+        "env_key": "MISTRAL_API_KEY",
+        "env_var": "MISTRAL_API_KEY",
+        "default_model_name": "magistral-medium-2509",
     },
     "ollama": {
         "display_name": "Ollama (lokal)",
@@ -532,6 +543,22 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
     ]
 
     return cmd
+
+
+def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Erzeugt die Worker-Umgebung und validiert provider-spezifische Pflichtwerte."""
+    env = dict(base_env if base_env is not None else os.environ)
+    model_config = MODEL_CONFIGS[model]
+    env_key = model_config.get("env_key")
+    if env_key:
+        api_key = require_config_value(config, env_key)
+        env[model_config["env_var"]] = api_key
+
+    if model == "ollama":
+        ollama_host = config.get("OLLAMA_HOST", "http://localhost:11434")
+        env["OLLAMA_API_BASE"] = ollama_host
+
+    return env
 
 
 def build_codex_command(prompt: str, repo_path: str, model_name: str | None = None) -> list:
@@ -1532,16 +1559,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             body=body or "(kein Beschreibungstext)"
         )
 
-        # API-Key setzen
-        env = os.environ.copy()
-        env_key = MODEL_CONFIGS[model]["env_key"]
-        if env_key:
-            api_key = require_config_value(config["config"], env_key)
-            env[MODEL_CONFIGS[model]["env_var"]] = api_key
-
-        if model == "ollama":
-            ollama_host = config["config"].get("OLLAMA_HOST", "http://localhost:11434")
-            env["OLLAMA_API_BASE"] = ollama_host
+        # API-Key bzw. lokale Endpoint-Variablen setzen
+        env = build_worker_env(model, config["config"])
 
         # KI-Worker ausführen
         if model == "codex":
@@ -1744,12 +1763,15 @@ def main():
 
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
-        "--model", choices=["codex", "claude", "openai", "ollama"],
-        help="KI-Modell: codex, claude, openai oder ollama"
+        "--model", choices=list(MODEL_CONFIGS.keys()),
+        help="KI-Modell: codex, claude, openai, mistral oder ollama"
     )
     parser.add_argument(
         "--model-name",
-        help="Spezifisches Modell (für Codex optional, für Ollama z.B. 'deepseek-coder:6.7b')"
+        help=(
+            "Spezifisches Modell (für Codex optional, für Mistral z.B. "
+            "'magistral-small-2509', für Ollama z.B. 'deepseek-coder:6.7b')"
+        )
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")

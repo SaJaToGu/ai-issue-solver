@@ -104,6 +104,17 @@ class BatchRunnerTests(unittest.TestCase):
 
         self.assertIn("--defer-codex-rate-limit", cmd)
 
+    def test_build_worker_command_forwards_mistral_model_override(self):
+        args = self.make_args(model="mistral", model_name="magistral-small-2509")
+
+        cmd = build_worker_command(args, IssueJob("demo", 7), Path("scripts/solve_issues.py"))
+
+        self.assertIn("--model", cmd)
+        self.assertIn("mistral", cmd)
+        self.assertIn("--model-name", cmd)
+        self.assertIn("magistral-small-2509", cmd)
+        self.assertNotIn("--defer-codex-rate-limit", cmd)
+
     def test_run_issue_jobs_continues_after_worker_failure(self):
         jobs = [IssueJob("demo", 1), IssueJob("demo", 2), IssueJob("demo", 3)]
         started = []
