@@ -12,7 +12,14 @@ import sys
 import threading
 
 sys.path.insert(0, str(Path(__file__).parent))
-from status_dashboard import DEFAULT_OUTPUT, DEFAULT_RUNS_DIR, read_runs, write_dashboard  # noqa: E402
+from status_dashboard import (  # noqa: E402
+    DEFAULT_GITHUB_CACHE,
+    DEFAULT_GITHUB_CACHE_TTL_SECONDS,
+    DEFAULT_OUTPUT,
+    DEFAULT_RUNS_DIR,
+    read_runs,
+    write_dashboard,
+)
 from utils import load_env, print_banner, print_step  # noqa: E402
 
 
@@ -29,6 +36,10 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             owner=self.dashboard_config["owner"],
             allow_shutdown=True,
             refresh_seconds=self.dashboard_config["refresh_seconds"],
+            github_enrich=self.dashboard_config["github_enrich"],
+            github_token=self.dashboard_config["github_token"],
+            github_cache_path=self.dashboard_config["github_cache_path"],
+            github_cache_ttl_seconds=self.dashboard_config["github_cache_ttl_seconds"],
         )
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib hook
@@ -66,6 +77,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=10,
         help="Browser-Auto-Refresh in Sekunden; 0 deaktiviert ihn",
     )
+    parser.add_argument(
+        "--github-enrich",
+        action="store_true",
+        help="Erfolgreiche Runs optional per GitHub API um PR-/Merge-/Issue-Status anreichern",
+    )
+    parser.add_argument(
+        "--github-cache",
+        default=str(DEFAULT_GITHUB_CACHE),
+        help="Cache-Datei fuer GitHub-Lifecycle-Daten",
+    )
+    parser.add_argument(
+        "--github-cache-ttl-seconds",
+        type=int,
+        default=DEFAULT_GITHUB_CACHE_TTL_SECONDS,
+        help=f"GitHub-Cache-TTL in Sekunden, Standard: {DEFAULT_GITHUB_CACHE_TTL_SECONDS}; -1 nutzt Cache ohne Ablauf",
+    )
     return parser.parse_args(argv)
 
 
@@ -86,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
         owner=owner,
         allow_shutdown=True,
         refresh_seconds=refresh_seconds,
+        github_enrich=args.github_enrich,
+        github_token=config.get("GITHUB_TOKEN"),
+        github_cache_path=Path(args.github_cache),
+        github_cache_ttl_seconds=args.github_cache_ttl_seconds,
     )
     print(f"   Dashboard: {output_path}")
 
@@ -95,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         "output_path": output_path,
         "owner": owner,
         "refresh_seconds": refresh_seconds,
+        "github_enrich": args.github_enrich,
+        "github_token": config.get("GITHUB_TOKEN"),
+        "github_cache_path": Path(args.github_cache),
+        "github_cache_ttl_seconds": args.github_cache_ttl_seconds,
     }
     handler = partial(DashboardRequestHandler, directory=str(serve_dir))
     server = ThreadingHTTPServer((args.host, args.port), handler)
@@ -105,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"   Auto-refresh: {refresh_seconds}s")
     else:
         print("   Auto-refresh: aus")
+    print(f"   GitHub-Enrichment: {'an' if args.github_enrich else 'aus'}")
     print("   Beenden: Button im Dashboard oder Ctrl+C im Terminal")
 
     try:

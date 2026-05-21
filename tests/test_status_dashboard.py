@@ -12,11 +12,46 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from status_dashboard import (  # noqa: E402
     classify_status,
     cleanup_stale_runs,
+    enrich_runs_with_github,
+    github_repo_api_path,
     github_links,
     read_runs,
     render_dashboard,
     write_dashboard,
 )
+
+
+class FakeLifecycleClient:
+    def __init__(self, pull_requests=None, issues=None, main_contains=None, fail=False):
+        self.pull_requests = pull_requests or {}
+        self.issues = issues or {}
+        self.main_contains = main_contains or set()
+        self.fail = fail
+        self.calls = 0
+        self.seen_repos = []
+
+    def _record(self, repo=None):
+        self.calls += 1
+        if repo:
+            self.seen_repos.append(repo)
+        if self.fail:
+            raise RuntimeError("GitHub unavailable")
+
+    def get_pull_request(self, repo, number):
+        self._record(repo)
+        return self.pull_requests.get(str(number))
+
+    def get_pull_requests_for_branch(self, repo, branch):
+        self._record(repo)
+        return []
+
+    def get_issue(self, repo, issue_number):
+        self._record(repo)
+        return self.issues.get(str(issue_number))
+
+    def branch_contains_commit(self, repo, branch, sha):
+        self._record(repo)
+        return (branch, sha) in self.main_contains
 
 
 class StatusDashboardTests(unittest.TestCase):
@@ -236,11 +271,324 @@ preserved_worktree: reports/preserved-worktrees/run/demo
         self.assertNotIn("Fix <unsafe>", html)
         self.assertIn("https://github.com/test-owner/demo/issues/26", html)
         self.assertIn("https://github.com/test-owner/demo/pull/25", html)
+        self.assertIn("Lifecycle", html)
+        self.assertIn("PR created", html)
         self.assertIn("Diff stat", html)
         self.assertIn("README.md | 1 +", html)
         self.assertIn("Recovery-Worktree", html)
         self.assertIn("reports/preserved-worktrees/run/demo", html)
         self.assertTrue(output_exists)
+
+    def test_render_dashboard_shows_lifecycle_fallback_without_github_data(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-40",
+                """status: pr_created
+repo: demo
+issue_number: 40
+branch: ai/fix-issue-40
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/40
+""",
+            )
+            runs = read_runs(runs_dir)
+
+            html = render_dashboard(runs, "test-owner", Path(tmpdir) / "status.html")
+
+        self.assertIn("PR created", html)
+        self.assertIn("GitHub-Status nicht geladen", html)
+        self.assertIn("action", html)
+
+    def test_github_enrichment_marks_open_pr_as_action_needed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-41",
+                """status: pr_created
+repo: demo
+issue_number: 41
+branch: ai/fix-issue-41
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/41
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                pull_requests={
+                    "41": {
+                        "state": "open",
+                        "merged_at": None,
+                        "merge_commit_sha": "",
+                    }
+                },
+                issues={"41": {"state": "open"}},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
+        self.assertTrue(result.used_github)
+        self.assertEqual(result.runs[0].lifecycle_label, "PR open")
+        self.assertTrue(result.runs[0].lifecycle_needs_attention)
+
+    def test_github_enrichment_marks_merged_to_develop(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-42",
+                """status: pr_created
+repo: demo
+issue_number: 42
+branch: ai/fix-issue-42
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/42
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                pull_requests={
+                    "42": {
+                        "state": "closed",
+                        "merged_at": "2026-05-21T10:00:00Z",
+                        "merge_commit_sha": "abc123",
+                        "base": {"ref": "develop"},
+                    }
+                },
+                issues={"42": {"state": "open"}},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
+        self.assertEqual(result.runs[0].lifecycle_label, "Merged to develop")
+        self.assertTrue(result.runs[0].lifecycle_needs_attention)
+
+    def test_github_enrichment_keeps_closed_issue_action_needed_until_main_contains_merge(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-48",
+                """status: pr_created
+repo: demo
+issue_number: 48
+branch: ai/fix-issue-48
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/48
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                pull_requests={
+                    "48": {
+                        "state": "closed",
+                        "merged_at": "2026-05-21T10:00:00Z",
+                        "merge_commit_sha": "closed48",
+                        "base": {"ref": "develop"},
+                    }
+                },
+                issues={"48": {"state": "closed"}},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
+        self.assertEqual(result.runs[0].lifecycle_label, "Merged to develop")
+        self.assertTrue(result.runs[0].lifecycle_needs_attention)
+        self.assertIn("Issue ist geschlossen", result.runs[0].lifecycle_note)
+
+    def test_github_enrichment_marks_main_and_closed_issue(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-43",
+                """status: pr_created
+repo: demo
+issue_number: 43
+branch: ai/fix-issue-43
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/43
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                pull_requests={
+                    "43": {
+                        "state": "closed",
+                        "merged_at": "2026-05-21T10:00:00Z",
+                        "merge_commit_sha": "def456",
+                        "base": {"ref": "develop"},
+                    }
+                },
+                issues={"43": {"state": "closed"}},
+                main_contains={("main", "def456")},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+            html = render_dashboard(result.runs, "test-owner", Path(tmpdir) / "status.html")
+
+        self.assertEqual(result.runs[0].lifecycle_label, "Issue closed")
+        self.assertFalse(result.runs[0].lifecycle_needs_attention)
+        self.assertIn("Issue closed", html)
+
+    def test_github_enrichment_marks_in_main_before_issue_is_closed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-46",
+                """status: pr_created
+repo: demo
+issue_number: 46
+branch: ai/fix-issue-46
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/46
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                pull_requests={
+                    "46": {
+                        "state": "closed",
+                        "merged_at": "2026-05-21T10:00:00Z",
+                        "merge_commit_sha": "feed46",
+                        "base": {"ref": "develop"},
+                    }
+                },
+                issues={"46": {"state": "open"}},
+                main_contains={("main", "feed46")},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
+        self.assertEqual(result.runs[0].lifecycle_label, "In main")
+        self.assertTrue(result.runs[0].lifecycle_needs_attention)
+
+    def test_github_enrichment_uses_cache_without_api_calls(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            cache_path = Path(tmpdir) / "cache.json"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-44",
+                """status: pr_created
+repo: demo
+issue_number: 44
+branch: ai/fix-issue-44
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/44
+""",
+            )
+            cache_path.write_text(
+                """{
+  "entries": {
+    "test-owner|demo|44|ai/fix-issue-44|https://github.com/test-owner/demo/pull/44": {
+      "label": "In main",
+      "state": "in-main",
+      "needs_attention": false,
+      "note": "cached"
+    }
+  }
+}
+""",
+                encoding="utf-8",
+            )
+            client = FakeLifecycleClient(fail=True)
+
+            result = enrich_runs_with_github(
+                read_runs(runs_dir),
+                "test-owner",
+                "token",
+                cache_path=cache_path,
+                client=client,
+            )
+
+        self.assertTrue(result.used_cache)
+        self.assertEqual(client.calls, 0)
+        self.assertEqual(result.runs[0].lifecycle_label, "In main")
+
+    def test_github_enrichment_falls_back_when_api_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-45",
+                """status: pr_created
+repo: demo
+issue_number: 45
+branch: ai/fix-issue-45
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/45
+""",
+            )
+
+            result = enrich_runs_with_github(
+                read_runs(runs_dir),
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=FakeLifecycleClient(fail=True),
+            )
+
+        self.assertFalse(result.used_github)
+        self.assertEqual(result.runs[0].lifecycle_label, "PR created")
+        self.assertIn("GitHub unavailable", result.error)
+
+    def test_github_repo_api_path_uses_owner_from_full_repo_name(self):
+        self.assertEqual(github_repo_api_path("other-owner/demo", "default-owner"), "/repos/other-owner/demo")
+        self.assertEqual(github_repo_api_path("demo", "default-owner"), "/repos/default-owner/demo")
+
+    def test_github_enrichment_preserves_full_repo_name_for_api_calls(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-47",
+                """status: pr_created
+repo: other-owner/demo
+issue_number: 47
+branch: ai/fix-issue-47
+worker_exit_code: 0
+pr_url: https://github.com/other-owner/demo/pull/47
+""",
+            )
+            client = FakeLifecycleClient(
+                pull_requests={"47": {"state": "open", "merged_at": None, "merge_commit_sha": ""}},
+                issues={"47": {"state": "open"}},
+            )
+
+            enrich_runs_with_github(
+                read_runs(runs_dir),
+                "default-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
+        self.assertIn("other-owner/demo", client.seen_repos)
 
     def test_render_dashboard_can_include_shutdown_button(self):
         html = render_dashboard([], None, Path("reports/status-dashboard.html"), allow_shutdown=True)

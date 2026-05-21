@@ -15,7 +15,7 @@ Verwendung:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from html import escape
 import json
@@ -25,14 +25,22 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
+try:
+    import requests
+except ModuleNotFoundError:
+    requests = None
+
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_env, print_banner, print_step  # noqa: E402
+from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
 
 
 DEFAULT_RUNS_DIR = Path("reports") / "runs"
 DEFAULT_OUTPUT = Path("reports") / "status-dashboard.html"
+DEFAULT_GITHUB_CACHE = Path("reports") / "status-dashboard.github-cache.json"
 DEFAULT_HEALTH_TIMEOUT_MINUTES = 60
+DEFAULT_GITHUB_CACHE_TTL_SECONDS = 600
 GITHUB_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/")
+GITHUB_PR_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
 CODEX_RATE_LIMIT_RESET_RE = re.compile(
     r"rate limit will be reset on\s+(.+?)(?:\.|\n|$)",
     re.IGNORECASE,
@@ -113,6 +121,10 @@ class DashboardRun:
     note: str
     git_diff_stat: str
     output_tail: str
+    lifecycle_label: str = ""
+    lifecycle_state: str = ""
+    lifecycle_needs_attention: bool = False
+    lifecycle_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -122,6 +134,68 @@ class CleanupResult:
     target_status: str
     cutoff: datetime
     dry_run: bool
+
+
+@dataclass(frozen=True)
+class GitHubEnrichmentResult:
+    runs: list[DashboardRun]
+    used_github: bool
+    used_cache: bool
+    error: str = ""
+
+
+class DashboardGitHubClient:
+    BASE = "https://api.github.com"
+
+    def __init__(self, token: str, owner: str):
+        self.owner = owner
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+
+    def repo_api_path(self, repo: str) -> str:
+        return github_repo_api_path(repo, self.owner)
+
+    def get_json(self, path: str, **params) -> dict | list | None:
+        resp = self.session.get(f"{self.BASE}{path}", params=params, timeout=10)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_pull_request(self, repo: str, number: str | int) -> dict | None:
+        return self.get_json(f"{self.repo_api_path(repo)}/pulls/{quote(str(number), safe='')}")
+
+    def get_pull_requests_for_branch(self, repo: str, branch: str) -> list[dict]:
+        repo_owner = repo_owner_for_url(repo, self.owner) or self.owner
+        data = self.get_json(
+            f"{self.repo_api_path(repo)}/pulls",
+            state="all",
+            head=f"{repo_owner}:{branch}",
+            per_page=10,
+            sort="updated",
+            direction="desc",
+        )
+        return data if isinstance(data, list) else []
+
+    def get_issue(self, repo: str, issue_number: str | int) -> dict | None:
+        data = self.get_json(f"{self.repo_api_path(repo)}/issues/{quote(str(issue_number), safe='')}")
+        if data and "pull_request" in data:
+            return None
+        return data
+
+    def branch_contains_commit(self, repo: str, branch: str, sha: str) -> bool:
+        if not branch or not sha:
+            return False
+        data = self.get_json(
+            f"{self.repo_api_path(repo)}/compare/{quote(branch, safe='')}...{quote(sha, safe='')}"
+        )
+        if not isinstance(data, dict):
+            return False
+        return data.get("status") in {"behind", "identical"}
 
 
 def parse_summary(path: Path) -> dict[str, str]:
@@ -448,6 +522,12 @@ def repo_owner_for_url(repo: str, owner: str | None) -> str | None:
     return owner
 
 
+def github_repo_api_path(repo: str, owner: str | None) -> str:
+    repo_owner = repo_owner_for_url(repo, owner) or ""
+    repo_name = repo_name_for_url(repo)
+    return f"/repos/{quote(repo_owner, safe='')}/{quote(repo_name, safe='')}"
+
+
 def github_links(run: DashboardRun, owner: str | None) -> dict[str, str]:
     repo_owner = repo_owner_for_url(run.repo, owner)
     repo_name = repo_name_for_url(run.repo)
@@ -463,6 +543,228 @@ def github_links(run: DashboardRun, owner: str | None) -> dict[str, str]:
     if run.pr_url:
         links["pr"] = run.pr_url
     return links
+
+
+def fallback_lifecycle_for_run(run: DashboardRun) -> DashboardRun:
+    if run.category != "successful":
+        return run
+    if run.status.startswith("pr_created"):
+        note = "GitHub-Status nicht geladen; pruefe PR-Link."
+        return replace(
+            run,
+            lifecycle_label="PR created",
+            lifecycle_state="unknown",
+            lifecycle_needs_attention=True,
+            lifecycle_note=note,
+        )
+    if run.status == "cleanup_successful":
+        return replace(
+            run,
+            lifecycle_label="Cleanup done",
+            lifecycle_state="done",
+            lifecycle_needs_attention=False,
+            lifecycle_note="Lokaler Cleanup-Run ohne PR-Lifecycle.",
+        )
+    return run
+
+
+def with_fallback_lifecycle(runs: list[DashboardRun]) -> list[DashboardRun]:
+    return [fallback_lifecycle_for_run(run) for run in runs]
+
+
+def pr_number_from_url(pr_url: str) -> str:
+    match = GITHUB_PR_RE.match(pr_url or "")
+    return match.group(3) if match else ""
+
+
+def lifecycle_from_github(run: DashboardRun, pr: dict | None,
+                          issue: dict | None, in_main: bool) -> DashboardRun:
+    issue_closed = bool(issue and issue.get("state") == "closed")
+    if in_main:
+        return replace(
+            run,
+            lifecycle_label="Issue closed" if issue_closed else "In main",
+            lifecycle_state="issue-closed" if issue_closed else "in-main",
+            lifecycle_needs_attention=not issue_closed,
+            lifecycle_note=(
+                "Code ist in main und Issue ist geschlossen."
+                if issue_closed
+                else "Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main."
+            ),
+        )
+
+    if pr and pr.get("merged_at"):
+        base = ((pr.get("base") or {}).get("ref")) or run.base_branch or "develop"
+        return replace(
+            run,
+            lifecycle_label=f"Merged to {base}",
+            lifecycle_state="merged",
+            lifecycle_needs_attention=True,
+            lifecycle_note=(
+                "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht."
+                if issue_closed
+                else "Noch nicht in main erkannt."
+            ),
+        )
+
+    if pr and pr.get("state") == "open":
+        return replace(
+            run,
+            lifecycle_label="PR open",
+            lifecycle_state="pr-open",
+            lifecycle_needs_attention=True,
+            lifecycle_note="Review oder Merge steht noch aus.",
+        )
+
+    if pr and pr.get("state") == "closed":
+        return replace(
+            run,
+            lifecycle_label="PR closed",
+            lifecycle_state="pr-closed",
+            lifecycle_needs_attention=True,
+            lifecycle_note="PR wurde ohne Merge geschlossen.",
+        )
+
+    return fallback_lifecycle_for_run(run)
+
+
+def github_cache_is_fresh(cache_path: Path, ttl_seconds: int,
+                          now_fn=datetime.now) -> bool:
+    if ttl_seconds < 0:
+        return True
+    try:
+        mtime = datetime.fromtimestamp(cache_path.stat().st_mtime)
+    except OSError:
+        return False
+    return now_fn() - mtime <= timedelta(seconds=ttl_seconds)
+
+
+def load_github_cache(cache_path: Path, ttl_seconds: int,
+                      now_fn=datetime.now) -> dict[str, dict] | None:
+    if not cache_path.exists() or not github_cache_is_fresh(cache_path, ttl_seconds, now_fn=now_fn):
+        return None
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    entries = data.get("entries", data)
+    return entries if isinstance(entries, dict) else None
+
+
+def write_github_cache(cache_path: Path, entries: dict[str, dict]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "entries": entries,
+    }
+    cache_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def lifecycle_cache_key(run: DashboardRun, owner: str | None) -> str:
+    repo_owner = repo_owner_for_url(run.repo, owner) or ""
+    repo_name = repo_name_for_url(run.repo)
+    return "|".join([repo_owner, repo_name, run.issue_number, run.branch, run.pr_url])
+
+
+def run_from_lifecycle_cache(run: DashboardRun, cached: dict) -> DashboardRun:
+    return replace(
+        run,
+        lifecycle_label=str(cached.get("label", "")),
+        lifecycle_state=str(cached.get("state", "")),
+        lifecycle_needs_attention=bool(cached.get("needs_attention", False)),
+        lifecycle_note=str(cached.get("note", "")),
+    )
+
+
+def run_to_lifecycle_cache(run: DashboardRun) -> dict:
+    return {
+        "label": run.lifecycle_label,
+        "state": run.lifecycle_state,
+        "needs_attention": run.lifecycle_needs_attention,
+        "note": run.lifecycle_note,
+    }
+
+
+def enrich_single_run_from_github(run: DashboardRun, owner: str | None,
+                                  client: DashboardGitHubClient) -> DashboardRun:
+    if run.category != "successful":
+        return run
+
+    repo_owner = repo_owner_for_url(run.repo, owner)
+    repo_name = repo_name_for_url(run.repo)
+    if not repo_owner or not repo_name:
+        return fallback_lifecycle_for_run(run)
+    repo_for_api = run.repo if "/" in run.repo else repo_name
+
+    pr = None
+    pr_number = pr_number_from_url(run.pr_url)
+    if pr_number:
+        pr = client.get_pull_request(repo_for_api, pr_number)
+    elif run.branch:
+        prs = client.get_pull_requests_for_branch(repo_for_api, run.branch)
+        pr = prs[0] if prs else None
+
+    issue = client.get_issue(repo_for_api, run.issue_number) if run.issue_number else None
+    merge_sha = str((pr or {}).get("merge_commit_sha") or "")
+    in_main = bool(merge_sha and client.branch_contains_commit(repo_for_api, "main", merge_sha))
+    return lifecycle_from_github(run, pr, issue, in_main)
+
+
+def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: str | None,
+                            cache_path: Path = DEFAULT_GITHUB_CACHE,
+                            cache_ttl_seconds: int = DEFAULT_GITHUB_CACHE_TTL_SECONDS,
+                            client: DashboardGitHubClient | None = None,
+                            now_fn=datetime.now) -> GitHubEnrichmentResult:
+    fallback_runs = with_fallback_lifecycle(runs)
+    eligible = [run for run in runs if run.category == "successful"]
+    if not eligible:
+        return GitHubEnrichmentResult(fallback_runs, used_github=False, used_cache=False)
+
+    cached_entries = load_github_cache(cache_path, cache_ttl_seconds, now_fn=now_fn)
+    if cached_entries is not None:
+        enriched = [
+            run_from_lifecycle_cache(run, cached_entries[lifecycle_cache_key(run, owner)])
+            if lifecycle_cache_key(run, owner) in cached_entries
+            else fallback_lifecycle_for_run(run)
+            for run in runs
+        ]
+        return GitHubEnrichmentResult(enriched, used_github=False, used_cache=True)
+
+    if client is None:
+        if requests is None:
+            return GitHubEnrichmentResult(
+                fallback_runs,
+                used_github=False,
+                used_cache=False,
+                error="requests ist nicht installiert",
+            )
+        if not owner or is_placeholder_value(token):
+            return GitHubEnrichmentResult(fallback_runs, used_github=False, used_cache=False)
+        client = DashboardGitHubClient(str(token), owner)
+
+    entries: dict[str, dict] = {}
+    enriched_runs = []
+    try:
+        for run in runs:
+            enriched = enrich_single_run_from_github(run, owner, client)
+            enriched_runs.append(enriched)
+            if run.category == "successful":
+                entries[lifecycle_cache_key(run, owner)] = run_to_lifecycle_cache(enriched)
+    except Exception as exc:  # Dashboard-Generierung darf nicht an GitHub scheitern.
+        return GitHubEnrichmentResult(
+            fallback_runs,
+            used_github=False,
+            used_cache=False,
+            error=str(exc).splitlines()[0][:200],
+        )
+
+    try:
+        write_github_cache(cache_path, entries)
+    except OSError:
+        pass
+    return GitHubEnrichmentResult(enriched_runs, used_github=True, used_cache=False)
 
 
 def format_datetime(value: datetime | None) -> str:
@@ -485,6 +787,21 @@ def render_issue_cell(run: DashboardRun) -> str:
     return (
         f'<div class="issue-number">{issue}</div>'
         f'<div class="issue-title">{escape(run.issue_title)}</div>'
+    )
+
+
+def render_lifecycle_cell(run: DashboardRun) -> str:
+    if not run.lifecycle_label:
+        return "-"
+    attention = " · action" if run.lifecycle_needs_attention else " · done"
+    note = f'<div class="note">{escape(run.lifecycle_note)}</div>' if run.lifecycle_note else ""
+    state = run.lifecycle_state or "unknown"
+    return (
+        f'<span class="lifecycle lifecycle-{escape(state)}">'
+        f'{escape(run.lifecycle_label)}'
+        f'<small>{escape(attention)}</small>'
+        "</span>"
+        f"{note}"
     )
 
 
@@ -538,6 +855,7 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         f"  <td>{escape(run.repo or '-')}</td>",
         f"  <td>{render_issue_cell(run)}</td>",
         f"  <td><code>{escape(run.branch or '-')}</code></td>",
+        f"  <td>{render_lifecycle_cell(run)}</td>",
         f"  <td>{escape(run.model or '-')}</td>",
         f"  <td>{escape(run.worker_exit_code or '-')}</td>",
         f"  <td>{escape(run.status)}<div class=\"note\">Letzte Aktivitaet: {last_activity}</div>{note}{tail}</td>",
@@ -550,6 +868,12 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
                      generated_at: datetime | None = None,
                      allow_shutdown: bool = False,
                      refresh_seconds: int | None = None) -> str:
+    runs = [
+        fallback_lifecycle_for_run(run)
+        if run.category == "successful" and not run.lifecycle_label
+        else run
+        for run in runs
+    ]
     generated_at = generated_at or datetime.now()
     counts = {category: 0 for category in STATUS_ORDER}
     for run in runs:
@@ -558,7 +882,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     rows = "\n".join(render_run_row(run, owner, output_path) for run in runs)
     if not rows:
         rows = (
-            '<tr><td colspan="9" class="empty">'
+            '<tr><td colspan="10" class="empty">'
             "Keine Run-Reports unter reports/runs/ gefunden."
             "</td></tr>"
         )
@@ -719,6 +1043,23 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .badge-archived {{ background: var(--archived); }}
     .badge-unknown {{ background: var(--unknown); }}
     .note {{ margin-top: 4px; color: var(--muted); }}
+    .lifecycle {{
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 112px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #eef2f7;
+      color: #27313c;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }}
+    .lifecycle small {{ color: var(--muted); font-weight: 500; }}
+    .lifecycle-pr-open, .lifecycle-merged, .lifecycle-pr-closed, .lifecycle-unknown {{ background: #fff4d6; color: #6f4500; }}
+    .lifecycle-in-main {{ background: #dbeafe; color: #174ea6; }}
+    .lifecycle-issue-closed, .lifecycle-done {{ background: #dcfce7; color: #166534; }}
     .issue-number {{ font-weight: 700; white-space: nowrap; }}
     .issue-title {{ max-width: 320px; margin-top: 2px; color: var(--text); overflow-wrap: anywhere; }}
     details {{ margin-top: 6px; }}
@@ -766,6 +1107,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
             <th>Repo</th>
             <th>Issue</th>
             <th>Branch</th>
+            <th>Lifecycle</th>
             <th>Modell</th>
             <th>Exit</th>
             <th>Details</th>
@@ -787,9 +1129,24 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
 def write_dashboard(runs: list[DashboardRun], output_path: Path,
                     owner: str | None = None,
                     allow_shutdown: bool = False,
-                    refresh_seconds: int | None = None) -> Path:
+                    refresh_seconds: int | None = None,
+                    github_enrich: bool = False,
+                    github_token: str | None = None,
+                    github_cache_path: Path = DEFAULT_GITHUB_CACHE,
+                    github_cache_ttl_seconds: int = DEFAULT_GITHUB_CACHE_TTL_SECONDS) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_owner = owner or infer_owner_from_runs(runs)
+    if github_enrich:
+        enrichment = enrich_runs_with_github(
+            runs,
+            effective_owner,
+            github_token,
+            cache_path=github_cache_path,
+            cache_ttl_seconds=github_cache_ttl_seconds,
+        )
+        runs = enrichment.runs
+    else:
+        runs = with_fallback_lifecycle(runs)
     output_path.write_text(
         render_dashboard(
             runs,
@@ -862,6 +1219,22 @@ def main() -> int:
         default=int(os.environ.get("AI_SOLVER_HEALTH_TIMEOUT_MINUTES", DEFAULT_HEALTH_TIMEOUT_MINUTES)),
         help=f"Running-Runs nach so vielen Minuten ohne Aktivitaet als unhealthy markieren, Standard: {DEFAULT_HEALTH_TIMEOUT_MINUTES}",
     )
+    parser.add_argument(
+        "--github-enrich",
+        action="store_true",
+        help="Erfolgreiche Runs optional per GitHub API um PR-/Merge-/Issue-Status anreichern",
+    )
+    parser.add_argument(
+        "--github-cache",
+        default=str(DEFAULT_GITHUB_CACHE),
+        help="Cache-Datei fuer GitHub-Lifecycle-Daten",
+    )
+    parser.add_argument(
+        "--github-cache-ttl-seconds",
+        type=int,
+        default=DEFAULT_GITHUB_CACHE_TTL_SECONDS,
+        help=f"GitHub-Cache-TTL in Sekunden, Standard: {DEFAULT_GITHUB_CACHE_TTL_SECONDS}; -1 nutzt Cache ohne Ablauf",
+    )
     args = parser.parse_args()
 
     config = load_env()
@@ -895,7 +1268,17 @@ def main() -> int:
     print(f"   Gefundene Runs: {len(runs)}")
 
     print_step(2, f"Schreibe HTML nach {output_path}")
-    write_dashboard(runs, output_path, owner=owner)
+    if args.github_enrich:
+        print("   GitHub-Enrichment: an (mit Cache/Fallback)")
+    write_dashboard(
+        runs,
+        output_path,
+        owner=owner,
+        github_enrich=args.github_enrich,
+        github_token=config.get("GITHUB_TOKEN"),
+        github_cache_path=Path(args.github_cache),
+        github_cache_ttl_seconds=args.github_cache_ttl_seconds,
+    )
     print(f"   Dashboard: {output_path}")
     return 0
 
