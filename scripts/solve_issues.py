@@ -12,7 +12,7 @@ Verwendung:
     python scripts/solve_issues.py --model claude
     python scripts/solve_issues.py --model openai
     python scripts/solve_issues.py --model mistral
-    python scripts/solve_issues.py --model mistral --model-name magistral-small-latest
+    python scripts/solve_issues.py --model mistral --model-name magistral-small-2509
     python scripts/solve_issues.py --model ollama --model-name deepseek-coder:6.7b
     python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
     python scripts/solve_issues.py --model claude --issue 3
@@ -81,13 +81,13 @@ MODEL_CONFIGS = {
         "env_var": "OPENAI_API_KEY",
     },
     "mistral": {
-        "display_name": "Mistral AI Magistral (magistral-medium-latest)",
+        "display_name": "Mistral AI Magistral (magistral-medium-2509)",
         "aider_flags": [
             "--model", "mistral/{model_name}",
         ],
         "env_key": "MISTRAL_API_KEY",
         "env_var": "MISTRAL_API_KEY",
-        "default_model_name": "magistral-medium-latest",
+        "default_model_name": "magistral-medium-2509",
     },
     "ollama": {
         "display_name": "Ollama (lokal)",
@@ -1811,7 +1811,7 @@ def main():
         "--model-name",
         help=(
             "Spezifisches Modell (für Codex optional, für Mistral z.B. "
-            "'magistral-small-latest', für Ollama z.B. 'deepseek-coder:6.7b')"
+            "'magistral-small-2509', für Ollama z.B. 'deepseek-coder:6.7b')"
         )
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")

@@ -15,7 +15,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from solve_issues import (  # noqa: E402
     GitHubClient,
-    MODEL_CONFIGS,
     PullRequestState,
     WorkerRunResult,
     assess_worker_result,
@@ -533,30 +532,27 @@ class AiderCommandTests(unittest.TestCase):
         self.assertEqual(cmd[-1], "src/app.py")
 
     def test_mistral_command_uses_default_magistral_model(self):
-        model_name = MODEL_CONFIGS["mistral"]["default_model_name"]
-
         cmd = build_aider_command(
             "mistral",
-            model_name,
+            "magistral-medium-2509",
             "Fix",
             "/tmp/repo",
             file_targets=[],
         )
 
         self.assertIn("--model", cmd)
-        self.assertEqual(model_name, "magistral-medium-latest")
-        self.assertIn("mistral/magistral-medium-latest", cmd)
+        self.assertIn("mistral/magistral-medium-2509", cmd)
 
     def test_mistral_command_allows_model_name_override(self):
         cmd = build_aider_command(
             "mistral",
-            "magistral-small-latest",
+            "magistral-small-2509",
             "Fix",
             "/tmp/repo",
             file_targets=[],
         )
 
-        self.assertIn("mistral/magistral-small-latest", cmd)
+        self.assertIn("mistral/magistral-small-2509", cmd)
 
     def test_mistral_worker_env_requires_api_key(self):
         printed = io.StringIO()

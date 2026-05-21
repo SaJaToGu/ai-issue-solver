@@ -568,7 +568,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--model-name",
         help=(
             "Spezifisches Modell (für Codex optional, für Mistral z.B. "
-            "'magistral-small-latest', für Ollama z.B. 'deepseek-coder:6.7b')"
+            "'magistral-small-2509', für Ollama z.B. 'deepseek-coder:6.7b')"
         ),
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
