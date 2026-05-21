@@ -780,11 +780,17 @@ def safe_run_repo_name(repo: str) -> str:
 
 def create_run_report(repo: str, issue_number: int, branch: str, model: str,
                       now_fn=datetime.now,
-                      issue_title: str = "") -> RunReport | None:
-    timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
-    run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
+                      issue_title: str = "",
+                      run_dir: Path | str | None = None) -> RunReport | None:
+    if run_dir is None:
+        timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
+        run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
+        exist_ok = False
+    else:
+        run_dir = Path(run_dir)
+        exist_ok = True
     try:
-        run_dir.mkdir(parents=True, exist_ok=False)
+        run_dir.mkdir(parents=True, exist_ok=exist_ok)
     except OSError as exc:
         print_warn(f"Run-Report konnte nicht angelegt werden: {exc}")
         return None
@@ -1456,7 +1462,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 model: str, model_name: str, config: dict,
                 token: str, dry_run: bool, base_branch: str,
                 close_issues: bool,
-                defer_codex_rate_limit: bool = False) -> bool:
+                defer_codex_rate_limit: bool = False,
+                run_report_dir: Path | str | None = None) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -1487,6 +1494,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         recovery_plan.branch,
         model,
         issue_title=title,
+        run_dir=run_report_dir,
     )
     if run_report:
         write_run_report(run_report, "started")
@@ -1825,6 +1833,10 @@ def main():
         help="Bei Codex-Rate-Limits nicht schlafen; Batch-Runner kann den Job verzögern",
     )
     parser.add_argument(
+        "--run-report-dir",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--cleanup-preserved-worktrees",
         action="store_true",
         help="Alte gesicherte Recovery-Worktrees unter reports/preserved-worktrees aufraeumen",
@@ -1943,6 +1955,7 @@ def main():
                 base_branch=base_branch,
                 close_issues=args.close_issues,
                 defer_codex_rate_limit=args.defer_codex_rate_limit,
+                run_report_dir=args.run_report_dir,
             )
             if ok:
                 solved += 1

@@ -1,7 +1,8 @@
 import argparse
+import json
+import tempfile
 from datetime import datetime
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -15,8 +16,10 @@ from solve_issues_batch import (  # noqa: E402
     IssueJob,
     IssueJobResult,
     build_worker_command,
+    create_queued_run_report,
     dedupe_issue_jobs,
     discover_issue_jobs,
+    finalize_unclaimed_queued_report,
     run_issue_job,
     run_issue_jobs,
 )
@@ -116,6 +119,86 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertIn("--model-name", cmd)
         self.assertIn("magistral-small-2509", cmd)
         self.assertNotIn("--defer-codex-rate-limit", cmd)
+
+    def test_build_worker_command_forwards_queued_report_dir(self):
+        args = self.make_args(model="codex")
+
+        cmd = build_worker_command(
+            args,
+            IssueJob("demo", 7),
+            Path("scripts/solve_issues.py"),
+            run_report_dir=Path("reports/runs/queued-demo"),
+        )
+
+        self.assertIn("--run-report-dir", cmd)
+        self.assertIn("reports/runs/queued-demo", cmd)
+
+    def test_create_queued_run_report_writes_lightweight_summary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_queued_run_report(
+                IssueJob("owner/demo", 7),
+                "codex",
+                base_branch="main",
+                now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7, 123456),
+                reports_root=Path(tmpdir) / "runs",
+            )
+            summary = (report.path / "summary.txt").read_text(encoding="utf-8")
+            metadata = json.loads((report.path / "metadata.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(report.path.name, "20260521-090807-123456-owner-demo-issue-7")
+        self.assertIn("status: queued", summary)
+        self.assertIn("repo: owner/demo", summary)
+        self.assertIn("issue_number: 7", summary)
+        self.assertIn("base_branch: main", summary)
+        self.assertIn("model: codex", summary)
+        self.assertIn("queued_at: 2026-05-21T09:08:07", summary)
+        self.assertEqual(metadata["status"], "queued")
+        self.assertEqual(metadata["base_branch"], "main")
+
+    def test_finalize_unclaimed_queued_report_replaces_stale_queue_status(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_queued_run_report(
+                IssueJob("demo", 7),
+                "codex",
+                base_branch="main",
+                now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7, 123456),
+                reports_root=Path(tmpdir) / "runs",
+            )
+
+            changed = finalize_unclaimed_queued_report(
+                report,
+                IssueJobResult(IssueJob("demo", 7), 2, "worker failed\n", 0.1),
+            )
+            summary = (report.path / "summary.txt").read_text(encoding="utf-8")
+            metadata = json.loads((report.path / "metadata.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(changed, report.path)
+        self.assertIn("status: worker_finished", summary)
+        self.assertIn("worker_exit_code: 2", summary)
+        self.assertIn("output_tail:", summary)
+        self.assertEqual(metadata["status"], "worker_finished")
+
+    def test_finalize_unclaimed_queued_report_keeps_started_solver_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_queued_run_report(
+                IssueJob("demo", 7),
+                "codex",
+                reports_root=Path(tmpdir) / "runs",
+            )
+            (report.path / "summary.txt").write_text(
+                "status: started\nrepo: demo\n",
+                encoding="utf-8",
+            )
+
+            changed = finalize_unclaimed_queued_report(
+                report,
+                IssueJobResult(IssueJob("demo", 7), 2, "worker failed\n", 0.1),
+            )
+            summary = (report.path / "summary.txt").read_text(encoding="utf-8")
+
+        self.assertIsNone(changed)
+        self.assertEqual(summary, "status: started\nrepo: demo\n")
+
 
     def test_run_issue_jobs_continues_after_worker_failure(self):
         jobs = [IssueJob("demo", 1), IssueJob("demo", 2), IssueJob("demo", 3)]

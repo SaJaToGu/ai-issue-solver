@@ -309,6 +309,11 @@ startet pro Job einen isolierten `solve_issues.py`-Prozess. Ein fehlschlagender
 Worker stoppt den Batch nicht; die übrigen Jobs laufen weiter. Die Ausgabe wird
 pro Job gesammelt und erst nach Abschluss dieses Jobs gedruckt, damit parallele
 Worker-Logs lesbar bleiben.
+Vor dem Start der Worker schreibt der Batch-Runner leichte Queue-Reports unter
+`reports/runs/`. Das Status-Dashboard zeigt dadurch auch wartende Jobs mit Repo,
+Issue, Modell, geplantem Base-Branch und Queue-Zeitpunkt. Sobald ein Worker den
+Job übernimmt, nutzt der Einzel-Solver denselben Report-Pfad und ersetzt den
+Queue-Status durch den normalen Run-Report.
 Meldet ein Codex-Worker ein Nachrichtenlimit mit Reset-Zeit, markiert der
 Batch-Runner den betroffenen Job als verzögert und startet ihn nicht sofort
 erneut. Mit `--requeue-rate-limited` wird der Job nach der Reset-Zeit wieder in
@@ -397,9 +402,9 @@ python scripts/post_merge_cleanup.py --repo ai-issue-solver --apply
 
 ### `status_dashboard.py`
 Erzeugt ein lokales HTML-Dashboard aus den Run-Reports unter `reports/runs/`.
-Die Übersicht gruppiert laufende, unhealthy, erfolgreiche, fehlgeschlagene und
-No-op-Jobs und verlinkt GitHub Issues, Branches und Pull Requests, wenn genug
-Metadaten vorliegen.
+Die Übersicht gruppiert wartende, laufende, unhealthy, erfolgreiche,
+fehlgeschlagene, archivierte und No-op-Jobs und verlinkt GitHub Issues,
+Branches und Pull Requests, wenn genug Metadaten vorliegen.
 
 ```bash
 python scripts/status_dashboard.py
@@ -429,8 +434,8 @@ Timeout ist per `--health-timeout-minutes` oder
 mit zukünftiger Reset-Zeit bleiben `Running`, um falsche Alarme zu vermeiden.
 
 Mit `--cleanup-stale` zeigt das Script zuerst eine Dry-run-Vorschau fuer alte
-unvollstaendige Reports (`running`, `unhealthy` oder `unknown`). Erst `--apply` schreibt in
-die betroffenen `summary.txt`-Dateien. Standardmaessig werden nur Runs mit
+unvollstaendige Reports (`queued`, `running`, `unhealthy` oder `unknown`). Erst `--apply`
+schreibt in die betroffenen `summary.txt`-Dateien. Standardmaessig werden nur Runs mit
 parsbarem Zeitstempel beruecksichtigt, die aelter als 7 Tage sind; dadurch
 bleiben aktuelle aktive Laeufe geschuetzt. Archivierte Reports zaehlt das
 Dashboard separat und nicht mehr als unbekannte historische Arbeit.
@@ -441,7 +446,7 @@ Dashboard separat und nicht mehr als unbekannte historische Arbeit.
 - `--owner` — GitHub Owner für Issue- und Branch-Links
 - `--health-timeout-minutes` — Running-Runs nach so vielen Minuten ohne
   Aktivität als `Unhealthy` markieren, Standard: `60`
-- `--cleanup-stale` — alte `running`/`unhealthy`/`unknown` Reports als Cleanup-Kandidaten anzeigen
+- `--cleanup-stale` — alte `queued`/`running`/`unhealthy`/`unknown` Reports als Cleanup-Kandidaten anzeigen
 - `--mark` — Zielstatus fuer Cleanup: `archived`, `failed`, `noop` oder `successful`
 - `--older-than-days` — Mindestalter fuer Cleanup-Kandidaten, Standard: `7`
 - `--include-undated` — auch Reports ohne parsbaren Zeitstempel aufnehmen
