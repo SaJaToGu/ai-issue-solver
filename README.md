@@ -443,10 +443,11 @@ Branches und Pull Requests, wenn genug Metadaten vorliegen.
 python scripts/status_dashboard.py
 python scripts/status_dashboard.py --owner SaJaToGu
 python scripts/status_dashboard.py --runs-dir reports/runs --output reports/status-dashboard.html
+python scripts/status_dashboard.py --github-enrich
 python scripts/status_dashboard.py --health-timeout-minutes 90
 python scripts/status_dashboard.py --cleanup-stale
 python scripts/status_dashboard.py --cleanup-stale --mark archived --older-than-days 14 --apply
-python scripts/serve_dashboard.py --port 8765 --refresh-seconds 10
+python scripts/serve_dashboard.py --port 8765 --refresh-seconds 10 --github-enrich
 ```
 
 Ohne `--owner` nutzt das Script `GITHUB_USER` aus `config/.env` oder leitet den
@@ -457,6 +458,17 @@ einen Beenden-Knopf im Dashboard an und regeneriert die HTML-Datei bei jedem
 Aufruf. Mit `--refresh-seconds` lädt der Browser die Seite automatisch neu. Der
 einfache `python -m http.server` kann Dateien ausliefern, aber nicht per
 Browser-Button beendet werden.
+
+Erfolgreiche Solver-Runs zeigen eine kompakte Lifecycle-Spalte. Offline bleibt
+das Dashboard bei lokalen Report-Daten wie `PR created`. Mit `--github-enrich`
+nutzt es optional `GITHUB_TOKEN` und `GITHUB_USER`, liest PR-, Merge- und
+Issue-Status aus der GitHub API und zeigt zum Beispiel `PR open`,
+`Merged to develop`, `In main` oder `Issue closed`. Die Anreicherung ist klein
+gehalten und ersetzt keine GitHub-Ansicht: Sie beantwortet nur, ob noch Review,
+Merge oder Issue-Cleanup offen ist. Ergebnisse werden standardmäßig in
+`reports/status-dashboard.github-cache.json` gecacht; wenn GitHub nicht
+erreichbar ist oder Credentials fehlen, wird weiterhin das lokale Dashboard
+generiert.
 
 Während `solve_issues.py` läuft, schreibt es neben `summary.txt` eine
 `health.json` mit letzter sinnvoller Worker-Ausgabe, Report-Update-Zeit und
@@ -477,6 +489,9 @@ Dashboard separat und nicht mehr als unbekannte historische Arbeit.
 - `--runs-dir` — Verzeichnis mit Run-Reports, Standard: `reports/runs`
 - `--output` — Zielpfad der HTML-Datei, Standard: `reports/status-dashboard.html`
 - `--owner` — GitHub Owner für Issue- und Branch-Links
+- `--github-enrich` — erfolgreiche Runs per GitHub API um PR-/Merge-/Issue-Lifecycle anreichern, falls Credentials verfügbar sind
+- `--github-cache` — Cache-Datei für Lifecycle-Daten, Standard: `reports/status-dashboard.github-cache.json`
+- `--github-cache-ttl-seconds` — Cache-TTL in Sekunden, Standard: `600`; `-1` nutzt den Cache ohne Ablauf
 - `--health-timeout-minutes` — Running-Runs nach so vielen Minuten ohne
   Aktivität als `Unhealthy` markieren, Standard: `60`
 - `--cleanup-stale` — alte `queued`/`running`/`unhealthy`/`unknown` Reports als Cleanup-Kandidaten anzeigen
@@ -486,6 +501,7 @@ Dashboard separat und nicht mehr als unbekannte historische Arbeit.
 - `--apply` — Cleanup wirklich schreiben; ohne diese Option bleibt es beim Dry-run
 - `serve_dashboard.py --port` — lokaler Port für den Dashboard-Server, Standard: `8765`
 - `serve_dashboard.py --refresh-seconds` — Browser-Auto-Refresh, Standard: `10`, `0` deaktiviert ihn
+- `serve_dashboard.py --github-enrich` — nutzt dieselbe optionale Lifecycle-Anreicherung beim Servieren
 
 ---
 
