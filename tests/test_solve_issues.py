@@ -19,6 +19,7 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
+    create_run_report,
     create_issue_pull_request,
     detect_codex_rate_limit,
     format_git_change_summary,
@@ -33,6 +34,7 @@ from solve_issues import (  # noqa: E402
     should_surface_worker_line,
     sleep_until_codex_reset,
     solve_issue,
+    write_run_report,
     write_worker_diagnostics,
 )
 
@@ -769,6 +771,69 @@ class GitStatusTests(unittest.TestCase):
 
             self.assertEqual(log.read_text(encoding="utf-8"), "full\nworker\noutput\n")
             self.assertIn("worker_exit_code: 3", summary.read_text(encoding="utf-8"))
+
+    def test_run_report_persists_metadata_pr_url_and_output_tail(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                report = create_run_report(
+                    repo="demo/repo",
+                    issue_number=24,
+                    branch="ai/fix-issue-24",
+                    model="codex",
+                    now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7, 123456),
+                )
+                run_dir = write_run_report(
+                    report,
+                    "pr_created",
+                    worker_result=WorkerRunResult(
+                        0,
+                        "\n".join(f"line {index}" for index in range(40)) + "\n",
+                    ),
+                    pr_url="https://github.com/test-owner/demo/pull/24",
+                )
+                run_dir = Path(run_dir).resolve()
+                summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
+                tail = (run_dir / "output-tail.log").read_text(encoding="utf-8")
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(run_dir.name, "20260521-090807-123456-demo-repo-issue-24")
+        self.assertIn("selected_repo: demo/repo", summary)
+        self.assertIn("repo: demo/repo", summary)
+        self.assertIn("issue_number: 24", summary)
+        self.assertIn("issue: 24", summary)
+        self.assertIn("branch: ai/fix-issue-24", summary)
+        self.assertIn("model: codex", summary)
+        self.assertIn("worker_exit_code: 0", summary)
+        self.assertIn("pr_url: https://github.com/test-owner/demo/pull/24", summary)
+        self.assertIn("output_tail:", summary)
+        self.assertNotIn("line 0", tail)
+        self.assertIn("line 39", tail)
+
+    def test_run_report_without_worker_records_partial_status(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                report = create_run_report(
+                    repo="demo",
+                    issue_number=25,
+                    branch="ai/fix-issue-25",
+                    model="claude",
+                    now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+                )
+                run_dir = write_run_report(report, "clone_failed", note="base_branch: main")
+                run_dir = Path(run_dir).resolve()
+                summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertIn("status: clone_failed", summary)
+        self.assertIn("worker_exit_code: \n", summary)
+        self.assertIn("note: base_branch: main", summary)
+        self.assertFalse((run_dir / "worker-output.log").exists())
 
 
 if __name__ == "__main__":

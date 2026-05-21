@@ -223,8 +223,12 @@ python scripts/solve_issues.py --model ollama --model-name llama3
 Das Script verdichtet die Worker-Ausgabe live auf Status-, Planungs-, Warn- und
 Ergebniszeilen. Detailausgaben wie lange Diffs oder Kommando-Logs werden im
 Terminal ausgeblendet und nur einmal am Ende gezählt; der vollständige Rohoutput
-landet weiterhin unter `reports/runs/` in der Worker-Diagnose. Nach dem Lauf
-zeigt das Script eine kompakte Git-Übersicht mit geänderten Dateien,
+landet weiterhin unter `reports/runs/` im Run-Report. Für jeden echten
+Issue-Lauf legt das Script dort ein zeitgestempeltes Verzeichnis an. Die
+`summary.txt` enthält ausgewähltes Repository, Issue-Nummer, Branch, Modell,
+Worker-Exitcode, PR-URL falls vorhanden sowie einen kurzen Output-Tail; der
+vollständige Worker-Output liegt zusätzlich in `worker-output.log`. Nach dem
+Lauf zeigt das Script eine kompakte Git-Übersicht mit geänderten Dateien,
 Einfügungen/Löschungen, Diff-Stat und kurzer Diff-Vorschau. Ein erfolgreicher
 Worker-Lauf ohne Dateiänderungen wird
 als No-op behandelt und erzeugt keinen Commit. Falls Codex mit einem
@@ -290,7 +294,6 @@ Morpheus-Style Workflow komfortabler werden:
 
 - mehrere Issues parallel mit begrenzter Worker-Zahl lösen
 - laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen
-- Worker-Logs und Ergebnisse unter `reports/runs/` nachvollziehbar speichern
 - offene PRs und Issues nach einem Lauf automatisch zusammenfassen
 
 Der geplante Backlog dafür liegt in [docs/NEXT_BACKLOG.md](docs/NEXT_BACKLOG.md).

@@ -90,6 +90,7 @@ MODEL_CONFIGS = {
 
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
+RUN_REPORTS_ROOT = Path("reports") / "runs"
 GIT_SUMMARY_MAX_STATUS_LINES = 20
 GIT_SUMMARY_MAX_STAT_LINES = 12
 GIT_SUMMARY_MAX_DIFF_LINES = 18
@@ -156,6 +157,15 @@ class WorkerAssessment:
     should_continue: bool
     has_changes: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class RunReport:
+    path: Path
+    repo: str
+    issue_number: int
+    branch: str
+    model: str
 
 
 @dataclass(frozen=True)
@@ -746,30 +756,73 @@ def print_git_change_summary(repo_dir: str, git_status: str) -> None:
         print(f"      {line}")
 
 
-def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: int,
-                             model: str) -> Path | None:
-    diagnostics_root = Path("reports") / "runs"
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "-", repo).strip("-") or "repo"
-    run_dir = diagnostics_root / f"{timestamp}-{safe_repo}-issue-{issue_number}"
+def safe_run_repo_name(repo: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", repo).strip("-") or "repo"
+
+
+def create_run_report(repo: str, issue_number: int, branch: str, model: str,
+                      now_fn=datetime.now) -> RunReport | None:
+    timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
+    run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
     try:
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "worker-output.log").write_text(result.output, encoding="utf-8")
-        (run_dir / "summary.txt").write_text(
-            "\n".join([
-                f"repo: {repo}",
-                f"issue: {issue_number}",
-                f"model: {model}",
-                f"worker_exit_code: {result.returncode}",
-                "",
-                "Der vollstaendige Worker-Output liegt in worker-output.log.",
-            ]),
+        run_dir.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        print_warn(f"Run-Report konnte nicht angelegt werden: {exc}")
+        return None
+    return RunReport(run_dir, repo, issue_number, branch, model)
+
+
+def write_run_report(report: RunReport, status: str,
+                     worker_result: WorkerRunResult | None = None,
+                     pr_url: str | None = None,
+                     note: str | None = None) -> Path | None:
+    worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
+    worker_output = "" if worker_result is None else worker_result.output
+    output_tail = format_worker_output_tail(worker_output)
+    pr_value = pr_url or ""
+
+    try:
+        if worker_result is not None:
+            (report.path / "worker-output.log").write_text(worker_output, encoding="utf-8")
+        if output_tail:
+            (report.path / "output-tail.log").write_text(output_tail + "\n", encoding="utf-8")
+
+        summary_lines = [
+            f"status: {status}",
+            f"selected_repo: {report.repo}",
+            f"repo: {report.repo}",
+            f"issue_number: {report.issue_number}",
+            f"issue: {report.issue_number}",
+            f"branch: {report.branch}",
+            f"model: {report.model}",
+            f"worker_exit_code: {worker_exit_code}",
+            f"pr_url: {pr_value}",
+        ]
+        if note:
+            summary_lines.extend(["", f"note: {note}"])
+        if worker_result is not None:
+            summary_lines.extend(["", "Der vollstaendige Worker-Output liegt in worker-output.log."])
+        if output_tail:
+            summary_lines.extend(["", "output_tail:", output_tail])
+
+        (report.path / "summary.txt").write_text(
+            "\n".join(summary_lines) + "\n",
             encoding="utf-8",
         )
     except OSError as exc:
-        print_warn(f"Worker-Diagnose konnte nicht gespeichert werden: {exc}")
+        print_warn(f"Run-Report konnte nicht gespeichert werden: {exc}")
         return None
-    return run_dir
+    return report.path
+
+
+def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: int,
+                             model: str, branch: str = "",
+                             pr_url: str | None = None,
+                             status: str = "worker_finished") -> Path | None:
+    report = create_run_report(repo, issue_number, branch, model)
+    if not report:
+        return None
+    return write_run_report(report, status, worker_result=result, pr_url=pr_url)
 
 
 def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAssessment:
@@ -1212,9 +1265,20 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
     recovery_plan = plan_branch_recovery(client, repo, number, default_branch_name)
     print_branch_recovery_plan(recovery_plan)
+    run_report = create_run_report(repo, number, recovery_plan.branch, model)
+    if run_report:
+        write_run_report(run_report, "started")
+        print(f"      Run-Report: {run_report.path}")
     if recovery_plan.action.startswith("skip"):
         if recovery_plan.pull_request and recovery_plan.pull_request.html_url:
             print(f"      🔀 Vorhandener PR: {recovery_plan.pull_request.html_url}")
+        if run_report:
+            write_run_report(
+                run_report,
+                recovery_plan.action,
+                pr_url=recovery_plan.pull_request.html_url if recovery_plan.pull_request else None,
+                note=recovery_plan.message,
+            )
         return True
 
     # Repo klonen
@@ -1225,6 +1289,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         if not clone_repo(config["owner"], repo, token, repo_dir, base_branch):
             print_err("Klonen fehlgeschlagen")
             print(f"      Prüfe, ob der Branch '{base_branch}' in {repo} existiert.")
+            if run_report:
+                write_run_report(run_report, "clone_failed", note=f"base_branch: {base_branch}")
             return False
         print("✅")
 
@@ -1233,6 +1299,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         if recovery_plan.action == "reuse_branch":
             if not checkout_existing_remote_branch(repo_dir, branch_name):
                 print_err(f"Vorhandener Branch konnte nicht ausgecheckt werden: {branch_name}")
+                if run_report:
+                    write_run_report(run_report, "checkout_failed")
                 return False
             if branch_has_changes_against_base(repo_dir, base_branch):
                 print(
@@ -1251,9 +1319,17 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     close_issues=close_issues,
                     dry_run=dry_run,
                 )
+                if run_report:
+                    write_run_report(
+                        run_report,
+                        "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch",
+                        pr_url=pr.get("html_url") if pr else None,
+                    )
                 return bool(pr)
         elif not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
+            if run_report:
+                write_run_report(run_report, "branch_create_failed")
             return False
 
         # Prompt bauen
@@ -1307,15 +1383,17 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             )
             diagnostic_result = WorkerRunResult(result.returncode, combined_output)
 
-        diagnostics_dir = write_worker_diagnostics(diagnostic_result, repo, number, model)
-        if diagnostics_dir:
-            print(f"      Worker-Diagnose: {diagnostics_dir}")
-
         git_status = git_status_porcelain(repo_dir)
         print_git_change_summary(repo_dir, git_status)
         assessment = assess_worker_result(result, git_status)
         print_worker_assessment(result, assessment)
         if not assessment.should_continue:
+            if run_report:
+                write_run_report(
+                    run_report,
+                    assessment.reason,
+                    worker_result=diagnostic_result,
+                )
             return False
 
         # Committen & pushen
@@ -1326,6 +1404,12 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         if not pushed:
             print_warn("Push fehlgeschlagen oder keine Änderungen")
+            if run_report:
+                write_run_report(
+                    run_report,
+                    "push_failed",
+                    worker_result=diagnostic_result,
+                )
             return False
         print("✅")
 
@@ -1341,6 +1425,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             close_issues=close_issues,
             dry_run=dry_run,
         )
+        if run_report:
+            write_run_report(
+                run_report,
+                "pr_created" if pr else "pr_failed",
+                worker_result=diagnostic_result,
+                pr_url=pr.get("html_url") if pr else None,
+            )
         return bool(pr)
 
     return True
