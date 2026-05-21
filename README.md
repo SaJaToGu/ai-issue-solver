@@ -218,6 +218,7 @@ Löst offene Issues automatisch mit KI + Codex oder aider.
 python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model ollama --model-name llama3
+python scripts/solve_issues_batch.py --model codex --repo BedBoxDrawerRole --workers 2
 ```
 
 Das Script verdichtet die Worker-Ausgabe live auf Status-, Planungs-, Warn- und
@@ -260,6 +261,28 @@ externen oder ungültigen Pfade an aider durchgereicht werden.
 - `--model-name` — spezifisches Modell, z.B. für Codex oder Ollama
 - `--dry-run` — zeigt Plan ohne Änderungen
 - `--issue` — nur ein bestimmtes Issue lösen
+
+---
+
+### `solve_issues_batch.py`
+Löst mehrere Issues parallel, aber mit begrenzter Worker-Zahl. Der Batch-Runner
+ermittelt die offenen Issues, dedupliziert identische `(Repo, Issue)`-Jobs und
+startet pro Job einen isolierten `solve_issues.py`-Prozess. Ein fehlschlagender
+Worker stoppt den Batch nicht; die übrigen Jobs laufen weiter. Die Ausgabe wird
+pro Job gesammelt und erst nach Abschluss dieses Jobs gedruckt, damit parallele
+Worker-Logs lesbar bleiben.
+
+```bash
+python scripts/solve_issues_batch.py --model codex --workers 2
+python scripts/solve_issues_batch.py --model claude --repo BedBoxDrawerRole --workers 3
+python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --issue 23 --issue 24 --dry-run
+```
+
+**Flags:**
+- `--workers` — maximale parallele Worker, Standard: `2`
+- `--issue` — kann mehrfach angegeben werden
+- alle relevanten Solver-Flags wie `--model`, `--model-name`, `--repo`,
+  `--label`, `--base-branch`, `--dry-run` und `--close-issues`
 
 ---
 
@@ -399,7 +422,8 @@ ai-issue-solver/
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
 │   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
-│   ├── solve_issues.py          # Schritt 3: Issues mit KI lösen
+│   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
+│   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
 │   └── issue_body               # Issue-Text-Vorlage
@@ -415,6 +439,7 @@ ai-issue-solver/
     ├── test_analyze_repos.py    # Analyzer-Tests
     ├── test_github_summary.py   # GitHub-Übersichts-Tests
     ├── test_status_dashboard.py # Dashboard-Tests
+    ├── test_solve_issues_batch.py # Batch-Runner-Tests
     └── test_solve_issues.py     # Solver- und Worker-Tests
 ```
 
