@@ -143,16 +143,26 @@ python scripts/solve_issues.py --model codex --base-branch develop --dry-run
 
 ## Parallelbetrieb und Status
 
-Der aktuelle Stand löst Issues nacheinander. Das ist bewusst einfach und gut
-prüfbar. Für den nächsten Ausbauschritt soll der Workflow mehrere Issues
-parallel bearbeiten können, ohne den Überblick zu verlieren:
+Für größere Backlogs kann `solve_issues_batch.py` mehrere Issues parallel
+bearbeiten, ohne unbegrenzt Worker zu starten. Jeder Job läuft als eigener
+`solve_issues.py`-Prozess und nutzt dadurch dieselbe Branch-Recovery,
+Run-Report-Erstellung und PR-Logik wie ein einzelner Solver-Lauf.
 
-- Ein Batch-Runner startet mehrere Worker mit einem konfigurierbaren Limit.
-- Jeder Worker schreibt Status, Log-Auszug, Branch, PR-Link und Ergebnis in ein
-  Run-Verzeichnis unter `reports/runs/`.
-- Eine lokale HTML-Übersicht zeigt laufende, erfolgreiche und fehlgeschlagene
-  Jobs.
-- Fehlgeschlagene Worker behalten genug Diagnoseinformationen, damit man den
-  Lauf wiederholen oder manuell übernehmen kann.
+```bash
+python scripts/solve_issues_batch.py --model codex --workers 2
+python scripts/solve_issues_batch.py --model claude --repo BedBoxDrawerRole --workers 3
+python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --issue 23 --issue 24 --dry-run
+```
 
-Die konkreten Aufgaben dazu stehen in [NEXT_BACKLOG.md](NEXT_BACKLOG.md).
+Der Batch-Runner dedupliziert identische `(Repo, Issue)`-Jobs vor dem Start,
+damit innerhalb eines Laufs nicht zwei Worker denselben Issue-Branch bearbeiten.
+Worker-Ausgaben werden pro Job gesammelt und erst nach Abschluss dieses Jobs
+gedruckt. Wenn ein Worker fehlschlägt, laufen die übrigen Jobs weiter; am Ende
+meldet das Script erfolgreiche und fehlgeschlagene Jobs separat.
+
+Die Run-Reports unter `reports/runs/` können anschließend mit dem lokalen
+Dashboard ausgewertet werden:
+
+```bash
+python scripts/status_dashboard.py
+```
