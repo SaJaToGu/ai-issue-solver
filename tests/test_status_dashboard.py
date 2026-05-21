@@ -22,8 +22,18 @@ from status_dashboard import (  # noqa: E402
 
 
 class FakeLifecycleClient:
-    def __init__(self, pull_requests=None, issues=None, main_contains=None, fail=False):
+    def __init__(
+        self,
+        pull_requests=None,
+        branch_pull_requests=None,
+        issue_pull_requests=None,
+        issues=None,
+        main_contains=None,
+        fail=False,
+    ):
         self.pull_requests = pull_requests or {}
+        self.branch_pull_requests = branch_pull_requests or {}
+        self.issue_pull_requests = issue_pull_requests or {}
         self.issues = issues or {}
         self.main_contains = main_contains or set()
         self.fail = fail
@@ -43,7 +53,11 @@ class FakeLifecycleClient:
 
     def get_pull_requests_for_branch(self, repo, branch):
         self._record(repo)
-        return []
+        return self.branch_pull_requests.get(branch, [])
+
+    def get_pull_requests_for_issue(self, repo, issue_number):
+        self._record(repo)
+        return self.issue_pull_requests.get(str(issue_number), [])
 
     def get_issue(self, repo, issue_number):
         self._record(repo)
@@ -278,6 +292,122 @@ preserved_worktree: reports/preserved-worktrees/run/demo
         self.assertIn("Recovery-Worktree", html)
         self.assertIn("reports/preserved-worktrees/run/demo", html)
         self.assertTrue(output_exists)
+
+    def test_github_enrichment_marks_failed_preserved_run_as_recovered(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-56",
+                """status: rate_limit_deferred
+repo: demo
+issue_number: 56
+branch: ai/fix-issue-56
+base_branch: develop
+worker_exit_code: 1
+pr_url:
+preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-56
+""",
+            )
+            pr = {
+                "number": 61,
+                "html_url": "https://github.com/test-owner/demo/pull/61",
+                "state": "closed",
+                "merged_at": "2026-05-21T10:00:00Z",
+                "merge_commit_sha": "recover61",
+                "base": {"ref": "develop"},
+            }
+            client = FakeLifecycleClient(
+                branch_pull_requests={"ai/fix-issue-56": [pr]},
+                issues={"56": {"state": "open"}},
+            )
+
+            result = enrich_runs_with_github(
+                read_runs(runs_dir),
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+            html = render_dashboard(result.runs, "test-owner", Path(tmpdir) / "status.html")
+
+        self.assertTrue(result.used_github)
+        self.assertEqual(result.runs[0].status, "rate_limit_deferred")
+        self.assertEqual(result.runs[0].category, "recovered")
+        self.assertEqual(result.runs[0].lifecycle_label, "Recovered to develop")
+        self.assertIn("Original run failed; recovered via PR #61", result.runs[0].lifecycle_note)
+        self.assertIn("Recovered", html)
+        self.assertIn("rate_limit_deferred", html)
+        self.assertIn("Original run failed; recovered via PR #61", html)
+        self.assertIn("https://github.com/test-owner/demo/pull/61", html)
+
+    def test_github_enrichment_recovers_failed_run_via_issue_pr_when_branch_lookup_misses(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-62",
+                """status: push_failed
+repo: demo
+issue_number: 62
+branch: ai/fix-issue-62
+worker_exit_code: 0
+preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-62
+""",
+            )
+            pr = {
+                "number": 63,
+                "html_url": "https://github.com/test-owner/demo/pull/63",
+                "state": "closed",
+                "merged_at": "2026-05-21T11:00:00Z",
+                "merge_commit_sha": "recover63",
+                "base": {"ref": "develop"},
+            }
+            client = FakeLifecycleClient(
+                branch_pull_requests={"ai/fix-issue-62": []},
+                issue_pull_requests={"62": [pr]},
+                issues={"62": {"state": "closed"}},
+                main_contains={("main", "recover63")},
+            )
+
+            result = enrich_runs_with_github(
+                read_runs(runs_dir),
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
+        self.assertEqual(result.runs[0].category, "recovered")
+        self.assertEqual(result.runs[0].lifecycle_label, "Issue closed")
+        self.assertFalse(result.runs[0].lifecycle_needs_attention)
+
+    def test_github_enrichment_keeps_recoverable_failed_run_failed_when_api_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-56",
+                """status: rate_limit_deferred
+repo: demo
+issue_number: 56
+branch: ai/fix-issue-56
+worker_exit_code: 1
+preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-56
+""",
+            )
+
+            result = enrich_runs_with_github(
+                read_runs(runs_dir),
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=FakeLifecycleClient(fail=True),
+            )
+            html = render_dashboard(result.runs, "test-owner", Path(tmpdir) / "status.html")
+
+        self.assertFalse(result.used_github)
+        self.assertEqual(result.runs[0].category, "failed")
+        self.assertEqual(result.runs[0].lifecycle_label, "")
+        self.assertIn("Failed", html)
+        self.assertNotIn("Original run failed; recovered", html)
 
     def test_render_dashboard_shows_lifecycle_fallback_without_github_data(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -55,13 +55,14 @@ STATUS_LABELS = {
     "running": "Running",
     "unhealthy": "Unhealthy",
     "failed": "Failed",
+    "recovered": "Recovered",
     "successful": "Successful",
     "noop": "No-op",
     "archived": "Archived",
     "unknown": "Unknown",
 }
 
-STATUS_ORDER = ("queued", "running", "unhealthy", "failed", "successful", "noop", "archived", "unknown")
+STATUS_ORDER = ("queued", "running", "unhealthy", "failed", "recovered", "successful", "noop", "archived", "unknown")
 SUCCESS_STATUSES = {
     "pr_created",
     "pr_created_from_existing_branch",
@@ -180,6 +181,31 @@ class DashboardGitHubClient:
             direction="desc",
         )
         return data if isinstance(data, list) else []
+
+    def get_pull_requests_for_issue(self, repo: str, issue_number: str | int) -> list[dict]:
+        repo_owner = repo_owner_for_url(repo, self.owner) or self.owner
+        repo_name = repo_name_for_url(repo)
+        data = self.get_json(
+            "/search/issues",
+            q=f"repo:{repo_owner}/{repo_name} is:pr {issue_number}",
+            per_page=10,
+            sort="updated",
+            order="desc",
+        )
+        if not isinstance(data, dict):
+            return []
+        items = data.get("items", [])
+        if not isinstance(items, list):
+            return []
+
+        pulls = []
+        for item in items:
+            number = item.get("number") if isinstance(item, dict) else None
+            if number:
+                pr = self.get_pull_request(repo, number)
+                if pr:
+                    pulls.append(pr)
+        return pulls
 
     def get_issue(self, repo: str, issue_number: str | int) -> dict | None:
         data = self.get_json(f"{self.repo_api_path(repo)}/issues/{quote(str(issue_number), safe='')}")
@@ -577,6 +603,21 @@ def pr_number_from_url(pr_url: str) -> str:
     return match.group(3) if match else ""
 
 
+def pr_number_from_data(pr: dict | None) -> str:
+    if not pr:
+        return ""
+    return str(pr.get("number") or pr_number_from_url(str(pr.get("html_url") or "")))
+
+
+def is_recoverable_failed_candidate(run: DashboardRun) -> bool:
+    return bool(
+        run.category == "failed"
+        and run.preserved_worktree
+        and run.branch
+        and run.issue_number
+    )
+
+
 def lifecycle_from_github(run: DashboardRun, pr: dict | None,
                           issue: dict | None, in_main: bool) -> DashboardRun:
     issue_closed = bool(issue and issue.get("state") == "closed")
@@ -628,6 +669,41 @@ def lifecycle_from_github(run: DashboardRun, pr: dict | None,
     return fallback_lifecycle_for_run(run)
 
 
+def recovered_lifecycle_from_github(run: DashboardRun, pr: dict,
+                                    issue: dict | None, in_main: bool) -> DashboardRun:
+    issue_closed = bool(issue and issue.get("state") == "closed")
+    pr_number = pr_number_from_data(pr)
+    pr_label = f"PR #{pr_number}" if pr_number else "PR"
+    base = ((pr.get("base") or {}).get("ref")) or run.base_branch or "develop"
+
+    if in_main:
+        label = "Issue closed" if issue_closed else "In main"
+        state = "issue-closed" if issue_closed else "in-main"
+        needs_attention = not issue_closed
+    else:
+        label = f"Recovered to {base}"
+        state = "recovered"
+        needs_attention = not issue_closed
+
+    note = f"Original run failed; recovered via {pr_label}"
+    return replace(
+        run,
+        category="recovered",
+        pr_url=run.pr_url or str(pr.get("html_url") or ""),
+        lifecycle_label=label,
+        lifecycle_state=state,
+        lifecycle_needs_attention=needs_attention,
+        lifecycle_note=note,
+    )
+
+
+def select_merged_pull_request(pulls: list[dict]) -> dict | None:
+    for pr in pulls:
+        if isinstance(pr, dict) and pr.get("merged_at"):
+            return pr
+    return None
+
+
 def github_cache_is_fresh(cache_path: Path, ttl_seconds: int,
                           now_fn=datetime.now) -> bool:
     if ttl_seconds < 0:
@@ -671,6 +747,8 @@ def lifecycle_cache_key(run: DashboardRun, owner: str | None) -> str:
 def run_from_lifecycle_cache(run: DashboardRun, cached: dict) -> DashboardRun:
     return replace(
         run,
+        category=str(cached.get("category", run.category)),
+        pr_url=str(cached.get("pr_url", run.pr_url)),
         lifecycle_label=str(cached.get("label", "")),
         lifecycle_state=str(cached.get("state", "")),
         lifecycle_needs_attention=bool(cached.get("needs_attention", False)),
@@ -680,6 +758,8 @@ def run_from_lifecycle_cache(run: DashboardRun, cached: dict) -> DashboardRun:
 
 def run_to_lifecycle_cache(run: DashboardRun) -> dict:
     return {
+        "category": run.category,
+        "pr_url": run.pr_url,
         "label": run.lifecycle_label,
         "state": run.lifecycle_state,
         "needs_attention": run.lifecycle_needs_attention,
@@ -689,7 +769,7 @@ def run_to_lifecycle_cache(run: DashboardRun) -> dict:
 
 def enrich_single_run_from_github(run: DashboardRun, owner: str | None,
                                   client: DashboardGitHubClient) -> DashboardRun:
-    if run.category != "successful":
+    if run.category != "successful" and not is_recoverable_failed_candidate(run):
         return run
 
     repo_owner = repo_owner_for_url(run.repo, owner)
@@ -698,18 +778,33 @@ def enrich_single_run_from_github(run: DashboardRun, owner: str | None,
         return fallback_lifecycle_for_run(run)
     repo_for_api = run.repo if "/" in run.repo else repo_name
 
-    pr = None
-    pr_number = pr_number_from_url(run.pr_url)
-    if pr_number:
-        pr = client.get_pull_request(repo_for_api, pr_number)
-    elif run.branch:
-        prs = client.get_pull_requests_for_branch(repo_for_api, run.branch)
-        pr = prs[0] if prs else None
+    if run.category == "successful":
+        pr = None
+        pr_number = pr_number_from_url(run.pr_url)
+        if pr_number:
+            pr = client.get_pull_request(repo_for_api, pr_number)
+        elif run.branch:
+            prs = client.get_pull_requests_for_branch(repo_for_api, run.branch)
+            pr = prs[0] if prs else None
+
+        issue = client.get_issue(repo_for_api, run.issue_number) if run.issue_number else None
+        merge_sha = str((pr or {}).get("merge_commit_sha") or "")
+        in_main = bool(merge_sha and client.branch_contains_commit(repo_for_api, "main", merge_sha))
+        return lifecycle_from_github(run, pr, issue, in_main)
+
+    # Recovery-Erkennung bleibt bewusst flach: Branch-Suche zuerst, danach
+    # eine einfache PR-Suche zur Issue-Nummer statt Timeline-/Review-Replikation.
+    pulls = client.get_pull_requests_for_branch(repo_for_api, run.branch)
+    pr = select_merged_pull_request(pulls)
+    if not pr and run.issue_number and hasattr(client, "get_pull_requests_for_issue"):
+        pr = select_merged_pull_request(client.get_pull_requests_for_issue(repo_for_api, run.issue_number))
+    if not pr:
+        return run
 
     issue = client.get_issue(repo_for_api, run.issue_number) if run.issue_number else None
-    merge_sha = str((pr or {}).get("merge_commit_sha") or "")
+    merge_sha = str(pr.get("merge_commit_sha") or "")
     in_main = bool(merge_sha and client.branch_contains_commit(repo_for_api, "main", merge_sha))
-    return lifecycle_from_github(run, pr, issue, in_main)
+    return recovered_lifecycle_from_github(run, pr, issue, in_main)
 
 
 def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: str | None,
@@ -718,7 +813,10 @@ def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: 
                             client: DashboardGitHubClient | None = None,
                             now_fn=datetime.now) -> GitHubEnrichmentResult:
     fallback_runs = with_fallback_lifecycle(runs)
-    eligible = [run for run in runs if run.category == "successful"]
+    eligible = [
+        run for run in runs
+        if run.category == "successful" or is_recoverable_failed_candidate(run)
+    ]
     if not eligible:
         return GitHubEnrichmentResult(fallback_runs, used_github=False, used_cache=False)
 
@@ -750,7 +848,7 @@ def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: 
         for run in runs:
             enriched = enrich_single_run_from_github(run, owner, client)
             enriched_runs.append(enriched)
-            if run.category == "successful":
+            if run.category == "successful" or is_recoverable_failed_candidate(run):
                 entries[lifecycle_cache_key(run, owner)] = run_to_lifecycle_cache(enriched)
     except Exception as exc:  # Dashboard-Generierung darf nicht an GitHub scheitern.
         return GitHubEnrichmentResult(
@@ -957,6 +1055,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       --unhealthy: #d97706;
       --success: #18794e;
       --failed: #c92a2a;
+      --recovered: #0f766e;
       --noop: #6b7280;
       --archived: #7c4a03;
       --unknown: #8a63d2;
@@ -1009,6 +1108,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .metric-unhealthy {{ border-color: var(--unhealthy); }}
     .metric-successful {{ border-color: var(--success); }}
     .metric-failed {{ border-color: var(--failed); }}
+    .metric-recovered {{ border-color: var(--recovered); }}
     .metric-noop {{ border-color: var(--noop); }}
     .metric-archived {{ border-color: var(--archived); }}
     .metric-unknown {{ border-color: var(--unknown); }}
@@ -1039,6 +1139,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .badge-unhealthy {{ background: var(--unhealthy); }}
     .badge-successful {{ background: var(--success); }}
     .badge-failed {{ background: var(--failed); }}
+    .badge-recovered {{ background: var(--recovered); }}
     .badge-noop {{ background: var(--noop); }}
     .badge-archived {{ background: var(--archived); }}
     .badge-unknown {{ background: var(--unknown); }}
@@ -1058,6 +1159,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     }}
     .lifecycle small {{ color: var(--muted); font-weight: 500; }}
     .lifecycle-pr-open, .lifecycle-merged, .lifecycle-pr-closed, .lifecycle-unknown {{ background: #fff4d6; color: #6f4500; }}
+    .lifecycle-recovered {{ background: #ccfbf1; color: #115e59; }}
     .lifecycle-in-main {{ background: #dbeafe; color: #174ea6; }}
     .lifecycle-issue-closed, .lifecycle-done {{ background: #dcfce7; color: #166534; }}
     .issue-number {{ font-weight: 700; white-space: nowrap; }}
