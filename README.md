@@ -36,9 +36,9 @@ Wartungssignale und Best-Practice-Auffälligkeiten.
 **Schritt 2 — Issues erstellen:** `create_issues.py` legt für jeden gefundenen  
 Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
 
-**Schritt 3 — Issues lösen:** `solve_issues.py` ruft wahlweise **Codex**, **Claude**,
-**OpenAI** oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code
-und erstellt einen Branch + Commit.
+**Schritt 3 — Issues lösen:** `solve_issues.py` ruft wahlweise **Codex**,
+**Claude**, **OpenAI**, **Mistral/Magistral** oder **Ollama (lokal)** auf,
+liest das Issue, bearbeitet den Code und erstellt einen Branch + Commit.
 
 **Status-Überblick:** `github_summary.py` zeigt offene Issues, offene PRs,
 zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
@@ -115,6 +115,7 @@ geben sichere Hinweise aus, ohne Secret-Werte im Terminal anzuzeigen.
 python scripts/solve_issues.py --model codex     # Codex CLI
 python scripts/solve_issues.py --model claude    # Anthropic Claude
 python scripts/solve_issues.py --model openai    # OpenAI GPT-4
+python scripts/solve_issues.py --model mistral   # Mistral AI / Magistral
 python scripts/solve_issues.py --model ollama    # Lokales Modell
 ```
 
@@ -142,7 +143,7 @@ python scripts/solve_issues.py --model ollama    # Lokales Modell
          │
          ▼
 ┌─────────────────┐
-│ 3. solve_issues  │  ← Wählt KI-Modell (Codex/Claude/OpenAI/Ollama)
+│ 3. solve_issues  │  ← Wählt KI-Modell (Codex/Claude/OpenAI/Mistral/Ollama)
 │    .py           │    Nutzt Codex oder aider als Code-Worker
 └────────┬────────┘    Erstellt Branch → Commit → PR
          │
@@ -222,7 +223,7 @@ Löst offene Issues automatisch mit KI + Codex oder aider.
 python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model mistral --repo BedBoxDrawerRole
-python scripts/solve_issues.py --model mistral --model-name magistral-small-2509
+python scripts/solve_issues.py --model mistral --model-name magistral-small-latest
 python scripts/solve_issues.py --model ollama --model-name llama3
 python scripts/solve_issues_batch.py --model codex --repo BedBoxDrawerRole --workers 2
 python scripts/run_overnight.py --model codex --base-branch develop --workers 2
@@ -562,23 +563,29 @@ Ein **Personal Access Token (PAT)** ist dein persönlicher API-Schlüssel für G
 
 ### Mistral AI / Magistral
 1. API-Key holen: https://console.mistral.ai/
-2. In `.env` eintragen: `MISTRAL_API_KEY=...`
-3. Starten mit:
+2. `config/config.example.env` nach `config/.env` kopieren, falls noch nicht
+   geschehen.
+3. In `config/.env` eintragen: `MISTRAL_API_KEY=...`
+4. Starten mit:
    ```bash
    python scripts/solve_issues.py --model mistral
    ```
+5. Optional ein kleineres Magistral-Modell wählen:
+   ```bash
+   python scripts/solve_issues.py --model mistral --model-name magistral-small-latest
+   ```
 
-Der Solver nutzt standardmäßig `magistral-medium-2509`. Nach den offiziellen
-Mistral-Modellübersichten vom 21. Mai 2026 ist Magistral Medium 1.2 als
-aktuelles reasoning-orientiertes Magistral-Modell gelistet; ältere
-Magistral-Versionen `2506` und `2507` sind legacy oder retired.
-`magistral-small-2509` kann per `--model-name magistral-small-2509` gesetzt
-werden, falls es im eigenen Account noch verfügbar ist; die aktuelle
-Mistral-Übersicht markiert Magistral Small 1.2 inzwischen als
-Legacy/Deprecated und nennt `Mistral Small 4` (`mistral-small-2603`) als
-Alternative. Mistral/Magistral ist vor allem sinnvoll für europäische Sprachen,
-mehrsprachige Reasoning-Aufgaben und Workflows, bei denen ein europäischer
-Anbieter oder EU-Souveränitätsaspekte wichtig sind.
+Der Solver nutzt standardmäßig `magistral-medium-latest` und übergibt es als
+`mistral/magistral-medium-latest` an aider. Nach der offiziellen
+Mistral-Dokumentation vom 21. Mai 2026 zeigen `magistral-medium-latest` und
+`magistral-small-latest` auf die aktuellen 2509-Reasoning-Modelle. Feste
+Versionen wie `magistral-medium-2509` bleiben per `--model-name` möglich, falls
+ein Lauf bewusst reproduzierbar auf einer Version bleiben soll.
+
+Mistral/Magistral ist besonders sinnvoll, wenn Codex rate-limited ist, längere
+Batch-Läufe nicht durch Codex blockiert werden sollen, ein europäischer Anbieter
+oder EU-/Datensouveränitätsaspekte wichtig sind oder kostengünstigere
+Experimente mit Issue-Läufen ausprobiert werden sollen.
 
 ### Ollama (lokal / Raspberry Pi)
 ```bash
