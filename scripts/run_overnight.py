@@ -26,7 +26,7 @@ from utils import print_banner, print_err, print_ok, print_step, print_warn  # n
 
 DEFAULT_BASE_BRANCH = "main"
 DEFAULT_LABEL = "ai-generated"
-DEFAULT_TEST_COMMAND = "python -m unittest discover -s tests"
+DEFAULT_TEST_COMMAND = "{sys.executable} -m unittest discover -s tests"
 DEFAULT_OVERNIGHT_DIR = Path("reports") / "overnight"
 DEFAULT_DASHBOARD_OUTPUT = Path("reports") / "status-dashboard.html"
 
