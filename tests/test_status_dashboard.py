@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from status_dashboard import (  # noqa: E402
     classify_status,
+    cleanup_stale_runs,
     github_links,
     read_runs,
     render_dashboard,
@@ -32,6 +33,9 @@ class StatusDashboardTests(unittest.TestCase):
         self.assertEqual(classify_status("skip_existing_pr"), "noop")
         self.assertEqual(classify_status("clone_failed"), "failed")
         self.assertEqual(classify_status("worker_finished", "2"), "failed")
+        self.assertEqual(classify_status("archived"), "archived")
+        self.assertEqual(classify_status("cleanup_successful"), "successful")
+        self.assertEqual(classify_status("cleanup_noop"), "noop")
 
     def test_legacy_summary_without_status_is_unknown_not_running(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -157,6 +161,103 @@ pr_url:
         self.assertIn('http-equiv="refresh"', html)
         self.assertIn('content="10"', html)
         self.assertIn("Auto-refresh: 10s", html)
+
+    def test_cleanup_stale_runs_dry_run_does_not_edit_candidates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            run_dir = runs_dir / "20260501-090807-demo-issue-27"
+            self.write_summary(
+                run_dir,
+                """repo: demo
+issue: 27
+worker_exit_code:
+""",
+            )
+
+            result = cleanup_stale_runs(
+                runs_dir,
+                mark="archived",
+                older_than_days=7,
+                apply=False,
+                now_fn=lambda: datetime(2026, 5, 21, 12, 0, 0),
+            )
+            summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.changed, [])
+        self.assertNotIn("status: archived", summary)
+
+    def test_cleanup_stale_runs_apply_marks_only_old_active_reports(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            old_run = runs_dir / "20260501-090807-demo-issue-28"
+            fresh_run = runs_dir / "20260521-090807-demo-issue-29"
+            done_run = runs_dir / "20260501-090807-demo-issue-30"
+            self.write_summary(
+                old_run,
+                """status: started
+repo: demo
+issue_number: 28
+worker_exit_code:
+""",
+            )
+            self.write_summary(
+                fresh_run,
+                """status: started
+repo: demo
+issue_number: 29
+worker_exit_code:
+""",
+            )
+            self.write_summary(
+                done_run,
+                """status: pr_created
+repo: demo
+issue_number: 30
+worker_exit_code: 0
+""",
+            )
+
+            result = cleanup_stale_runs(
+                runs_dir,
+                mark="noop",
+                older_than_days=7,
+                apply=True,
+                now_fn=lambda: datetime(2026, 5, 21, 12, 0, 0),
+            )
+            runs = {run.issue_number: run for run in read_runs(runs_dir)}
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(len(result.changed), 1)
+        self.assertEqual(runs["28"].status, "cleanup_noop")
+        self.assertEqual(runs["28"].category, "noop")
+        self.assertEqual(runs["29"].status, "started")
+        self.assertEqual(runs["30"].status, "pr_created")
+
+    def test_cleanup_stale_runs_can_include_undated_reports_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            undated_run = runs_dir / "legacy-demo-issue-31"
+            self.write_summary(
+                undated_run,
+                """repo: demo
+issue: 31
+worker_exit_code:
+""",
+            )
+
+            default_result = cleanup_stale_runs(
+                runs_dir,
+                now_fn=lambda: datetime(2026, 5, 21, 12, 0, 0),
+            )
+            explicit_result = cleanup_stale_runs(
+                runs_dir,
+                include_undated=True,
+                now_fn=lambda: datetime(2026, 5, 21, 12, 0, 0),
+            )
+
+        self.assertEqual(default_result.candidates, [])
+        self.assertEqual(len(explicit_result.candidates), 1)
 
 
 if __name__ == "__main__":

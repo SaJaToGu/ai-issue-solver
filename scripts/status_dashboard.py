@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 import os
 import re
@@ -37,19 +37,22 @@ STATUS_LABELS = {
     "failed": "Failed",
     "successful": "Successful",
     "noop": "No-op",
+    "archived": "Archived",
     "unknown": "Unknown",
 }
 
-STATUS_ORDER = ("running", "failed", "successful", "noop", "unknown")
+STATUS_ORDER = ("running", "failed", "successful", "noop", "archived", "unknown")
 SUCCESS_STATUSES = {
     "pr_created",
     "pr_created_from_existing_branch",
+    "cleanup_successful",
 }
 NOOP_STATUSES = {
     "no_changes",
     "skip_existing_pr",
     "skip_merged_pr",
     "skip_closed_pr",
+    "cleanup_noop",
 }
 FAILED_STATUSES = {
     "branch_create_failed",
@@ -59,6 +62,17 @@ FAILED_STATUSES = {
     "pr_failed",
     "pr_failed_from_existing_branch",
     "push_failed",
+    "cleanup_failed",
+}
+ARCHIVED_STATUSES = {
+    "archived",
+    "cleanup_archived",
+}
+CLEANUP_STATUS_VALUES = {
+    "successful": "cleanup_successful",
+    "failed": "cleanup_failed",
+    "noop": "cleanup_noop",
+    "archived": "archived",
 }
 
 
@@ -77,6 +91,15 @@ class DashboardRun:
     pr_url: str
     note: str
     output_tail: str
+
+
+@dataclass(frozen=True)
+class CleanupResult:
+    candidates: list[DashboardRun]
+    changed: list[Path]
+    target_status: str
+    cutoff: datetime
+    dry_run: bool
 
 
 def parse_summary(path: Path) -> dict[str, str]:
@@ -127,6 +150,8 @@ def classify_status(status: str, worker_exit_code: str = "") -> str:
         return "unknown"
     if status == "started":
         return "running"
+    if status in ARCHIVED_STATUSES:
+        return "archived"
     if status in SUCCESS_STATUSES:
         return "successful"
     if status in NOOP_STATUSES:
@@ -160,11 +185,88 @@ def read_runs(runs_dir: Path) -> list[DashboardRun]:
                 model=fields.get("model", ""),
                 worker_exit_code=exit_code,
                 pr_url=fields.get("pr_url", ""),
-                note=fields.get("note", ""),
+                note=fields.get("note") or fields.get("cleanup_note", ""),
                 output_tail=fields.get("output_tail", ""),
             )
         )
     return runs
+
+
+def cleanup_candidates(runs: list[DashboardRun], cutoff: datetime,
+                       include_undated: bool = False) -> list[DashboardRun]:
+    candidates = []
+    for run in runs:
+        if run.category not in {"running", "unknown"}:
+            continue
+        if run.created_at is None:
+            if include_undated:
+                candidates.append(run)
+            continue
+        if run.created_at <= cutoff:
+            candidates.append(run)
+    return candidates
+
+
+def write_cleanup_status(run: DashboardRun, status: str,
+                         cleaned_at: datetime | None = None) -> Path:
+    cleaned_at = cleaned_at or datetime.now()
+    summary_path = run.path / "summary.txt"
+    lines = []
+    if summary_path.exists():
+        lines = summary_path.read_text(encoding="utf-8").splitlines()
+
+    status_line = f"status: {status}"
+    for index, line in enumerate(lines):
+        key, separator, _value = line.partition(":")
+        if separator and key.strip() == "status":
+            lines[index] = status_line
+            break
+    else:
+        lines.insert(0, status_line)
+
+    insert_at = len(lines)
+    for index, line in enumerate(lines):
+        key, separator, _value = line.partition(":")
+        if separator and key.strip() == "output_tail":
+            insert_at = index
+            break
+
+    cleanup_lines = [
+        f"cleanup_at: {cleaned_at.isoformat(timespec='seconds')}",
+        "cleanup_note: Dashboard-Cleanup hat diesen alten unvollstaendigen Run markiert.",
+    ]
+    if insert_at > 0 and lines[insert_at - 1].strip():
+        cleanup_lines.insert(0, "")
+    if insert_at < len(lines) and lines[insert_at].strip():
+        cleanup_lines.append("")
+    lines[insert_at:insert_at] = cleanup_lines
+
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return summary_path
+
+
+def cleanup_stale_runs(runs_dir: Path, mark: str = "archived",
+                       older_than_days: int = 7,
+                       apply: bool = False,
+                       include_undated: bool = False,
+                       now_fn=datetime.now) -> CleanupResult:
+    if mark not in CLEANUP_STATUS_VALUES:
+        choices = ", ".join(sorted(CLEANUP_STATUS_VALUES))
+        raise ValueError(f"ungueltiger Cleanup-Status {mark!r}; erlaubt: {choices}")
+    if older_than_days < 0:
+        raise ValueError("--older-than-days darf nicht negativ sein")
+
+    now = now_fn()
+    cutoff = now - timedelta(days=older_than_days)
+    runs = read_runs(runs_dir)
+    candidates = cleanup_candidates(runs, cutoff, include_undated=include_undated)
+    target_status = CLEANUP_STATUS_VALUES[mark]
+    changed = []
+    if apply:
+        for run in candidates:
+            changed.append(write_cleanup_status(run, target_status, cleaned_at=now))
+    return CleanupResult(candidates, changed, target_status, cutoff, dry_run=not apply)
 
 
 def infer_owner_from_runs(runs: list[DashboardRun]) -> str | None:
@@ -337,6 +439,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       --success: #18794e;
       --failed: #c92a2a;
       --noop: #6b7280;
+      --archived: #7c4a03;
       --unknown: #8a63d2;
     }}
     * {{ box-sizing: border-box; }}
@@ -386,6 +489,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .metric-successful {{ border-color: var(--success); }}
     .metric-failed {{ border-color: var(--failed); }}
     .metric-noop {{ border-color: var(--noop); }}
+    .metric-archived {{ border-color: var(--archived); }}
     .metric-unknown {{ border-color: var(--unknown); }}
     .table-wrap {{
       overflow-x: auto;
@@ -413,6 +517,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .badge-successful {{ background: var(--success); }}
     .badge-failed {{ background: var(--failed); }}
     .badge-noop {{ background: var(--noop); }}
+    .badge-archived {{ background: var(--archived); }}
     .badge-unknown {{ background: var(--unknown); }}
     .note {{ margin-top: 4px; color: var(--muted); }}
     details {{ margin-top: 6px; }}
@@ -497,6 +602,25 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
     return output_path
 
 
+def print_cleanup_preview(result: CleanupResult) -> None:
+    mode = "Dry-run" if result.dry_run else "Apply"
+    print(f"   Modus: {mode}")
+    print(f"   Zielstatus: {result.target_status}")
+    print(f"   Cutoff: {format_datetime(result.cutoff)}")
+    print(f"   Kandidaten: {len(result.candidates)}")
+    for run in result.candidates:
+        print(
+            "   - "
+            f"{run.name} | {format_datetime(run.created_at)} | "
+            f"{run.category} | {run.repo or '-'} | "
+            f"Issue {run.issue_number or '-'}"
+        )
+    if result.dry_run and result.candidates:
+        print("   Keine Dateien geaendert. Mit --apply wirklich markieren.")
+    if not result.dry_run:
+        print(f"   Geaenderte summary.txt-Dateien: {len(result.changed)}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Erzeugt ein lokales HTML-Dashboard aus reports/runs/."
@@ -504,12 +628,56 @@ def main() -> int:
     parser.add_argument("--runs-dir", default=str(DEFAULT_RUNS_DIR), help="Run-Report-Verzeichnis")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Zielpfad fuer die HTML-Datei")
     parser.add_argument("--owner", help="GitHub Owner fuer Issue- und Branch-Links")
+    parser.add_argument(
+        "--cleanup-stale",
+        action="store_true",
+        help="Alte running/unknown Run-Reports zuerst als Dry-run anzeigen",
+    )
+    parser.add_argument(
+        "--mark",
+        choices=sorted(CLEANUP_STATUS_VALUES),
+        default="archived",
+        help="Zielstatus fuer --cleanup-stale, Standard: archived",
+    )
+    parser.add_argument(
+        "--older-than-days",
+        type=int,
+        default=7,
+        help="Nur Runs aelter als diese Anzahl Tage markieren, Standard: 7",
+    )
+    parser.add_argument(
+        "--include-undated",
+        action="store_true",
+        help="Auch Runs ohne parsbares Datum als Cleanup-Kandidaten aufnehmen",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Cleanup wirklich schreiben; ohne diese Option bleibt es beim Dry-run",
+    )
     args = parser.parse_args()
 
     config = load_env()
     owner = args.owner or config.get("GITHUB_USER")
     runs_dir = Path(args.runs_dir)
     output_path = Path(args.output)
+
+    if args.cleanup_stale:
+        print_banner("STALE RUN-REPORTS BEREINIGEN")
+        print_step(1, f"Pruefe alte Run-Reports in {runs_dir}")
+        try:
+            result = cleanup_stale_runs(
+                runs_dir,
+                mark=args.mark,
+                older_than_days=args.older_than_days,
+                apply=args.apply,
+                include_undated=args.include_undated,
+            )
+        except ValueError as exc:
+            print(f"Fehler: {exc}", file=sys.stderr)
+            return 2
+        print_cleanup_preview(result)
+        return 0
 
     print_banner("STATUS-DASHBOARD GENERIEREN")
     print_step(1, f"Lese Run-Reports aus {runs_dir}")

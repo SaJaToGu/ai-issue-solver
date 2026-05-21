@@ -319,6 +319,8 @@ vorliegen.
 python scripts/status_dashboard.py
 python scripts/status_dashboard.py --owner SaJaToGu
 python scripts/status_dashboard.py --runs-dir reports/runs --output reports/status-dashboard.html
+python scripts/status_dashboard.py --cleanup-stale
+python scripts/status_dashboard.py --cleanup-stale --mark archived --older-than-days 14 --apply
 python scripts/serve_dashboard.py --port 8765 --refresh-seconds 10
 ```
 
@@ -331,10 +333,22 @@ Aufruf. Mit `--refresh-seconds` lädt der Browser die Seite automatisch neu. Der
 einfache `python -m http.server` kann Dateien ausliefern, aber nicht per
 Browser-Button beendet werden.
 
+Mit `--cleanup-stale` zeigt das Script zuerst eine Dry-run-Vorschau fuer alte
+unvollstaendige Reports (`running` oder `unknown`). Erst `--apply` schreibt in
+die betroffenen `summary.txt`-Dateien. Standardmaessig werden nur Runs mit
+parsbarem Zeitstempel beruecksichtigt, die aelter als 7 Tage sind; dadurch
+bleiben aktuelle aktive Laeufe geschuetzt. Archivierte Reports zaehlt das
+Dashboard separat und nicht mehr als unbekannte historische Arbeit.
+
 **Flags:**
 - `--runs-dir` — Verzeichnis mit Run-Reports, Standard: `reports/runs`
 - `--output` — Zielpfad der HTML-Datei, Standard: `reports/status-dashboard.html`
 - `--owner` — GitHub Owner für Issue- und Branch-Links
+- `--cleanup-stale` — alte `running`/`unknown` Reports als Cleanup-Kandidaten anzeigen
+- `--mark` — Zielstatus fuer Cleanup: `archived`, `failed`, `noop` oder `successful`
+- `--older-than-days` — Mindestalter fuer Cleanup-Kandidaten, Standard: `7`
+- `--include-undated` — auch Reports ohne parsbaren Zeitstempel aufnehmen
+- `--apply` — Cleanup wirklich schreiben; ohne diese Option bleibt es beim Dry-run
 - `serve_dashboard.py --port` — lokaler Port für den Dashboard-Server, Standard: `8765`
 - `serve_dashboard.py --refresh-seconds` — Browser-Auto-Refresh, Standard: `10`, `0` deaktiviert ihn
 
