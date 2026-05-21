@@ -243,6 +243,36 @@ Wenn Codex das Nachrichtenlimit meldet und eine Reset-Zeit ausgibt, pausiert
 `solve_issues.py` bis zu diesem Zeitpunkt und versucht dasselbe Issue danach
 erneut, statt die restlichen Issues sofort als Fehler zu zählen.
 
+Scheitert ein Lauf erst nach nutzbaren Änderungen, etwa bei `push_failed`,
+`pr_failed`, `pr_failed_from_existing_branch` oder einem abbrechenden
+Worker-Status mit wiederherstellbaren Änderungen, verschiebt das Script den
+temporären Klon nach `reports/preserved-worktrees/`. Das gilt auch für
+`rate_limit_deferred`, wenn Codex wegen eines nicht fortsetzbaren Rate-Limits
+abbricht und bereits Änderungen vorliegen. Die `summary.txt` und
+`metadata.json` des Run-Reports enthalten dann `preserved_worktree`, einen
+Cleanup-Befehl und kurze Recovery-Kommandos. Vor dem Sichern wird die
+Git-Remote-URL auf die öffentliche GitHub-URL zurückgesetzt, damit kein Token
+im erhaltenen Worktree liegen bleibt.
+
+Manuelle Wiederherstellung aus einem gesicherten Worktree:
+
+```bash
+cd reports/preserved-worktrees/<run>/<repo>
+git status --short
+git diff --stat origin/main...HEAD
+git push origin HEAD:<branch>
+```
+
+Danach kann der PR manuell erstellt oder `solve_issues.py` erneut gestartet
+werden, damit die Branch-Recovery-Logik den vorhandenen Branch weiterverwendet.
+Alte gesicherte Worktrees lassen sich mit einer 14-Tage-Retention aufräumen:
+
+```bash
+python scripts/solve_issues.py --cleanup-preserved-worktrees --dry-run
+python scripts/solve_issues.py --cleanup-preserved-worktrees
+python scripts/solve_issues.py --cleanup-preserved-worktrees --retention-days 30
+```
+
 Vor jedem Worker-Lauf und auch im Dry-Run prüft das Script vorhandene
 Issue-Branches mit dem Präfix `ai/fix-issue-{nummer}` und zugehörige Pull
 Requests. Einen vorhandenen

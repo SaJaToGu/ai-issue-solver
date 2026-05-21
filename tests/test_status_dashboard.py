@@ -36,6 +36,7 @@ class StatusDashboardTests(unittest.TestCase):
         self.assertEqual(classify_status("archived"), "archived")
         self.assertEqual(classify_status("cleanup_successful"), "successful")
         self.assertEqual(classify_status("cleanup_noop"), "noop")
+        self.assertEqual(classify_status("rate_limit_deferred"), "failed")
 
     def test_legacy_summary_without_status_is_unknown_not_running(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -132,6 +133,18 @@ worker_exit_code: 0
 pr_url:
 """,
             )
+            self.write_summary(
+                runs_dir / "20260521-091009-demo-issue-27",
+                """status: push_failed
+repo: demo
+issue_number: 27
+branch: ai/fix-issue-27
+model: codex
+worker_exit_code: 0
+pr_url:
+preserved_worktree: reports/preserved-worktrees/run/demo
+""",
+            )
             runs = read_runs(runs_dir)
 
             html = render_dashboard(runs, "test-owner", output_path)
@@ -142,6 +155,8 @@ pr_url:
         self.assertIn("No-op", html)
         self.assertIn("https://github.com/test-owner/demo/issues/26", html)
         self.assertIn("https://github.com/test-owner/demo/pull/25", html)
+        self.assertIn("Recovery-Worktree", html)
+        self.assertIn("reports/preserved-worktrees/run/demo", html)
         self.assertTrue(output_exists)
 
     def test_render_dashboard_can_include_shutdown_button(self):
