@@ -18,6 +18,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from html import escape
+import json
 import os
 import re
 import sys
@@ -30,10 +31,20 @@ from utils import load_env, print_banner, print_step  # noqa: E402
 
 DEFAULT_RUNS_DIR = Path("reports") / "runs"
 DEFAULT_OUTPUT = Path("reports") / "status-dashboard.html"
+DEFAULT_HEALTH_TIMEOUT_MINUTES = 60
 GITHUB_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/")
+CODEX_RATE_LIMIT_RESET_RE = re.compile(
+    r"rate limit will be reset on\s+(.+?)(?:\.|\n|$)",
+    re.IGNORECASE,
+)
+CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
+    r"(?:reached the codex message limit|rate limit will be reset)",
+    re.IGNORECASE,
+)
 
 STATUS_LABELS = {
     "running": "Running",
+    "unhealthy": "Unhealthy",
     "failed": "Failed",
     "successful": "Successful",
     "noop": "No-op",
@@ -41,7 +52,7 @@ STATUS_LABELS = {
     "unknown": "Unknown",
 }
 
-STATUS_ORDER = ("running", "failed", "successful", "noop", "archived", "unknown")
+STATUS_ORDER = ("running", "unhealthy", "failed", "successful", "noop", "archived", "unknown")
 SUCCESS_STATUSES = {
     "pr_created",
     "pr_created_from_existing_branch",
@@ -90,6 +101,11 @@ class DashboardRun:
     branch: str
     model: str
     worker_exit_code: str
+    last_activity_at: datetime | None
+    last_report_update_at: datetime | None
+    health_status: str
+    health_reason: str
+    recovery_hint: str
     pr_url: str
     preserved_worktree: str
     note: str
@@ -148,6 +164,72 @@ def parse_created_at(run_dir_name: str) -> datetime | None:
         return None
 
 
+def parse_datetime_value(value: str) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    for date_format in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(normalized[:19], date_format)
+        except ValueError:
+            pass
+    return None
+
+
+def read_health_file(run_dir: Path) -> dict[str, str]:
+    health_path = run_dir / "health.json"
+    if not health_path.exists():
+        return {}
+    try:
+        data = json.loads(health_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {str(key): "" if value is None else str(value) for key, value in data.items()}
+
+
+def file_mtime(path: Path) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def parse_codex_reset_datetime(reset_text: str) -> datetime | None:
+    normalized = re.sub(r"\s+", " ", reset_text.strip())
+    normalized = normalized.replace(", at ", " ").replace(" at ", " ")
+    for date_format in (
+        "%B %d, %Y %I:%M %p",
+        "%b %d, %Y %I:%M %p",
+        "%B %d %Y %I:%M %p",
+        "%b %d %Y %I:%M %p",
+    ):
+        try:
+            return datetime.strptime(normalized, date_format)
+        except ValueError:
+            pass
+    return None
+
+
+def codex_rate_limit_wait_until(output_tail: str) -> datetime | None:
+    match = CODEX_RATE_LIMIT_RESET_RE.search(output_tail)
+    if not match:
+        return None
+    return parse_codex_reset_datetime(match.group(1).strip())
+
+
+def latest_datetime(*values: datetime | None) -> datetime | None:
+    parsed = [value for value in values if value is not None]
+    return max(parsed) if parsed else None
+
+
+def recovery_hint_for_unhealthy(run_dir: Path) -> str:
+    return (
+        "Pruefe worker-output.log und den Worker-Prozess. "
+        f"Report: {run_dir}. Bei haengendem Prozess Batch mit --unhealthy-action stop "
+        "oder --unhealthy-action retry erneut ausfuehren."
+    )
+
+
 def classify_status(status: str, worker_exit_code: str = "") -> str:
     if not status:
         return "unknown"
@@ -166,32 +248,91 @@ def classify_status(status: str, worker_exit_code: str = "") -> str:
     return "noop"
 
 
-def read_runs(runs_dir: Path) -> list[DashboardRun]:
+def read_runs(runs_dir: Path,
+              health_timeout_minutes: int = DEFAULT_HEALTH_TIMEOUT_MINUTES,
+              now_fn=datetime.now) -> list[DashboardRun]:
     if not runs_dir.exists():
         return []
 
     runs = []
+    now = now_fn()
+    timeout = timedelta(minutes=health_timeout_minutes)
     for run_dir in sorted((path for path in runs_dir.iterdir() if path.is_dir()), reverse=True):
         fields = parse_summary(run_dir / "summary.txt")
+        health = read_health_file(run_dir)
         status = fields.get("status", "")
         exit_code = fields.get("worker_exit_code", "")
+        output_tail = health.get("output_tail") or fields.get("output_tail", "")
+        summary_mtime = file_mtime(run_dir / "summary.txt")
+        health_mtime = file_mtime(run_dir / "health.json")
+        explicit_activity_at = (
+            parse_datetime_value(health.get("last_activity_at", ""))
+            or parse_datetime_value(fields.get("last_activity_at", ""))
+        )
+        explicit_report_update_at = (
+            parse_datetime_value(health.get("last_report_update_at", ""))
+            or parse_datetime_value(fields.get("last_report_update_at", ""))
+        )
+        last_activity_at = explicit_activity_at or file_mtime(run_dir / "worker-output.log")
+        if last_activity_at is None and explicit_report_update_at is None:
+            last_activity_at = summary_mtime or parse_created_at(run_dir.name)
+        last_report_update_at = explicit_report_update_at
+        if last_report_update_at is None and explicit_activity_at is None:
+            last_report_update_at = latest_datetime(health_mtime, summary_mtime)
+        category = classify_status(status, exit_code)
+        health_status = "ok"
+        health_reason = ""
+        recovery_hint = ""
+        rate_limit_until = codex_rate_limit_wait_until(output_tail)
+        in_known_wait = bool(rate_limit_until and rate_limit_until > now)
+        last_progress_at = latest_datetime(last_activity_at, last_report_update_at)
+        if (
+            category == "running"
+            and CODEX_RATE_LIMIT_MESSAGE_RE.search(output_tail)
+            and not in_known_wait
+        ):
+            category = "unhealthy"
+            health_status = "unhealthy"
+            health_reason = "Codex-Rate-Limit ohne zukuenftige Reset-Zeit"
+            recovery_hint = recovery_hint_for_unhealthy(run_dir)
+        elif category == "running" and not in_known_wait:
+            if last_progress_at is None:
+                category = "unhealthy"
+                health_status = "unhealthy"
+                health_reason = "keine Aktivitaetszeit im Run-Report gefunden"
+                recovery_hint = recovery_hint_for_unhealthy(run_dir)
+            elif now - last_progress_at > timeout:
+                category = "unhealthy"
+                health_status = "unhealthy"
+                health_reason = (
+                    "letzte sinnvolle Aktivitaet "
+                    f"{format_datetime(last_progress_at)}; Timeout {health_timeout_minutes} min"
+                )
+                recovery_hint = recovery_hint_for_unhealthy(run_dir)
+        elif category == "running" and in_known_wait:
+            health_reason = f"Codex-Rate-Limit-Wartezeit bis {format_datetime(rate_limit_until)}"
         runs.append(
             DashboardRun(
                 path=run_dir,
                 name=run_dir.name,
                 created_at=parse_created_at(run_dir.name),
                 status=status,
-                category=classify_status(status, exit_code),
+                category=category,
                 repo=fields.get("repo") or fields.get("selected_repo", ""),
                 issue_number=fields.get("issue_number") or fields.get("issue", ""),
                 issue_title=fields.get("issue_title", ""),
                 branch=fields.get("branch", ""),
                 model=fields.get("model", ""),
                 worker_exit_code=exit_code,
+                last_activity_at=last_activity_at,
+                last_report_update_at=last_report_update_at,
+                health_status=health_status,
+                health_reason=health_reason,
+                recovery_hint=recovery_hint,
                 pr_url=fields.get("pr_url", ""),
                 preserved_worktree=fields.get("preserved_worktree", ""),
                 note=fields.get("note") or fields.get("cleanup_note", ""),
-                output_tail=fields.get("output_tail", ""),
+                output_tail=output_tail,
             )
         )
     return runs
@@ -201,7 +342,7 @@ def cleanup_candidates(runs: list[DashboardRun], cutoff: datetime,
                        include_undated: bool = False) -> list[DashboardRun]:
     candidates = []
     for run in runs:
-        if run.category not in {"running", "unknown"}:
+        if run.category not in {"running", "unhealthy", "unknown"}:
             continue
         if run.created_at is None:
             if include_undated:
@@ -360,9 +501,14 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
     note_parts = []
     if run.note:
         note_parts.append(escape(run.note))
+    if run.health_reason:
+        note_parts.append(f"Health: {escape(run.health_reason)}")
+    if run.recovery_hint:
+        note_parts.append(f"Hinweis: {escape(run.recovery_hint)}")
     if run.preserved_worktree:
         note_parts.append(f"Recovery-Worktree: <code>{escape(run.preserved_worktree)}</code>")
     note = f"<div class=\"note\">{'<br>'.join(note_parts)}</div>" if note_parts else ""
+    last_activity = escape(format_datetime(run.last_activity_at))
     return "\n".join([
         "<tr>",
         f'  <td><span class="badge badge-{escape(run.category)}">{escape(STATUS_LABELS[run.category])}</span></td>',
@@ -372,7 +518,7 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         f"  <td><code>{escape(run.branch or '-')}</code></td>",
         f"  <td>{escape(run.model or '-')}</td>",
         f"  <td>{escape(run.worker_exit_code or '-')}</td>",
-        f"  <td>{escape(run.status)}{note}{tail}</td>",
+        f"  <td>{escape(run.status)}<div class=\"note\">Letzte Aktivitaet: {last_activity}</div>{note}{tail}</td>",
         f"  <td>{' '.join(actions)}</td>",
         "</tr>",
     ])
@@ -461,6 +607,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       --muted: #64707d;
       --line: #d8dee6;
       --running: #276ef1;
+      --unhealthy: #d97706;
       --success: #18794e;
       --failed: #c92a2a;
       --noop: #6b7280;
@@ -511,6 +658,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .metric span {{ display: block; color: var(--muted); font-size: 13px; }}
     .metric strong {{ display: block; margin-top: 4px; font-size: 28px; }}
     .metric-running {{ border-color: var(--running); }}
+    .metric-unhealthy {{ border-color: var(--unhealthy); }}
     .metric-successful {{ border-color: var(--success); }}
     .metric-failed {{ border-color: var(--failed); }}
     .metric-noop {{ border-color: var(--noop); }}
@@ -539,6 +687,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       text-align: center;
     }}
     .badge-running {{ background: var(--running); }}
+    .badge-unhealthy {{ background: var(--unhealthy); }}
     .badge-successful {{ background: var(--success); }}
     .badge-failed {{ background: var(--failed); }}
     .badge-noop {{ background: var(--noop); }}
@@ -658,7 +807,7 @@ def main() -> int:
     parser.add_argument(
         "--cleanup-stale",
         action="store_true",
-        help="Alte running/unknown Run-Reports zuerst als Dry-run anzeigen",
+        help="Alte running/unhealthy/unknown Run-Reports zuerst als Dry-run anzeigen",
     )
     parser.add_argument(
         "--mark",
@@ -682,12 +831,21 @@ def main() -> int:
         action="store_true",
         help="Cleanup wirklich schreiben; ohne diese Option bleibt es beim Dry-run",
     )
+    parser.add_argument(
+        "--health-timeout-minutes",
+        type=int,
+        default=int(os.environ.get("AI_SOLVER_HEALTH_TIMEOUT_MINUTES", DEFAULT_HEALTH_TIMEOUT_MINUTES)),
+        help=f"Running-Runs nach so vielen Minuten ohne Aktivitaet als unhealthy markieren, Standard: {DEFAULT_HEALTH_TIMEOUT_MINUTES}",
+    )
     args = parser.parse_args()
 
     config = load_env()
     owner = args.owner or config.get("GITHUB_USER")
     runs_dir = Path(args.runs_dir)
     output_path = Path(args.output)
+    if args.health_timeout_minutes < 1:
+        print("Fehler: --health-timeout-minutes muss mindestens 1 sein", file=sys.stderr)
+        return 2
 
     if args.cleanup_stale:
         print_banner("STALE RUN-REPORTS BEREINIGEN")
@@ -708,7 +866,7 @@ def main() -> int:
 
     print_banner("STATUS-DASHBOARD GENERIEREN")
     print_step(1, f"Lese Run-Reports aus {runs_dir}")
-    runs = read_runs(runs_dir)
+    runs = read_runs(runs_dir, health_timeout_minutes=args.health_timeout_minutes)
     print(f"   Gefundene Runs: {len(runs)}")
 
     print_step(2, f"Schreibe HTML nach {output_path}")

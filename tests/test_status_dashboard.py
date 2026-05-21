@@ -202,6 +202,83 @@ preserved_worktree: reports/preserved-worktrees/run/demo
         self.assertIn('content="10"', html)
         self.assertIn("Auto-refresh: 10s", html)
 
+    def test_read_runs_marks_running_run_unhealthy_after_timeout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-32",
+                """status: started
+repo: demo
+issue_number: 32
+worker_exit_code:
+last_activity_at: 2026-05-21T09:00:00
+
+output_tail:
+Plan: started
+""",
+            )
+
+            runs = read_runs(
+                runs_dir,
+                health_timeout_minutes=30,
+                now_fn=lambda: datetime(2026, 5, 21, 10, 0, 0),
+            )
+
+        self.assertEqual(runs[0].category, "unhealthy")
+        self.assertEqual(runs[0].health_status, "unhealthy")
+        self.assertIn("Timeout 30 min", runs[0].health_reason)
+        self.assertIn("worker-output.log", runs[0].recovery_hint)
+
+    def test_read_runs_keeps_future_codex_rate_limit_wait_running(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-33",
+                """status: started
+repo: demo
+issue_number: 33
+worker_exit_code:
+last_activity_at: 2026-05-21T09:00:00
+
+output_tail:
+Your rate limit will be reset on May 21, 2026, at 11:00 AM.
+""",
+            )
+
+            runs = read_runs(
+                runs_dir,
+                health_timeout_minutes=30,
+                now_fn=lambda: datetime(2026, 5, 21, 10, 0, 0),
+            )
+
+        self.assertEqual(runs[0].category, "running")
+        self.assertIn("Codex-Rate-Limit", runs[0].health_reason)
+
+    def test_read_runs_marks_codex_rate_limit_without_future_reset_unhealthy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-34",
+                """status: started
+repo: demo
+issue_number: 34
+worker_exit_code:
+last_activity_at: 2026-05-21T09:59:00
+
+output_tail:
+You have reached the Codex message limit.
+""",
+            )
+
+            runs = read_runs(
+                runs_dir,
+                health_timeout_minutes=30,
+                now_fn=lambda: datetime(2026, 5, 21, 10, 0, 0),
+            )
+
+        self.assertEqual(runs[0].category, "unhealthy")
+        self.assertIn("ohne zukuenftige Reset-Zeit", runs[0].health_reason)
+
     def test_cleanup_stale_runs_dry_run_does_not_edit_candidates(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runs_dir = Path(tmpdir) / "runs"

@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -16,6 +17,7 @@ from solve_issues_batch import (  # noqa: E402
     build_worker_command,
     dedupe_issue_jobs,
     discover_issue_jobs,
+    run_issue_job,
     run_issue_jobs,
 )
 
@@ -320,6 +322,57 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertTrue(retried_while_second_job_active)
         self.assertEqual(len(results), 2)
         self.assertEqual(sum(1 for result in results if result.ok), 2)
+
+    def test_run_issue_job_stops_unhealthy_worker_without_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            worker = Path(tmpdir) / "worker.py"
+            worker.write_text(
+                "import time\n"
+                "time.sleep(5)\n",
+                encoding="utf-8",
+            )
+
+            result = run_issue_job(
+                IssueJob("demo", 10),
+                [sys.executable, str(worker)],
+                Path(tmpdir),
+                {},
+                health_timeout_seconds=0.1,
+                unhealthy_action="stop",
+            )
+
+        self.assertTrue(result.unhealthy)
+        self.assertIn("keine Worker-Ausgabe", result.unhealthy_reason)
+        self.assertIn("[batch-health] Unhealthy", result.output)
+
+    def test_run_issue_jobs_requeues_unhealthy_job_once(self):
+        jobs = [IssueJob("demo", 1)]
+        started = []
+
+        def run(job):
+            started.append(job.issue_number)
+            if len(started) == 1:
+                return IssueJobResult(
+                    job,
+                    124,
+                    "[batch-health] Unhealthy: keine Worker-Ausgabe\n",
+                    0.0,
+                    unhealthy=True,
+                    unhealthy_reason="keine Worker-Ausgabe",
+                )
+            return IssueJobResult(job, 0, "ok", 0.0)
+
+        results = run_issue_jobs(
+            jobs,
+            workers=1,
+            run_job_fn=run,
+            requeue_unhealthy=True,
+            max_unhealthy_requeues=1,
+        )
+
+        self.assertEqual(started, [1, 1])
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].ok)
 
 
 if __name__ == "__main__":

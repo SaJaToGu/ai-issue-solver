@@ -313,12 +313,17 @@ Meldet ein Codex-Worker ein Nachrichtenlimit mit Reset-Zeit, markiert der
 Batch-Runner den betroffenen Job als verzögert und startet ihn nicht sofort
 erneut. Mit `--requeue-rate-limited` wird der Job nach der Reset-Zeit wieder in
 die Queue gelegt; bis dahin laufen andere verfügbare Jobs weiter.
+Der Batch-Runner überwacht außerdem laufende Worker-Prozesse: Bleibt die
+Worker-Ausgabe länger als das Health-Timeout aus, kann er nur warnen,
+den Prozess stoppen oder den Job neu einplanen. Codex-Rate-Limit-Wartezeiten
+mit zukünftiger Reset-Zeit werden dabei nicht als unhealthy behandelt.
 
 ```bash
 python scripts/solve_issues_batch.py --model codex --workers 2
 python scripts/solve_issues_batch.py --model claude --repo BedBoxDrawerRole --workers 3
 python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --issue 23 --issue 24 --dry-run
 python scripts/solve_issues_batch.py --model codex --workers 2 --requeue-rate-limited
+python scripts/solve_issues_batch.py --model codex --workers 2 --unhealthy-action retry
 ```
 
 **Flags:**
@@ -327,6 +332,12 @@ python scripts/solve_issues_batch.py --model codex --workers 2 --requeue-rate-li
 - `--requeue-rate-limited` — Codex-Jobs nach erkanntem Reset erneut einplanen
 - `--rate-limit-retries` — maximale Requeue-Versuche pro rate-limitiertem Job,
   Standard: `1`
+- `--worker-health-timeout-minutes` — Minuten ohne Worker-Ausgabe bis zur
+  Health-Warnung, Standard: `60`
+- `--unhealthy-action` — Verhalten bei unhealthy Worker: `warn`, `stop` oder
+  `retry`, Standard: `warn`
+- `--unhealthy-retries` — maximale Retry-Versuche für unhealthy Jobs bei
+  `--unhealthy-action retry`, Standard: `1`
 - alle relevanten Solver-Flags wie `--model`, `--model-name`, `--repo`,
   `--label`, `--base-branch`, `--dry-run` und `--close-issues`
 
@@ -386,14 +397,15 @@ python scripts/post_merge_cleanup.py --repo ai-issue-solver --apply
 
 ### `status_dashboard.py`
 Erzeugt ein lokales HTML-Dashboard aus den Run-Reports unter `reports/runs/`.
-Die Übersicht gruppiert laufende, erfolgreiche, fehlgeschlagene und No-op-Jobs
-und verlinkt GitHub Issues, Branches und Pull Requests, wenn genug Metadaten
-vorliegen.
+Die Übersicht gruppiert laufende, unhealthy, erfolgreiche, fehlgeschlagene und
+No-op-Jobs und verlinkt GitHub Issues, Branches und Pull Requests, wenn genug
+Metadaten vorliegen.
 
 ```bash
 python scripts/status_dashboard.py
 python scripts/status_dashboard.py --owner SaJaToGu
 python scripts/status_dashboard.py --runs-dir reports/runs --output reports/status-dashboard.html
+python scripts/status_dashboard.py --health-timeout-minutes 90
 python scripts/status_dashboard.py --cleanup-stale
 python scripts/status_dashboard.py --cleanup-stale --mark archived --older-than-days 14 --apply
 python scripts/serve_dashboard.py --port 8765 --refresh-seconds 10
@@ -408,8 +420,16 @@ Aufruf. Mit `--refresh-seconds` lädt der Browser die Seite automatisch neu. Der
 einfache `python -m http.server` kann Dateien ausliefern, aber nicht per
 Browser-Button beendet werden.
 
+Während `solve_issues.py` läuft, schreibt es neben `summary.txt` eine
+`health.json` mit letzter sinnvoller Worker-Ausgabe, Report-Update-Zeit und
+Output-Tail. Das Dashboard markiert `started`-Runs nach dem Health-Timeout als
+`Unhealthy` und zeigt Output-Tail, Report-Link und Recovery-Hinweise an. Das
+Timeout ist per `--health-timeout-minutes` oder
+`AI_SOLVER_HEALTH_TIMEOUT_MINUTES` konfigurierbar. Bekannte Codex-Wartezeiten
+mit zukünftiger Reset-Zeit bleiben `Running`, um falsche Alarme zu vermeiden.
+
 Mit `--cleanup-stale` zeigt das Script zuerst eine Dry-run-Vorschau fuer alte
-unvollstaendige Reports (`running` oder `unknown`). Erst `--apply` schreibt in
+unvollstaendige Reports (`running`, `unhealthy` oder `unknown`). Erst `--apply` schreibt in
 die betroffenen `summary.txt`-Dateien. Standardmaessig werden nur Runs mit
 parsbarem Zeitstempel beruecksichtigt, die aelter als 7 Tage sind; dadurch
 bleiben aktuelle aktive Laeufe geschuetzt. Archivierte Reports zaehlt das
@@ -419,7 +439,9 @@ Dashboard separat und nicht mehr als unbekannte historische Arbeit.
 - `--runs-dir` — Verzeichnis mit Run-Reports, Standard: `reports/runs`
 - `--output` — Zielpfad der HTML-Datei, Standard: `reports/status-dashboard.html`
 - `--owner` — GitHub Owner für Issue- und Branch-Links
-- `--cleanup-stale` — alte `running`/`unknown` Reports als Cleanup-Kandidaten anzeigen
+- `--health-timeout-minutes` — Running-Runs nach so vielen Minuten ohne
+  Aktivität als `Unhealthy` markieren, Standard: `60`
+- `--cleanup-stale` — alte `running`/`unhealthy`/`unknown` Reports als Cleanup-Kandidaten anzeigen
 - `--mark` — Zielstatus fuer Cleanup: `archived`, `failed`, `noop` oder `successful`
 - `--older-than-days` — Mindestalter fuer Cleanup-Kandidaten, Standard: `7`
 - `--include-undated` — auch Reports ohne parsbaren Zeitstempel aufnehmen
