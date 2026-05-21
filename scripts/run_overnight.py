@@ -26,7 +26,7 @@ from utils import print_banner, print_err, print_ok, print_step, print_warn  # n
 
 DEFAULT_BASE_BRANCH = "main"
 DEFAULT_LABEL = "ai-generated"
-DEFAULT_TEST_COMMAND = "{sys.executable} -m unittest discover -s tests"
+DEFAULT_TEST_COMMAND = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
 DEFAULT_OVERNIGHT_DIR = Path("reports") / "overnight"
 DEFAULT_DASHBOARD_OUTPUT = Path("reports") / "status-dashboard.html"
 
@@ -259,8 +259,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--test-command",
         type=shell_words,
-        default=shell_words(DEFAULT_TEST_COMMAND),
-        help=f"Testbefehl vor dem Batch, Standard: {DEFAULT_TEST_COMMAND!r}",
+        default=DEFAULT_TEST_COMMAND,
+        help=f"Testbefehl vor dem Batch, Standard: {command_to_text(DEFAULT_TEST_COMMAND)!r}",
     )
     parser.add_argument(
         "--log-root",

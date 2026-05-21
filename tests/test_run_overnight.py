@@ -101,7 +101,7 @@ class OvernightRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             args.test_command,
-            ["python", "-m", "unittest", "discover", "-s", "tests"],
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
         )
 
     def test_create_session_dir_adds_suffix_when_timestamp_exists(self):
