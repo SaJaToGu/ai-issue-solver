@@ -580,22 +580,17 @@ def pr_number_from_url(pr_url: str) -> str:
 def lifecycle_from_github(run: DashboardRun, pr: dict | None,
                           issue: dict | None, in_main: bool) -> DashboardRun:
     issue_closed = bool(issue and issue.get("state") == "closed")
-    if issue_closed:
-        return replace(
-            run,
-            lifecycle_label="Issue closed",
-            lifecycle_state="issue-closed",
-            lifecycle_needs_attention=False,
-            lifecycle_note="GitHub meldet das Issue als geschlossen.",
-        )
-
     if in_main:
         return replace(
             run,
-            lifecycle_label="In main",
-            lifecycle_state="in-main",
-            lifecycle_needs_attention=bool(issue and issue.get("state") != "closed"),
-            lifecycle_note="Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main.",
+            lifecycle_label="Issue closed" if issue_closed else "In main",
+            lifecycle_state="issue-closed" if issue_closed else "in-main",
+            lifecycle_needs_attention=not issue_closed,
+            lifecycle_note=(
+                "Code ist in main und Issue ist geschlossen."
+                if issue_closed
+                else "Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main."
+            ),
         )
 
     if pr and pr.get("merged_at"):
@@ -605,7 +600,11 @@ def lifecycle_from_github(run: DashboardRun, pr: dict | None,
             lifecycle_label=f"Merged to {base}",
             lifecycle_state="merged",
             lifecycle_needs_attention=True,
-            lifecycle_note="Noch nicht in main erkannt.",
+            lifecycle_note=(
+                "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht."
+                if issue_closed
+                else "Noch nicht in main erkannt."
+            ),
         )
 
     if pr and pr.get("state") == "open":
