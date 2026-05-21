@@ -86,6 +86,7 @@ class DashboardRun:
     category: str
     repo: str
     issue_number: str
+    issue_title: str
     branch: str
     model: str
     worker_exit_code: str
@@ -183,6 +184,7 @@ def read_runs(runs_dir: Path) -> list[DashboardRun]:
                 category=classify_status(status, exit_code),
                 repo=fields.get("repo") or fields.get("selected_repo", ""),
                 issue_number=fields.get("issue_number") or fields.get("issue", ""),
+                issue_title=fields.get("issue_title", ""),
                 branch=fields.get("branch", ""),
                 model=fields.get("model", ""),
                 worker_exit_code=exit_code,
@@ -317,6 +319,19 @@ def render_link(url: str, label: str) -> str:
     return f'<a href="{escape(url, quote=True)}">{escape(label)}</a>'
 
 
+def render_issue_cell(run: DashboardRun) -> str:
+    if not run.issue_number:
+        return "-"
+
+    issue = escape(f"#{run.issue_number}")
+    if not run.issue_title:
+        return issue
+    return (
+        f'<div class="issue-number">{issue}</div>'
+        f'<div class="issue-title">{escape(run.issue_title)}</div>'
+    )
+
+
 def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> str:
     links = github_links(run, owner)
     run_link = run.path / "summary.txt"
@@ -353,7 +368,7 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         f'  <td><span class="badge badge-{escape(run.category)}">{escape(STATUS_LABELS[run.category])}</span></td>',
         f"  <td>{escape(format_datetime(run.created_at))}</td>",
         f"  <td>{escape(run.repo or '-')}</td>",
-        f"  <td>{escape('#' + run.issue_number if run.issue_number else '-')}</td>",
+        f"  <td>{render_issue_cell(run)}</td>",
         f"  <td><code>{escape(run.branch or '-')}</code></td>",
         f"  <td>{escape(run.model or '-')}</td>",
         f"  <td>{escape(run.worker_exit_code or '-')}</td>",
@@ -530,6 +545,8 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .badge-archived {{ background: var(--archived); }}
     .badge-unknown {{ background: var(--unknown); }}
     .note {{ margin-top: 4px; color: var(--muted); }}
+    .issue-number {{ font-weight: 700; white-space: nowrap; }}
+    .issue-title {{ max-width: 320px; margin-top: 2px; color: var(--text); overflow-wrap: anywhere; }}
     details {{ margin-top: 6px; }}
     summary {{ cursor: pointer; color: #1259c3; }}
     pre {{

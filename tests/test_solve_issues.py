@@ -829,6 +829,7 @@ class GitStatusTests(unittest.TestCase):
                     issue_number=24,
                     branch="ai/fix-issue-24",
                     model="codex",
+                    issue_title="Show issue titles in the status dashboard",
                     now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7, 123456),
                 )
                 run_dir = write_run_report(
@@ -852,6 +853,7 @@ class GitStatusTests(unittest.TestCase):
         self.assertIn("repo: demo/repo", summary)
         self.assertIn("issue_number: 24", summary)
         self.assertIn("issue: 24", summary)
+        self.assertIn("issue_title: Show issue titles in the status dashboard", summary)
         self.assertIn("branch: ai/fix-issue-24", summary)
         self.assertIn("model: codex", summary)
         self.assertIn("worker_exit_code: 0", summary)
@@ -860,6 +862,7 @@ class GitStatusTests(unittest.TestCase):
         self.assertIn("output_tail:", summary)
         self.assertEqual(metadata["status"], "pr_created")
         self.assertEqual(metadata["repo"], "demo/repo")
+        self.assertEqual(metadata["issue_title"], "Show issue titles in the status dashboard")
         self.assertEqual(metadata["preserved_worktree"], "")
         self.assertNotIn("line 0", tail)
         self.assertIn("line 39", tail)

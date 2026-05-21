@@ -185,6 +185,7 @@ class RunReport:
     path: Path
     repo: str
     issue_number: int
+    issue_title: str
     branch: str
     model: str
 
@@ -798,7 +799,8 @@ def safe_run_repo_name(repo: str) -> str:
 
 
 def create_run_report(repo: str, issue_number: int, branch: str, model: str,
-                      now_fn=datetime.now) -> RunReport | None:
+                      now_fn=datetime.now,
+                      issue_title: str = "") -> RunReport | None:
     timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
     run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
     try:
@@ -806,7 +808,7 @@ def create_run_report(repo: str, issue_number: int, branch: str, model: str,
     except OSError as exc:
         print_warn(f"Run-Report konnte nicht angelegt werden: {exc}")
         return None
-    return RunReport(run_dir, repo, issue_number, branch, model)
+    return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
 
 
 def preserved_worktree_cleanup_command(retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS) -> str:
@@ -944,6 +946,7 @@ def write_run_report(report: RunReport, status: str,
             "repo": report.repo,
             "issue_number": report.issue_number,
             "issue": report.issue_number,
+            "issue_title": report.issue_title,
             "branch": report.branch,
             "model": report.model,
             "worker_exit_code": worker_exit_code,
@@ -963,6 +966,7 @@ def write_run_report(report: RunReport, status: str,
             f"repo: {report.repo}",
             f"issue_number: {report.issue_number}",
             f"issue: {report.issue_number}",
+            f"issue_title: {report.issue_title}",
             f"branch: {report.branch}",
             f"model: {report.model}",
             f"worker_exit_code: {worker_exit_code}",
@@ -994,9 +998,10 @@ def write_run_report(report: RunReport, status: str,
 
 def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: int,
                              model: str, branch: str = "",
+                             issue_title: str = "",
                              pr_url: str | None = None,
                              status: str = "worker_finished") -> Path | None:
-    report = create_run_report(repo, issue_number, branch, model)
+    report = create_run_report(repo, issue_number, branch, model, issue_title=issue_title)
     if not report:
         return None
     return write_run_report(report, status, worker_result=result, pr_url=pr_url)
@@ -1464,7 +1469,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
     recovery_plan = plan_branch_recovery(client, repo, number, default_branch_name)
     print_branch_recovery_plan(recovery_plan)
-    run_report = create_run_report(repo, number, recovery_plan.branch, model)
+    run_report = create_run_report(
+        repo,
+        number,
+        recovery_plan.branch,
+        model,
+        issue_title=title,
+    )
     if run_report:
         write_run_report(run_report, "started")
         print(f"      Run-Report: {run_report.path}")
