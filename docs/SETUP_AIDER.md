@@ -45,17 +45,36 @@ aider --model gpt-4o
 ### Mistral AI / Magistral
 ```bash
 export MISTRAL_API_KEY=...
-aider --model mistral/magistral-medium-2509
+aider --model mistral/magistral-medium-latest
 ```
 
 Der AI Issue Solver verwendet für `--model mistral` standardmäßig
-`magistral-medium-2509`. `--model-name magistral-small-2509` ist möglich,
-falls Magistral Small 1.2 im eigenen Account noch verfügbar ist; die aktuelle
-Mistral-Dokumentation markiert es inzwischen als Legacy/Deprecated und nennt
-`mistral-small-2603` als offene Small-Alternative ausserhalb Magistral.
-Mistral/Magistral passt besonders für europäische Sprachen, mehrsprachiges
-Reasoning und Workflows, in denen ein europäischer Anbieter oder
-EU-Souveränitätsaspekte wichtig sind.
+`magistral-medium-latest` und baut daraus den aider-Aufruf
+`mistral/magistral-medium-latest`. Laut offizieller Mistral-Dokumentation vom
+21. Mai 2026 zeigen `magistral-medium-latest` und `magistral-small-latest` auf
+die aktuellen 2509-Reasoning-Modelle. Für schlankere Läufe kann
+`--model-name magistral-small-latest` gesetzt werden; feste Versionen wie
+`magistral-medium-2509` bleiben möglich, wenn ein Lauf bewusst an eine
+bestimmte Modellversion gebunden werden soll.
+
+Im Solver reicht dafür ein Eintrag in `config/.env`:
+
+```env
+MISTRAL_API_KEY=dein_mistral_key
+```
+
+Danach kann ein Mistral-Lauf so gestartet werden:
+
+```bash
+python scripts/solve_issues.py --model mistral
+python scripts/solve_issues.py --model mistral --model-name magistral-small-latest
+```
+
+Mistral/Magistral passt besonders, wenn Codex rate-limited ist, längere
+Batch-Läufe nicht durch Codex blockiert werden sollen, europäische Sprachen oder
+mehrsprachiges Reasoning wichtig sind, ein europäischer Anbieter beziehungsweise
+EU-/Datensouveränitätsaspekte zählen oder Experimente mit Issue-Läufen günstiger
+gehalten werden sollen.
 
 ### Ollama (lokal)
 ```bash
