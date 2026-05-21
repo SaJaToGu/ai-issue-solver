@@ -250,7 +250,8 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
 
 def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: Path,
                      generated_at: datetime | None = None,
-                     allow_shutdown: bool = False) -> str:
+                     allow_shutdown: bool = False,
+                     refresh_seconds: int | None = None) -> str:
     generated_at = generated_at or datetime.now()
     counts = {category: 0 for category in STATUS_ORDER}
     for run in runs:
@@ -271,6 +272,12 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
         "</section>"
         for category in STATUS_ORDER
     )
+
+    refresh_meta = ""
+    refresh_label = ""
+    if refresh_seconds and refresh_seconds > 0:
+        refresh_meta = f'<meta http-equiv="refresh" content="{int(refresh_seconds)}">'
+        refresh_label = f'<span class="refresh-label">Auto-refresh: {int(refresh_seconds)}s</span>'
 
     shutdown_button = ""
     shutdown_script = ""
@@ -314,6 +321,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Issue Solver Status Dashboard</title>
+  {refresh_meta}
   <style>
     :root {{
       color-scheme: light;
@@ -353,6 +361,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     }}
     .shutdown-button:disabled {{ opacity: .65; cursor: default; }}
     .shutdown-notice {{ margin-top: 6px; color: var(--muted); min-height: 20px; }}
+    .refresh-label {{ display: inline-block; margin-top: 6px; color: var(--muted); }}
     main {{ padding: 24px 32px 36px; }}
     .metrics {{
       display: grid;
@@ -426,6 +435,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       <div>
         <h1>AI Issue Solver Status Dashboard</h1>
         <div class="meta">Generiert: {escape(format_datetime(generated_at))} · Runs: {len(runs)}</div>
+        {refresh_label}
         <div class="shutdown-notice" aria-live="polite"></div>
       </div>
       <div>{shutdown_button}</div>
@@ -464,11 +474,18 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
 
 def write_dashboard(runs: list[DashboardRun], output_path: Path,
                     owner: str | None = None,
-                    allow_shutdown: bool = False) -> Path:
+                    allow_shutdown: bool = False,
+                    refresh_seconds: int | None = None) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_owner = owner or infer_owner_from_runs(runs)
     output_path.write_text(
-        render_dashboard(runs, effective_owner, output_path, allow_shutdown=allow_shutdown),
+        render_dashboard(
+            runs,
+            effective_owner,
+            output_path,
+            allow_shutdown=allow_shutdown,
+            refresh_seconds=refresh_seconds,
+        ),
         encoding="utf-8",
     )
     return output_path

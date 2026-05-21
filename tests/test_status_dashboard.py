@@ -128,6 +128,18 @@ pr_url:
         self.assertIn("Dashboard-Server beenden", html)
         self.assertIn("/__shutdown__", html)
 
+    def test_render_dashboard_can_include_auto_refresh(self):
+        html = render_dashboard(
+            [],
+            None,
+            Path("reports/status-dashboard.html"),
+            refresh_seconds=10,
+        )
+
+        self.assertIn('http-equiv="refresh"', html)
+        self.assertIn('content="10"', html)
+        self.assertIn("Auto-refresh: 10s", html)
+
 
 if __name__ == "__main__":
     unittest.main()
