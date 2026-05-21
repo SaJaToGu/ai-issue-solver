@@ -14,18 +14,25 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from solve_issues import (  # noqa: E402
     GitHubClient,
+    PullRequestState,
     WorkerRunResult,
     assess_worker_result,
+    branch_has_changes_against_base,
     build_aider_command,
+    create_issue_pull_request,
     detect_codex_rate_limit,
     format_git_change_summary,
     format_worker_output_tail,
     git_status_porcelain,
     infer_aider_targets,
     parse_codex_reset_datetime,
+    plan_branch_recovery,
+    print_branch_recovery_plan,
+    retry_branch_name,
     run_worker_command,
     should_surface_worker_line,
     sleep_until_codex_reset,
+    solve_issue,
     write_worker_diagnostics,
 )
 
@@ -44,8 +51,10 @@ class FakeGitHubSession:
     def __init__(self):
         self.headers = {}
         self.posts = []
+        self.gets = []
 
     def get(self, url, params=None):
+        self.gets.append((url, params))
         if url.endswith("/repos/test-owner/demo"):
             return FakeResponse(200, {"default_branch": "main"})
         if url.endswith("/repos/test-owner/demo/branches/main"):
@@ -57,6 +66,24 @@ class FakeGitHubSession:
     def post(self, url, json=None):
         self.posts.append((url, json))
         return FakeResponse(201, {"html_url": "https://github.com/test-owner/demo/pull/1"})
+
+
+class BranchListSession:
+    def __init__(self):
+        self.headers = {}
+
+    def get(self, url, params=None):
+        if url.endswith("/repos/test-owner/demo/branches"):
+            return FakeResponse(
+                200,
+                [
+                    {"name": "main"},
+                    {"name": "ai/fix-issue-7"},
+                    {"name": "ai/fix-issue-7-20260521-090807"},
+                    {"name": "ai/fix-issue-70"},
+                ],
+            )
+        return FakeResponse(404, {"message": "Not found"})
 
 
 class GitHubClientBranchTests(unittest.TestCase):
@@ -95,6 +122,303 @@ class GitHubClientBranchTests(unittest.TestCase):
 
         self.assertEqual(pr["html_url"], "https://github.com/test-owner/demo/pull/1")
         self.assertEqual(client.session.posts[0][1]["base"], "main")
+
+    def test_branch_exists_encodes_branch_names_with_slashes(self):
+        client = self.make_client()
+
+        client.branch_exists("demo", "ai/fix-issue-7")
+
+        self.assertTrue(
+            client.session.gets[0][0].endswith(
+                "/repos/test-owner/demo/branches/ai%2Ffix-issue-7"
+            )
+        )
+
+    def test_get_issue_branches_filters_exact_issue_prefix(self):
+        client = GitHubClient.__new__(GitHubClient)
+        client.owner = "test-owner"
+        client.session = BranchListSession()
+
+        branches = client.get_issue_branches("demo", 7)
+
+        self.assertEqual(
+            branches,
+            ["ai/fix-issue-7", "ai/fix-issue-7-20260521-090807"],
+        )
+
+
+class BranchRecoveryTests(unittest.TestCase):
+    def make_client(self, branch_exists=True, pull_requests=None, branches=None):
+        class FakeClient:
+            def branch_exists(self, repo, branch):
+                return branch_exists
+
+            def get_issue_branches(self, repo, issue_number):
+                return list(branches or ([] if not branch_exists else [f"ai/fix-issue-{issue_number}"]))
+
+            def get_pull_requests_for_branch(self, repo, branch, state="all"):
+                if isinstance(pull_requests, dict):
+                    return list(pull_requests.get(branch, []))
+                return list(pull_requests or [])
+
+        return FakeClient()
+
+    def test_missing_branch_starts_default_issue_branch(self):
+        client = self.make_client(branch_exists=False)
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+        )
+
+        self.assertEqual(plan.action, "new")
+        self.assertEqual(plan.branch, "ai/fix-issue-7")
+        self.assertIn("Kein vorhandener Branch", plan.message)
+
+    def test_branch_without_pr_is_reused(self):
+        client = self.make_client(branch_exists=True, pull_requests=[])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+        )
+
+        self.assertEqual(plan.action, "reuse_branch")
+        self.assertEqual(plan.branch, "ai/fix-issue-7")
+
+    def test_open_pr_skips_existing_work(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+        )
+
+        self.assertEqual(plan.action, "skip_existing_pr")
+        self.assertEqual(plan.pull_request, pr)
+
+    def test_closed_unmerged_pr_uses_new_branch_without_tty(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="closed",
+            merged=False,
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+        )
+
+        self.assertEqual(plan.action, "new")
+        self.assertEqual(plan.branch, "ai/fix-issue-7-20260521-090807")
+        self.assertIn("geschlossenen, ungemergten", plan.message)
+
+    def test_retry_branch_name_avoids_existing_timestamp_branch(self):
+        branch = retry_branch_name(
+            7,
+            now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+            existing_branches={
+                "ai/fix-issue-7-20260521-090807",
+                "ai/fix-issue-7-20260521-090807-2",
+            },
+        )
+
+        self.assertEqual(branch, "ai/fix-issue-7-20260521-090807-3")
+
+    def test_closed_unmerged_pr_uses_new_branch_even_when_branch_was_deleted(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="closed",
+            merged=False,
+        )
+        client = self.make_client(branch_exists=False, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+        )
+
+        self.assertEqual(plan.action, "new")
+        self.assertEqual(plan.branch, "ai/fix-issue-7-20260521-090807")
+
+    def test_closed_unmerged_pr_can_be_skipped_interactively(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="closed",
+            merged=False,
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            plan = plan_branch_recovery(
+                client,
+                "demo",
+                7,
+                "ai/fix-issue-7",
+                prompt_fn=lambda prompt: "s",
+                stdin_isatty_fn=lambda: True,
+            )
+
+        self.assertEqual(plan.action, "skip_closed_pr")
+        self.assertEqual(plan.branch, "ai/fix-issue-7")
+
+    def test_retry_branch_with_open_pr_is_detected(self):
+        pr = PullRequestState(
+            number=13,
+            html_url="https://github.com/test-owner/demo/pull/13",
+            state="open",
+            merged=False,
+        )
+        client = self.make_client(
+            branch_exists=True,
+            branches=["ai/fix-issue-7", "ai/fix-issue-7-20260521-090807"],
+            pull_requests={"ai/fix-issue-7-20260521-090807": [pr]},
+        )
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+        )
+
+        self.assertEqual(plan.action, "skip_existing_pr")
+        self.assertEqual(plan.branch, "ai/fix-issue-7-20260521-090807")
+        self.assertIn("ai/fix-issue-7-20260521-090807", plan.found_branches)
+        self.assertEqual(plan.found_pull_requests, (("ai/fix-issue-7-20260521-090807", pr),))
+
+    def test_print_branch_recovery_plan_explains_found_artifacts(self):
+        pr = PullRequestState(
+            number=13,
+            html_url="https://github.com/test-owner/demo/pull/13",
+            state="open",
+            merged=False,
+        )
+        plan = self.make_client(
+            branch_exists=True,
+            branches=["ai/fix-issue-7", "ai/fix-issue-7-20260521-090807"],
+            pull_requests={"ai/fix-issue-7-20260521-090807": [pr]},
+        )
+        recovery_plan = plan_branch_recovery(
+            plan,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+        )
+
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            print_branch_recovery_plan(recovery_plan)
+
+        output = printed.getvalue()
+        self.assertIn("Gefundene Branches:", output)
+        self.assertIn("ai/fix-issue-7-20260521-090807", output)
+        self.assertIn("Gefundene PRs:", output)
+        self.assertIn("PR #13", output)
+
+    def test_retry_branch_without_pr_is_reused_before_closed_default_pr(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="closed",
+            merged=False,
+        )
+        client = self.make_client(
+            branch_exists=True,
+            branches=["ai/fix-issue-7", "ai/fix-issue-7-20260521-090807"],
+            pull_requests={"ai/fix-issue-7": [pr]},
+        )
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+        )
+
+        self.assertEqual(plan.action, "reuse_branch")
+        self.assertEqual(plan.branch, "ai/fix-issue-7-20260521-090807")
+
+    def test_solve_issue_dry_run_prints_recovery_plan(self):
+        client = self.make_client(branch_exists=True, pull_requests=[])
+        issue = {"number": 7, "title": "Fix recovery", "body": ""}
+
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            result = solve_issue(
+                client=client,
+                issue=issue,
+                repo="demo",
+                model="codex",
+                model_name="",
+                config={"owner": "test-owner", "config": {}},
+                token="token",
+                dry_run=True,
+                base_branch="main",
+                close_issues=False,
+            )
+
+        self.assertTrue(result)
+        self.assertIn("Recovery:", printed.getvalue())
+        self.assertIn("Geplanter Issue-Branch: ai/fix-issue-7", printed.getvalue())
+
+    def test_create_issue_pull_request_does_not_close_issue_when_pr_creation_fails(self):
+        class FailingPrClient:
+            def __init__(self):
+                self.closed = False
+
+            def create_pull_request(self, **kwargs):
+                return None
+
+            def close_issue_with_comment(self, repo, number, comment):
+                self.closed = True
+
+        client = FailingPrClient()
+
+        pr = create_issue_pull_request(
+            client=client,
+            repo="demo",
+            number=7,
+            title="Fix recovery",
+            model="codex",
+            config={"owner": "test-owner"},
+            branch_name="ai/fix-issue-7",
+            base_branch="main",
+            close_issues=True,
+        )
+
+        self.assertIsNone(pr)
+        self.assertFalse(client.closed)
 
 
 class WorkerAssessmentTests(unittest.TestCase):
@@ -343,6 +667,51 @@ class GitStatusTests(unittest.TestCase):
         self.assertEqual(result.returncode, 12)
         self.assertTrue(assessment.should_continue)
         self.assertEqual(assessment.reason, "nonzero_with_changes")
+
+    def test_branch_has_changes_against_base_detects_remote_diff(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(["git", "init"], cwd=tmpdir, check=True, capture_output=True)
+            subprocess.run(["git", "branch", "-M", "main"], cwd=tmpdir, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.invalid"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test User"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+            )
+            readme = Path(tmpdir) / "README.md"
+            readme.write_text("before\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=tmpdir, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "init"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+            )
+
+            self.assertFalse(branch_has_changes_against_base(tmpdir, "main"))
+
+            readme.write_text("before\nafter\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=tmpdir, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "change"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+            )
+
+            self.assertTrue(branch_has_changes_against_base(tmpdir, "main"))
 
     def test_git_change_summary_contains_status_and_diff_stat(self):
         with tempfile.TemporaryDirectory() as tmpdir:

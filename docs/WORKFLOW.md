@@ -66,6 +66,7 @@ gesetzt werden.
 │                                                              │
 │  → Klont jedes Repo in ein Temp-Verzeichnis                  │
 │  → Klont standardmäßig den GitHub-Default-Branch             │
+│  → Prüft vorhandene Issue-Branches und PRs                   │
 │  → Erstellt Issue-Branch: ai/fix-issue-{nummer}              │
 │  → Ruft Codex oder aider mit dem Issue-Text auf              │
 │  → Der KI-Worker ändert Dateien                              │
@@ -82,6 +83,25 @@ gesetzt werden.
 │  → Mergen oder Feedback geben                                │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+## Wiederaufnahme nach abgebrochenen Läufen
+
+Vor einem Worker-Lauf und auch im Dry-Run prüft `solve_issues.py`, ob Branches
+mit dem Präfix `ai/fix-issue-{nummer}` bereits auf GitHub existieren und ob Pull
+Requests von diesen Branches vorhanden sind:
+
+- Branch fehlt: Das Script startet normal mit `ai/fix-issue-{nummer}`.
+- Branch existiert ohne PR: Der Branch wird ausgecheckt. Enthält er bereits
+  Änderungen gegen den Zielbranch, erstellt das Script direkt den fehlenden PR;
+  andernfalls läuft der Worker auf diesem Branch weiter.
+- Offener PR existiert: Das Script meldet den PR und bearbeitet das Issue nicht
+  erneut.
+- Gemergter PR existiert: Das Script meldet den gemergten PR und überspringt das
+  Issue.
+- Geschlossener, nicht gemergter PR existiert: Im interaktiven Terminal fragt
+  das Script nach, ob ein neuer Run gestartet oder das Issue übersprungen werden
+  soll. In nicht-interaktiven Läufen wird automatisch ein neuer Branch mit
+  Zeitstempel verwendet.
 
 ## Sicherer Start
 
