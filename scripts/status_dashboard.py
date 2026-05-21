@@ -34,12 +34,13 @@ GITHUB_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/")
 
 STATUS_LABELS = {
     "running": "Running",
-    "successful": "Successful",
     "failed": "Failed",
+    "successful": "Successful",
     "noop": "No-op",
+    "unknown": "Unknown",
 }
 
-STATUS_ORDER = ("running", "failed", "successful", "noop")
+STATUS_ORDER = ("running", "failed", "successful", "noop", "unknown")
 SUCCESS_STATUSES = {
     "pr_created",
     "pr_created_from_existing_branch",
@@ -122,6 +123,8 @@ def parse_created_at(run_dir_name: str) -> datetime | None:
 
 
 def classify_status(status: str, worker_exit_code: str = "") -> str:
+    if not status:
+        return "unknown"
     if status == "started":
         return "running"
     if status in SUCCESS_STATUSES:
@@ -142,7 +145,7 @@ def read_runs(runs_dir: Path) -> list[DashboardRun]:
     runs = []
     for run_dir in sorted((path for path in runs_dir.iterdir() if path.is_dir()), reverse=True):
         fields = parse_summary(run_dir / "summary.txt")
-        status = fields.get("status", "started")
+        status = fields.get("status", "")
         exit_code = fields.get("worker_exit_code", "")
         runs.append(
             DashboardRun(
@@ -334,6 +337,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       --success: #18794e;
       --failed: #c92a2a;
       --noop: #6b7280;
+      --unknown: #8a63d2;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -382,6 +386,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .metric-successful {{ border-color: var(--success); }}
     .metric-failed {{ border-color: var(--failed); }}
     .metric-noop {{ border-color: var(--noop); }}
+    .metric-unknown {{ border-color: var(--unknown); }}
     .table-wrap {{
       overflow-x: auto;
       background: var(--panel);
@@ -408,6 +413,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .badge-successful {{ background: var(--success); }}
     .badge-failed {{ background: var(--failed); }}
     .badge-noop {{ background: var(--noop); }}
+    .badge-unknown {{ background: var(--unknown); }}
     .note {{ margin-top: 4px; color: var(--muted); }}
     details {{ margin-top: 6px; }}
     summary {{ cursor: pointer; color: #1259c3; }}

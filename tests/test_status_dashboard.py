@@ -24,6 +24,7 @@ class StatusDashboardTests(unittest.TestCase):
         (run_dir / "summary.txt").write_text(content, encoding="utf-8")
 
     def test_classify_status_groups_known_solver_states(self):
+        self.assertEqual(classify_status(""), "unknown")
         self.assertEqual(classify_status("started"), "running")
         self.assertEqual(classify_status("pr_created"), "successful")
         self.assertEqual(classify_status("pr_created_from_existing_branch"), "successful")
@@ -31,6 +32,23 @@ class StatusDashboardTests(unittest.TestCase):
         self.assertEqual(classify_status("skip_existing_pr"), "noop")
         self.assertEqual(classify_status("clone_failed"), "failed")
         self.assertEqual(classify_status("worker_finished", "2"), "failed")
+
+    def test_legacy_summary_without_status_is_unknown_not_running(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-004025-demo-issue-24",
+                """repo: demo
+issue: 24
+model: codex
+worker_exit_code: 0
+""",
+            )
+
+            runs = read_runs(runs_dir)
+
+        self.assertEqual(runs[0].status, "")
+        self.assertEqual(runs[0].category, "unknown")
 
     def test_read_runs_parses_summary_and_multiline_output_tail(self):
         with tempfile.TemporaryDirectory() as tmpdir:
