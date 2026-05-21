@@ -537,9 +537,9 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
     cmd = [
         "aider",
         *flags,
-        "--yes-always",            # Automatisch ja sagen
+        "--yes",                   # Automatisch ja sagen
         "--no-auto-commits",       # Wir committen selbst
-        "--no-gitignore",
+        "--subtree-only",          # Repo-Kontext auf den geklonten Arbeitsbaum begrenzen
         "--message", prompt,       # Direkt-Prompt (kein interaktiver Modus)
         *targets,
     ]
