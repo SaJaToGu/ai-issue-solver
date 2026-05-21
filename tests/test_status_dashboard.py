@@ -63,6 +63,7 @@ worker_exit_code: 0
                 """status: pr_created
 repo: demo
 issue_number: 25
+issue_title: Show issue titles in the status dashboard
 branch: ai/fix-issue-25
 model: codex
 worker_exit_code: 0
@@ -81,7 +82,27 @@ line 2
         self.assertEqual(runs[0].created_at, datetime(2026, 5, 21, 9, 8, 7, 123456))
         self.assertEqual(runs[0].repo, "demo")
         self.assertEqual(runs[0].issue_number, "25")
+        self.assertEqual(runs[0].issue_title, "Show issue titles in the status dashboard")
         self.assertEqual(runs[0].output_tail, "line 1\nline 2")
+
+    def test_read_runs_keeps_legacy_reports_without_issue_title_compatible(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-25",
+                """status: pr_created
+repo: demo
+issue_number: 25
+branch: ai/fix-issue-25
+model: codex
+worker_exit_code: 0
+""",
+            )
+
+            runs = read_runs(runs_dir)
+
+        self.assertEqual(runs[0].issue_number, "25")
+        self.assertEqual(runs[0].issue_title, "")
 
     def test_github_links_use_owner_and_encode_branch_slashes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -116,6 +137,7 @@ pr_url:
                 """status: pr_created
 repo: demo
 issue_number: 25
+issue_title: Fix <unsafe> & "quoted" dashboard title
 branch: ai/fix-issue-25
 model: codex
 worker_exit_code: 0
@@ -153,6 +175,9 @@ preserved_worktree: reports/preserved-worktrees/run/demo
 
         self.assertIn("Successful", html)
         self.assertIn("No-op", html)
+        self.assertIn("#25", html)
+        self.assertIn("Fix &lt;unsafe&gt; &amp; &quot;quoted&quot; dashboard title", html)
+        self.assertNotIn("Fix <unsafe>", html)
         self.assertIn("https://github.com/test-owner/demo/issues/26", html)
         self.assertIn("https://github.com/test-owner/demo/pull/25", html)
         self.assertIn("Recovery-Worktree", html)
