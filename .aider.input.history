@@ -1,0 +1,82 @@
+
+# 2026-05-22 01:18:25.783633
++Löse das folgende GitHub Issue in diesem Repository.
++
++=== ISSUE #63: Show open unstarted issues in the dashboard ===
++
++## Ziel
++
++Das Dashboard soll nicht nur gestartete/queued Run-Reports anzeigen, sondern optional auch offene GitHub-Issues, für die noch kein aktueller Run existiert.
++
++## Kontext
++
++Aktuell zeigt das Dashboard `Queued`, wenn `solve_issues_batch.py` bereits einen Queue-Report geschrieben hat. Es zeigt aber keine offenen Issues, die noch gar nicht eingeplant oder gestartet wurden. Dadurch sieht man nicht auf einen Blick, welche Arbeit noch im Backlog wartet.
++
++## Gewünschtes Verhalten
++
++- Mit optionaler GitHub-Anreicherung lädt das Dashboard offene Issues.
++- Offene Issues ohne passenden aktuellen Run werden als eigene Kategorie angezeigt, z.B. `Open / not started`.
++- Issues mit vorhandenen queued/running/successful/failed/recovered Runs werden nicht doppelt dargestellt.
++- Die Anzeige bleibt klein: Issue-Nummer, Titel, Labels und Link reichen.
++- Ohne GitHub-Zugriff bleibt das Dashboard beim heutigen Run-Report-Fallback.
++
++## Akzeptanzkriterien
++
++- Tests für offene Issues ohne Run-Report.
++- Tests, dass Issues mit vorhandenen Run-Reports nicht doppelt erscheinen.
++- Dashboard-Metriken/Tabellen zeigen offene, nicht gestartete Issues klar getrennt von queued Jobs.
++- Keine komplette GitHub-Issue-Ansicht nachbauen.
++
++=== AUFGABE ===
++Analysiere das Problem und implementiere eine saubere, vollständige Lösung.
++Halte dich an die bestehende Code-Struktur und Konventionen des Projekts.
++Kommentiere deine Änderungen auf Deutsch wenn sinnvoll.
++Erstelle oder verbessere Dateien direkt (README, LICENSE, .gitignore, etc.).
++Erstelle keinen Commit, pushe nichts und öffne keinen Pull Request. Das übernimmt das Wrapper-Script nach deiner Änderung.
++
++Wenn du Dateien erstellst, achte auf:
++- Vollständigkeit (keine Platzhalter wie "TODO" oder "...")
++- Korrekte Syntax für die jeweilige Sprache/Format
++- Sinnvolle Inhalte die zum Projekt passen
++
+
+# 2026-05-22 01:18:25.784036
++Löse das folgende GitHub Issue in diesem Repository.
++
++=== ISSUE #63: Show open unstarted issues in the dashboard ===
++
++## Ziel
++
++Das Dashboard soll nicht nur gestartete/queued Run-Reports anzeigen, sondern optional auch offene GitHub-Issues, für die noch kein aktueller Run existiert.
++
++## Kontext
++
++Aktuell zeigt das Dashboard `Queued`, wenn `solve_issues_batch.py` bereits einen Queue-Report geschrieben hat. Es zeigt aber keine offenen Issues, die noch gar nicht eingeplant oder gestartet wurden. Dadurch sieht man nicht auf einen Blick, welche Arbeit noch im Backlog wartet.
++
++## Gewünschtes Verhalten
++
++- Mit optionaler GitHub-Anreicherung lädt das Dashboard offene Issues.
++- Offene Issues ohne passenden aktuellen Run werden als eigene Kategorie angezeigt, z.B. `Open / not started`.
++- Issues mit vorhandenen queued/running/successful/failed/recovered Runs werden nicht doppelt dargestellt.
++- Die Anzeige bleibt klein: Issue-Nummer, Titel, Labels und Link reichen.
++- Ohne GitHub-Zugriff bleibt das Dashboard beim heutigen Run-Report-Fallback.
++
++## Akzeptanzkriterien
++
++- Tests für offene Issues ohne Run-Report.
++- Tests, dass Issues mit vorhandenen Run-Reports nicht doppelt erscheinen.
++- Dashboard-Metriken/Tabellen zeigen offene, nicht gestartete Issues klar getrennt von queued Jobs.
++- Keine komplette GitHub-Issue-Ansicht nachbauen.
++
++=== AUFGABE ===
++Analysiere das Problem und implementiere eine saubere, vollständige Lösung.
++Halte dich an die bestehende Code-Struktur und Konventionen des Projekts.
++Kommentiere deine Änderungen auf Deutsch wenn sinnvoll.
++Erstelle oder verbessere Dateien direkt (README, LICENSE, .gitignore, etc.).
++Erstelle keinen Commit, pushe nichts und öffne keinen Pull Request. Das übernimmt das Wrapper-Script nach deiner Änderung.
++
++Wenn du Dateien erstellst, achte auf:
++- Vollständigkeit (keine Platzhalter wie "TODO" oder "...")
++- Korrekte Syntax für die jeweilige Sprache/Format
++- Sinnvolle Inhalte die zum Projekt passen
++
