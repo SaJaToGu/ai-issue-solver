@@ -51,7 +51,7 @@ gesetzt werden.
 │  SCHRITT 2: ISSUES ERSTELLEN                                 │
 │                                                              │
 │  python scripts/create_issues.py --report reports/analysis.json --dry-run  │
-│  python scripts/create_issues.py --report reports/analysis.json            │
+│  python scripts/create_issues.py --report reports/analysis.json --confirm-create │
 │                                                              │
 │  → Erstellt strukturierte GitHub Issues                      │
 │  → Mit Labels, Priorität und Beschreibung                    │
@@ -66,11 +66,12 @@ gesetzt werden.
 │                                                              │
 │  → Klont jedes Repo in ein Temp-Verzeichnis                  │
 │  → Klont standardmäßig den GitHub-Default-Branch             │
+│  → Prüft vorhandene Issue-Branches und PRs                   │
 │  → Erstellt Issue-Branch: ai/fix-issue-{nummer}              │
 │  → Ruft Codex oder aider mit dem Issue-Text auf              │
 │  → Der KI-Worker ändert Dateien                              │
 │  → Commit + Push + PR zurück zum Zielbranch erstellen        │
-│  → Issue schließen mit Kommentar                             │
+│  → Issue optional mit --close-issues schließen               │
 └──────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -83,30 +84,85 @@ gesetzt werden.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Vollständiges Beispiel-Kommando
+## Wiederaufnahme nach abgebrochenen Läufen
+
+Vor einem Worker-Lauf und auch im Dry-Run prüft `solve_issues.py`, ob Branches
+mit dem Präfix `ai/fix-issue-{nummer}` bereits auf GitHub existieren und ob Pull
+Requests von diesen Branches vorhanden sind:
+
+- Branch fehlt: Das Script startet normal mit `ai/fix-issue-{nummer}`.
+- Branch existiert ohne PR: Der Branch wird ausgecheckt. Enthält er bereits
+  Änderungen gegen den Zielbranch, erstellt das Script direkt den fehlenden PR;
+  andernfalls läuft der Worker auf diesem Branch weiter.
+- Offener PR existiert: Das Script meldet den PR und bearbeitet das Issue nicht
+  erneut.
+- Gemergter PR existiert: Das Script meldet den gemergten PR und überspringt das
+  Issue.
+- Geschlossener, nicht gemergter PR existiert: Im interaktiven Terminal fragt
+  das Script nach, ob ein neuer Run gestartet oder das Issue übersprungen werden
+  soll. In nicht-interaktiven Läufen wird automatisch ein neuer Branch mit
+  Zeitstempel verwendet.
+
+## Sicherer Start
 
 ```bash
-# Alles auf einmal (Morpheus-Methode):
-python scripts/analyze_repos.py --user SaJaToGu && \
-python scripts/create_issues.py --report reports/analysis.json && \
-python scripts/solve_issues.py --model codex
+# 1. Repos analysieren
+python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
+
+# 2. Erst prüfen, welche Issues entstehen würden
+python scripts/create_issues.py --report reports/analysis.json --dry-run
+
+# 3. Danach bewusst echte Issues erstellen
+python scripts/create_issues.py --report reports/analysis.json --confirm-create
+
+# 4. Erst einen einzelnen KI-Lauf simulieren
+python scripts/solve_issues.py --model codex --repo ai-issue-solver --issue 1 --base-branch develop --dry-run
+
+# 5. Danach einen einzelnen KI-Lauf ausführen
+python scripts/solve_issues.py --model codex --repo ai-issue-solver --issue 1 --base-branch develop
 ```
 
 ## Nützliche Flags
 
 ```bash
-# Nur bestimmte Priorität analysieren
-python scripts/create_issues.py --priority high
+# Nur bestimmte Priorität aus einem Report als Issues vorbereiten
+python scripts/create_issues.py --report reports/analysis.json --priority high --dry-run
 
 # Nur ein Repo bearbeiten
-python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
-python scripts/solve_issues.py --model ollama --repo BedBoxDrawerRole
+python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole --base-branch develop
+python scripts/solve_issues.py --model ollama --repo BedBoxDrawerRole --base-branch develop
 
 # Einzelnes Issue lösen
-python scripts/solve_issues.py --model claude --repo dustycase --issue 1
+python scripts/solve_issues.py --model claude --repo dustycase --issue 1 --base-branch develop
 
 # Alles erst simulieren
-python scripts/analyze_repos.py --user SaJaToGu
-python scripts/create_issues.py --dry-run
-python scripts/solve_issues.py --model codex --dry-run
+python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
+python scripts/create_issues.py --report reports/analysis.json --dry-run
+python scripts/solve_issues.py --model codex --base-branch develop --dry-run
+```
+
+## Parallelbetrieb und Status
+
+Für größere Backlogs kann `solve_issues_batch.py` mehrere Issues parallel
+bearbeiten, ohne unbegrenzt Worker zu starten. Jeder Job läuft als eigener
+`solve_issues.py`-Prozess und nutzt dadurch dieselbe Branch-Recovery,
+Run-Report-Erstellung und PR-Logik wie ein einzelner Solver-Lauf.
+
+```bash
+python scripts/solve_issues_batch.py --model codex --workers 2
+python scripts/solve_issues_batch.py --model claude --repo BedBoxDrawerRole --workers 3
+python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --issue 23 --issue 24 --dry-run
+```
+
+Der Batch-Runner dedupliziert identische `(Repo, Issue)`-Jobs vor dem Start,
+damit innerhalb eines Laufs nicht zwei Worker denselben Issue-Branch bearbeiten.
+Worker-Ausgaben werden pro Job gesammelt und erst nach Abschluss dieses Jobs
+gedruckt. Wenn ein Worker fehlschlägt, laufen die übrigen Jobs weiter; am Ende
+meldet das Script erfolgreiche und fehlgeschlagene Jobs separat.
+
+Die Run-Reports unter `reports/runs/` können anschließend mit dem lokalen
+Dashboard ausgewertet werden:
+
+```bash
+python scripts/status_dashboard.py
 ```

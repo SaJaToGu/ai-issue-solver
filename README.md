@@ -14,6 +14,7 @@
 - [Workflow im Überblick](#workflow-im-überblick)
 - [Branch-Modell](#branch-modell)
 - [Scripts im Detail](#scripts-im-detail)
+- [Nächste Ausbaustufe](#nächste-ausbaustufe)
 - [GitHub PAT erstellen](#github-pat-erstellen)
 - [KI-Modelle konfigurieren](#ki-modelle-konfigurieren)
 - [Verzeichnisstruktur](#verzeichnisstruktur)
@@ -39,6 +40,10 @@ Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
 **OpenAI** oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code
 und erstellt einen Branch + Commit.
 
+**Status-Überblick:** `github_summary.py` zeigt offene Issues, offene PRs,
+zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
+GitHub API. Die GitHub CLI wird dafür nicht benötigt.
+
 ## Repository-Metadaten
 
 **Beschreibung:** Automatisiert GitHub-Repository-Analysen, Issue-Erstellung und
@@ -59,7 +64,7 @@ Repo aktiv ist, kann sie daraus das About-Feld und die Topics synchronisieren.
 | Tool | Version | Zweck |
 |------|---------|-------|
 | Python | ≥ 3.10 | Haupt-Scriptsprache |
-| `gh` CLI | aktuell | GitHub-Zugriff |
+| `gh` CLI | optional | Manuelle GitHub-Diagnose außerhalb der Scripts |
 | Codex CLI | optional | KI-Worker über deinen Codex-Zugang |
 | `aider` | optional | KI-Worker für Claude/OpenAI/Ollama |
 | `git` | aktuell | Versionskontrolle |
@@ -213,13 +218,38 @@ Löst offene Issues automatisch mit KI + Codex oder aider.
 python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model ollama --model-name llama3
+python scripts/solve_issues_batch.py --model codex --repo BedBoxDrawerRole --workers 2
 ```
 
-Im Codex-Modus streamt das Script die Worker-Ausgabe live und wertet danach
-den Git-Status aus. Ein erfolgreicher Worker-Lauf ohne Dateiänderungen wird
+Das Script verdichtet die Worker-Ausgabe live auf Status-, Planungs-, Warn- und
+Ergebniszeilen. Detailausgaben wie lange Diffs oder Kommando-Logs werden im
+Terminal ausgeblendet und nur einmal am Ende gezählt; der vollständige Rohoutput
+landet weiterhin unter `reports/runs/` im Run-Report. Für jeden echten
+Issue-Lauf legt das Script dort ein zeitgestempeltes Verzeichnis an. Die
+`summary.txt` enthält ausgewähltes Repository, Issue-Nummer, Branch, Modell,
+Worker-Exitcode, PR-URL falls vorhanden sowie einen kurzen Output-Tail; der
+vollständige Worker-Output liegt zusätzlich in `worker-output.log`. Nach dem
+Lauf zeigt das Script eine kompakte Git-Übersicht mit geänderten Dateien,
+Einfügungen/Löschungen, Diff-Stat und kurzer Diff-Vorschau. Ein erfolgreicher
+Worker-Lauf ohne Dateiänderungen wird
 als No-op behandelt und erzeugt keinen Commit. Falls Codex mit einem
 Nicht-Null-Exitcode beendet, aber Änderungen im Arbeitsbaum liegen, prüft das
 Script diese Änderungen weiter und zeigt die letzten Worker-Zeilen als Diagnose.
+Wenn Codex das Nachrichtenlimit meldet und eine Reset-Zeit ausgibt, pausiert
+`solve_issues.py` bis zu diesem Zeitpunkt und versucht dasselbe Issue danach
+erneut, statt die restlichen Issues sofort als Fehler zu zählen.
+
+Vor jedem Worker-Lauf und auch im Dry-Run prüft das Script vorhandene
+Issue-Branches mit dem Präfix `ai/fix-issue-{nummer}` und zugehörige Pull
+Requests. Einen vorhandenen
+Branch ohne PR nutzt es weiter; enthält er bereits Änderungen gegen den
+Zielbranch, erstellt das Script direkt den fehlenden PR. So kann ein
+abgebrochener Lauf nach Push oder vor der PR-Erstellung fortgesetzt werden.
+Gibt es bereits einen offenen oder
+gemergten PR, wird das Issue nicht erneut bearbeitet und der gefundene PR
+ausgegeben. Bei einem geschlossenen, nicht gemergten PR startet das Script in
+nicht-interaktiven Läufen automatisch mit einem neuen Branch; im Terminal kann
+man stattdessen bewusst überspringen.
 
 Im Aider-Modus begrenzt das Script den Kontext auf den geklonten Arbeitsbaum und
 übergibt plausible Datei-Ziele aus Issue-Titel und Beschreibung als
@@ -231,6 +261,88 @@ externen oder ungültigen Pfade an aider durchgereicht werden.
 - `--model-name` — spezifisches Modell, z.B. für Codex oder Ollama
 - `--dry-run` — zeigt Plan ohne Änderungen
 - `--issue` — nur ein bestimmtes Issue lösen
+
+---
+
+### `solve_issues_batch.py`
+Löst mehrere Issues parallel, aber mit begrenzter Worker-Zahl. Der Batch-Runner
+ermittelt die offenen Issues, dedupliziert identische `(Repo, Issue)`-Jobs und
+startet pro Job einen isolierten `solve_issues.py`-Prozess. Ein fehlschlagender
+Worker stoppt den Batch nicht; die übrigen Jobs laufen weiter. Die Ausgabe wird
+pro Job gesammelt und erst nach Abschluss dieses Jobs gedruckt, damit parallele
+Worker-Logs lesbar bleiben.
+
+```bash
+python scripts/solve_issues_batch.py --model codex --workers 2
+python scripts/solve_issues_batch.py --model claude --repo BedBoxDrawerRole --workers 3
+python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --issue 23 --issue 24 --dry-run
+```
+
+**Flags:**
+- `--workers` — maximale parallele Worker, Standard: `2`
+- `--issue` — kann mehrfach angegeben werden
+- alle relevanten Solver-Flags wie `--model`, `--model-name`, `--repo`,
+  `--label`, `--base-branch`, `--dry-run` und `--close-issues`
+
+---
+
+### `github_summary.py`
+Zeigt eine kompakte Review- und Statusübersicht über die GitHub API.
+
+```bash
+python scripts/github_summary.py
+python scripts/github_summary.py --repo ai-issue-solver
+python scripts/github_summary.py --limit 3 --merged-days 7 --run-days 7
+```
+
+**Enthält pro Repository:**
+- offene Issues
+- offene Pull Requests
+- zuletzt gemergte Pull Requests
+- fehlgeschlagene GitHub-Actions-Runs im gewählten Zeitraum
+
+**Flags:**
+- `--repo` — nur ein bestimmtes Repo anzeigen
+- `--limit` — maximale Einträge pro Abschnitt, Standard: `5`
+- `--merged-days` — Zeitraum für gemergte Pull Requests, Standard: `14`
+- `--run-days` — Zeitraum für fehlgeschlagene Runs, Standard: `14`
+
+---
+
+### `status_dashboard.py`
+Erzeugt ein lokales HTML-Dashboard aus den Run-Reports unter `reports/runs/`.
+Die Übersicht gruppiert laufende, erfolgreiche, fehlgeschlagene und No-op-Jobs
+und verlinkt GitHub Issues, Branches und Pull Requests, wenn genug Metadaten
+vorliegen.
+
+```bash
+python scripts/status_dashboard.py
+python scripts/status_dashboard.py --owner SaJaToGu
+python scripts/status_dashboard.py --runs-dir reports/runs --output reports/status-dashboard.html
+```
+
+Ohne `--owner` nutzt das Script `GITHUB_USER` aus `config/.env` oder leitet den
+Owner aus vorhandenen PR-URLs ab. Die erzeugte Datei liegt standardmäßig unter
+`reports/status-dashboard.html` und kann direkt im Browser geöffnet werden.
+
+**Flags:**
+- `--runs-dir` — Verzeichnis mit Run-Reports, Standard: `reports/runs`
+- `--output` — Zielpfad der HTML-Datei, Standard: `reports/status-dashboard.html`
+- `--owner` — GitHub Owner für Issue- und Branch-Links
+
+---
+
+## Nächste Ausbaustufe
+
+Die erste Workflow-Runde ist abgeschlossen: Analyse, Backlog-Issues,
+KI-Bearbeitung, PR-Erstellung, CI und Tests laufen. Als nächstes soll der
+Morpheus-Style Workflow komfortabler werden:
+
+- mehrere Issues parallel mit begrenzter Worker-Zahl lösen
+- laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen
+- offene PRs und Issues nach einem Lauf automatisch zusammenfassen
+
+Der geplante Backlog dafür liegt in [docs/NEXT_BACKLOG.md](docs/NEXT_BACKLOG.md).
 
 ---
 
@@ -294,6 +406,10 @@ OLLAMA_MODEL=deepseek-coder:6.7b
 
 ```
 ai-issue-solver/
+├── .github/
+│   ├── settings.yml             # Repo-Beschreibung und Topics als Referenz
+│   └── workflows/
+│       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
 ├── requirements-aider.txt       # Optionale Aider-Dependencies
@@ -303,16 +419,28 @@ ai-issue-solver/
 ├── scripts/
 │   ├── analyze_repos.py         # Schritt 1: Repos analysieren
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
-│   ├── solve_issues.py          # Schritt 3: Issues mit KI lösen
+│   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
+│   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
+│   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
+│   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
+│   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
 │   └── issue_body               # Issue-Text-Vorlage
 ├── reports/                     # Generierte Analyse-Reports (gitignored)
 │   └── .gitkeep
-└── docs/
-    ├── WORKFLOW.md               # Detaillierter Workflow
-    ├── SETUP_AIDER.md            # Aider-Einrichtung
-    └── RASPBERRY_PI.md           # Ollama auf Raspberry Pi
+├── docs/
+│   ├── BACKLOG.md               # Erster Projekt-Backlog
+│   ├── NEXT_BACKLOG.md          # Nächste Ausbaustufe
+│   ├── WORKFLOW.md              # Detaillierter Workflow
+│   ├── SETUP_AIDER.md           # Aider-Einrichtung
+│   └── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
+└── tests/
+    ├── test_analyze_repos.py    # Analyzer-Tests
+    ├── test_github_summary.py   # GitHub-Übersichts-Tests
+    ├── test_status_dashboard.py # Dashboard-Tests
+    ├── test_solve_issues_batch.py # Batch-Runner-Tests
+    └── test_solve_issues.py     # Solver- und Worker-Tests
 ```
 
 ---

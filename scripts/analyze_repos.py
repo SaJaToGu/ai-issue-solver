@@ -11,6 +11,8 @@ Verwendung:
     python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
 """
 
+from __future__ import annotations
+
 import argparse
 import fnmatch
 import json
