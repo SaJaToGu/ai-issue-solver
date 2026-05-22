@@ -440,8 +440,68 @@ class GitHubClient:
 # Aider Integration
 # ─────────────────────────────────────────────────────────────
 
+# Bekannte Projektverzeichnisse, in denen Dateien bevorzugt werden
+KNOWN_PROJECT_DIRS = frozenset({"scripts", "tests", "src", "lib", "app", "config", "docs"})
+
+
+def find_aider_executable() -> str | None:
+    """Find the aider executable, checking venv-local paths first, then PATH.
+    
+    Suchreihenfolge:
+    1. .venv/bin/aider (wenn aktueller Python in .venv ist)
+    2. venv/bin/aider (Standard-Venv-Pfad)
+    3. <python_prefix>/bin/aider (für die aktuelle Python-Umgebung)
+    4. PATH via shutil.which()
+    
+    Returns:
+        Pfad zum aider-Executable oder None
+    """
+    candidates = []
+    
+    # Prüfe ob aktueller Python aus einem venv kommt
+    python_executable = sys.executable
+    if python_executable:
+        python_path = Path(python_executable).resolve()
+        # .venv/bin/python -> .venv/bin/aider
+        venv_bin = python_path.parent
+        if venv_bin.exists() and venv_bin.name == "bin":
+            venv_path = venv_bin.parent
+            if venv_path.name in ("venv", ".venv"):
+                aider_path = venv_bin / "aider"
+                if aider_path.exists():
+                    return str(aider_path)
+                candidates.append(str(aider_path))
+    
+    # Standard venv Pfade
+    for venv_name in (".venv", "venv"):
+        venv_path = Path.cwd() / venv_name
+        aider_path = venv_path / "bin" / "aider"
+        if aider_path.exists():
+            return str(aider_path)
+        candidates.append(str(aider_path))
+    
+    # Prüfe site-packages Pfad der aktuellen Python-Umgebung
+    try:
+        import site
+        for site_path in site.getsitepackages() + site.getusersitepackages():
+            aider_path = Path(site_path).parent / "bin" / "aider"
+            if aider_path.exists():
+                return str(aider_path)
+            candidates.append(str(aider_path))
+    except Exception:
+        pass
+    
+    # PATH
+    path_aider = shutil.which("aider")
+    if path_aider:
+        return path_aider
+    
+    return None
+
+
 def check_aider_installed() -> bool:
-    return shutil.which("aider") is not None
+    """Prüfe ob aider verfügbar ist (inkl. venv-lokaler Installation)."""
+    return find_aider_executable() is not None
 
 
 def find_codex_executable() -> str | None:
@@ -451,6 +511,7 @@ def find_codex_executable() -> str | None:
         "/Applications/Codex.app/Contents/Resources/codex",
     ]
     return next((path for path in candidates if path and Path(path).exists()), None)
+
 
 def find_vibe_executable() -> str | None:
     """Find the Mistral Vibe CLI available in the active environment or PATH."""
