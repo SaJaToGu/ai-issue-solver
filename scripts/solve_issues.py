@@ -165,13 +165,25 @@ WORKER_LIVE_OUTPUT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+=======
 WORKER_NOISY_OUTPUT_RE = re.compile(
     r"("
     r"^\s*(?:diff --git|index [0-9a-f]+\.\.|@@ |[+-]{3}\s|[+-](?!\s*(?:warning|error|failed)\b))"
     r"|^\s*(?:apply_patch|cat >|sed -n|python - <<|npm |pip |git diff|git status)"
+    r"|^\s*(?:[+-]\s*)?f\.write\s*\="
+    r"|^\s*(?:[+-]\s*)?\w+\s*[:=]\s*(?:['\"]).*['\"]\s*$"  # dataclass fields like error: str = ""
+    r"|^\s*(?:[+-]\s*)?(?:result\.runs\[|cache.*key)"  # cache key strings
+    r"|^\s*['\"].*[\|].*['\"]"  # pipe-separated cache strings
     r")",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+=======
 
 
 @dataclass(frozen=True)
@@ -1136,11 +1148,20 @@ def sleep_until_codex_reset(rate_limit: CodexRateLimit,
 
 
 def format_worker_output_tail(output: str) -> str:
+    """Extrahiert die letzten Zeilen des Worker-Outputs und filtert laute Detailausgabe."""
     cleaned = output.strip()
     if not cleaned:
         return ""
 
-    tail = "\n".join(cleaned.splitlines()[-WORKER_OUTPUT_TAIL_LINES:])
+    # Filtere laute Zeilen heraus
+    lines = cleaned.splitlines()
+    filtered_lines = [line for line in lines if should_surface_worker_line(line + "\n")]
+    
+    # Falls alle Zeilen gefiltert wurden, nimm die ursprünglichen
+    if not filtered_lines:
+        filtered_lines = lines
+    
+    tail = "\n".join(filtered_lines[-WORKER_OUTPUT_TAIL_LINES:])
     if len(tail) > WORKER_OUTPUT_TAIL_CHARS:
         tail = tail[-WORKER_OUTPUT_TAIL_CHARS:]
         return f"...\n{tail}"

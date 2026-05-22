@@ -612,6 +612,43 @@ class WorkerOutputTests(unittest.TestCase):
         self.assertFalse(should_surface_worker_line("+print('implementation detail')\n"))
         self.assertFalse(should_surface_worker_line("@@ -1,2 +1,3 @@\n"))
 
+    def test_worker_live_filter_hides_aider_mistral_noise(self):
+        # Test: f.write snippets should be hidden
+        self.assertFalse(should_surface_worker_line("+        f.write(\"            <th>Repo</th>\\n\")\n"))
+        self.assertFalse(should_surface_worker_line("        f.write(\"            <th>Repo</th>\\n\")\n"))
+        # Test: dataclass field declarations should be hidden
+        self.assertFalse(should_surface_worker_line("-    error: str = \"\"\n"))
+        self.assertFalse(should_surface_worker_line("    error: str = \"\"\n"))
+        # Test: isolated string literals (cache keys) should be hidden
+        self.assertFalse(should_surface_worker_line('"https://github.com/test-owner/demo/issues/7")\n'))
+        self.assertFalse(should_surface_worker_line('"test-owner|demo|44|ai/fix-issue-44|https://github.com/test-owner/demo/pull/44":\n'))
+        # Test: result.runs fragments should be hidden
+        self.assertFalse(should_surface_worker_line("result.runs[0].lifecycle_note)\n"))
+        # Test: useful lines should still surface
+        self.assertTrue(should_surface_worker_line("Plan: solve issue #63\n"))
+        self.assertTrue(should_surface_worker_line("Final result: all tests passed\n"))
+        self.assertTrue(should_surface_worker_line("Rate limit reached, retrying...\n"))
+
+    def test_format_worker_output_tail_filters_aider_noise(self):
+        # Simuliere Worker-Output mit viel Noise
+        output = "\n".join([
+            "Plan: solve issue #63",
+            "+        f.write(\"            <th>Repo</th>\\n\")",
+            "    error: str = \"\"",
+            '"https://github.com/test-owner/demo/issues/7")',
+            "result.runs[0].lifecycle_note)",
+            "Final result: all tests passed",
+        ])
+        tail = format_worker_output_tail(output)
+        # Die gefilterten Zeilen sollten nicht im Tail erscheinen
+        self.assertNotIn("f.write", tail)
+        self.assertNotIn("error: str", tail)
+        self.assertNotIn("https://github.com/test-owner/demo/issues/7", tail)
+        self.assertNotIn("result.runs[0]", tail)
+        # Nützliche Zeilen sollten noch da sein
+        self.assertIn("Plan: solve issue #63", tail)
+        self.assertIn("Final result: all tests passed", tail)
+
     def test_run_worker_preserves_full_output_while_printing_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             script = Path(tmpdir) / "worker.py"
