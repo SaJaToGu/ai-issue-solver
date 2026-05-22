@@ -85,6 +85,7 @@ FAILED_STATUSES = {
     "push_failed",
     "cleanup_failed",
     "rate_limit_deferred",
+    "validation_failed",
 }
 ARCHIVED_STATUSES = {
     "archived",

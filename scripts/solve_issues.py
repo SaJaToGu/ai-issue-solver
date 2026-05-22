@@ -122,7 +122,9 @@ PRESERVE_WORKTREE_STATUSES = {
     "pr_failed_from_existing_branch",
     "push_failed",
     "rate_limit_deferred",
+    "validation_failed",
 }
+CONFLICT_MARKER_RE = re.compile(r"^\s*(?:<{7}\s|>{7}\s|={7}\s*$)")
 COMMON_REPO_FILES = {
     ".dockerignore",
     ".env.example",
@@ -186,6 +188,12 @@ class WorkerAssessment:
     should_continue: bool
     has_changes: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class WorkerValidation:
+    ok: bool
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1071,6 +1079,65 @@ def cleanup_preserved_worktrees(root: Path = PRESERVED_WORKTREES_ROOT,
     return stale_paths
 
 
+
+def changed_paths_from_status(git_status: str) -> list[Path]:
+    paths: list[Path] = []
+    for line in git_status.splitlines():
+        if len(line) < 4:
+            continue
+        path_text = line[3:].strip()
+        if " -> " in path_text:
+            path_text = path_text.rsplit(" -> ", 1)[1]
+        path_text = path_text.strip('"')
+        if path_text:
+            paths.append(Path(path_text))
+    return paths
+
+
+def conflict_marker_line(path: Path) -> int | None:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if CONFLICT_MARKER_RE.match(line.rstrip("\n")):
+                    return line_number
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def validate_worker_changes(repo_dir: str, git_status: str | None = None) -> WorkerValidation:
+    status = git_status if git_status is not None else git_status_porcelain(repo_dir)
+    repo_root = Path(repo_dir)
+    errors: list[str] = []
+    changed_paths = changed_paths_from_status(status)
+
+    for relative_path in changed_paths:
+        path = repo_root / relative_path
+        if not path.is_file():
+            continue
+        marker_line = conflict_marker_line(path)
+        if marker_line is not None:
+            errors.append(f"{relative_path}:{marker_line}: enthaelt Git-Konfliktmarker")
+
+    python_files = [
+        str(repo_root / relative_path)
+        for relative_path in changed_paths
+        if relative_path.suffix == ".py" and (repo_root / relative_path).is_file()
+    ]
+    if python_files:
+        result = subprocess.run(
+            [sys.executable, "-m", "py_compile", *python_files],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            first_line = (result.stderr or result.stdout).strip().splitlines()[0]
+            errors.append(f"Python-Syntaxpruefung fehlgeschlagen: {first_line[:240]}")
+
+    return WorkerValidation(ok=not errors, errors=tuple(errors))
+
+
 def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAssessment:
     has_changes = bool(git_status.strip())
     if result.returncode == 0 and has_changes:
@@ -1734,6 +1801,40 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     run_report,
                     status,
                     worker_result=diagnostic_result,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
+                )
+            return False
+
+        validation = validate_worker_changes(repo_dir, git_status)
+        if not validation.ok:
+            print_warn("Worker-Validierung fehlgeschlagen; erstelle keinen Commit und keinen PR")
+            for error in validation.errors[:5]:
+                print(f"      {error}")
+            status = "validation_failed"
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
+            if run_report:
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    note="; ".join(validation.errors),
                     preserved_worktree_path=preserved_worktree,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,

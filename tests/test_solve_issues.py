@@ -38,6 +38,7 @@ from solve_issues import (  # noqa: E402
     should_preserve_worktree,
     should_surface_worker_line,
     sleep_until_codex_reset,
+    validate_worker_changes,
     solve_issue,
     write_run_report,
     write_worker_diagnostics,
@@ -456,6 +457,39 @@ class WorkerAssessmentTests(unittest.TestCase):
         self.assertFalse(assessment.should_continue)
         self.assertFalse(assessment.has_changes)
         self.assertEqual(assessment.reason, "nonzero_without_changes")
+
+
+
+class WorkerValidationTests(unittest.TestCase):
+    def test_validation_detects_conflict_marker(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "README.md"
+            path.write_text("<<<<<<< HEAD\nbroken\n=======\nother\n>>>>>>> branch\n", encoding="utf-8")
+
+            validation = validate_worker_changes(tmpdir, " M README.md\n")
+
+        self.assertFalse(validation.ok)
+        self.assertIn("Git-Konfliktmarker", validation.errors[0])
+
+    def test_validation_detects_python_syntax_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broken.py"
+            path.write_text("def broken(:\n    pass\n", encoding="utf-8")
+
+            validation = validate_worker_changes(tmpdir, " M broken.py\n")
+
+        self.assertFalse(validation.ok)
+        self.assertIn("Python-Syntaxpruefung fehlgeschlagen", validation.errors[0])
+
+    def test_validation_accepts_valid_python_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "ok.py"
+            path.write_text("print('ok')\n", encoding="utf-8")
+
+            validation = validate_worker_changes(tmpdir, " M ok.py\n")
+
+        self.assertTrue(validation.ok)
+        self.assertEqual(validation.errors, ())
 
 
 class CodexRateLimitTests(unittest.TestCase):
