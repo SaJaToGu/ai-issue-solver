@@ -4,19 +4,21 @@ solve_issues.py — Schritt 3: Issues mit KI lösen (Morpheus-Methode)
 Morpheus-Style AI Issue Solver — github.com/SaJaToGu
 
 Holt offene GitHub Issues, übergibt sie an Codex oder `aider` mit dem
-gewählten KI-Modell (Codex / Claude / OpenAI / Mistral / Ollama), erstellt
+gewählten KI-Worker (Codex / Mistral Vibe / Claude / OpenAI / Mistral / Ollama), erstellt
 einen Branch und einen Commit mit der Lösung.
 
 Verwendung:
     python scripts/solve_issues.py --model codex
     python scripts/solve_issues.py --model claude
     python scripts/solve_issues.py --model openai
+    python scripts/solve_issues.py --model mistral-vibe
     python scripts/solve_issues.py --model mistral
     python scripts/solve_issues.py --model mistral --model-name magistral-small-2509
     python scripts/solve_issues.py --model ollama --model-name deepseek-coder:6.7b
     python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
     python scripts/solve_issues.py --model claude --issue 3
     python scripts/solve_issues.py --model claude --dry-run
+    
 """
 
 from __future__ import annotations
@@ -97,6 +99,11 @@ MODEL_CONFIGS = {
         "env_key": None,
         "env_var": None,
         "default_model_name": "deepseek-coder:6.7b",
+    },
+    "mistral-vibe": {
+    "display_name": "Mistral Vibe CLI",
+    "env_key": "MISTRAL_API_KEY",
+    "env_var": "MISTRAL_API_KEY",
     },
 }
 
@@ -445,6 +452,9 @@ def find_codex_executable() -> str | None:
     ]
     return next((path for path in candidates if path and Path(path).exists()), None)
 
+def find_vibe_executable() -> str | None:
+    """Find the Mistral Vibe CLI available in the active environment or PATH."""
+    return shutil.which("vibe")
 
 def clean_path_candidate(candidate: str) -> str:
     return candidate.strip().strip(" \t\r\n'\"“”‘’.,;:()[]{}<>")
@@ -579,6 +589,21 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
     cmd.append(prompt)
     return cmd
 
+def build_vibe_command(prompt: str, repo_path: str,
+                       max_turns: int = 30,
+                       output: str = "text") -> list:
+    vibe = find_vibe_executable()
+    if not vibe:
+        raise FileNotFoundError("vibe")
+
+    return [
+        vibe,
+        "--workdir", repo_path,
+        "--trust",
+        "-p", prompt,
+        "--max-turns", str(max_turns),
+        "--output", output,
+    ]
 
 def run_worker_command(cmd: list, repo_dir: str, env: dict,
                        run_report: RunReport | None = None) -> WorkerRunResult:
@@ -1601,6 +1626,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         if model == "codex":
             print(f"      🤖 Starte Codex ...", flush=True)
             cmd = build_codex_command(prompt, repo_dir, model_name or None)
+        elif model == "mistral-vibe":
+            print(f"      🤖 Starte Mistral Vibe ...", flush=True)
+            cmd = build_vibe_command(prompt, repo_dir)
         else:
             print(f"      🤖 Starte aider ...", flush=True)
             cmd = build_aider_command(model, model_name, prompt, repo_dir)
@@ -1882,13 +1910,18 @@ def main():
         print("   → Codex Desktop App installieren oder `codex` in PATH verfügbar machen")
         sys.exit(1)
 
-    if args.model != "codex" and not check_aider_installed() and not args.dry_run:
+    if args.model == "mistral-vibe" and not find_vibe_executable() and not args.dry_run:
+        print_err("Mistral Vibe CLI wurde nicht gefunden!")
+        print("   → Installieren in der aktiven Umgebung mit: pip install mistral-vibe")
+        sys.exit(1)
+    
+    if args.model not in ("codex", "mistral-vibe") and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert!")
         print("   → Installieren mit: pip install aider-chat")
         print("   → Mehr Infos: docs/SETUP_AIDER.md")
         sys.exit(1)
 
-    # Modell-Name
+     # Modell-Name
     model_config = MODEL_CONFIGS[args.model]
     model_name = args.model_name or model_config.get("default_model_name", "")
 
