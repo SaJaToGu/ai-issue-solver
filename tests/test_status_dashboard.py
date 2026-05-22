@@ -87,6 +87,7 @@ class StatusDashboardTests(unittest.TestCase):
         self.assertEqual(classify_status("cleanup_successful"), "successful")
         self.assertEqual(classify_status("cleanup_noop"), "noop")
         self.assertEqual(classify_status("rate_limit_deferred"), "failed")
+        self.assertEqual(classify_status("validation_failed"), "failed")
 
     def test_legacy_summary_without_status_is_unknown_not_running(self):
         with tempfile.TemporaryDirectory() as tmpdir:
