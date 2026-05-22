@@ -99,6 +99,17 @@ CLEANUP_STATUS_VALUES = {
 
 
 @dataclass(frozen=True)
+class DashboardIssue:
+    number: str
+    title: str
+    repo: str
+    html_url: str
+    state: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class DashboardRun:
     path: Path
     name: str
@@ -222,6 +233,33 @@ class DashboardGitHubClient:
         if not isinstance(data, dict):
             return False
         return data.get("status") in {"behind", "identical"}
+
+    def get_open_issues(self, repo: str) -> list[dict]:
+        repo_owner = repo_owner_for_url(repo, self.owner) or self.owner
+        repo_name = repo_name_for_url(repo)
+        data = self.get_json(
+            f"{self.repo_api_path(repo)}/issues",
+            state="open",
+            sort="updated",
+            direction="desc",
+            per_page=100,
+        )
+        if not isinstance(data, list):
+            return []
+        # Filter out pull requests
+        return [issue for issue in data if "pull_request" not in issue]
+
+    def get_repos(self) -> list[dict]:
+        data = self.get_json(
+            f"/users/{quote(self.owner, safe='')}/repos",
+            type="owner",
+            sort="updated",
+            direction="desc",
+            per_page=100,
+        )
+        if not isinstance(data, list):
+            return []
+        return [repo for repo in data if not repo.get("archived", False)]
 
 
 def parse_summary(path: Path) -> dict[str, str]:
@@ -536,6 +574,62 @@ def infer_owner_from_runs(runs: list[DashboardRun]) -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+def issue_to_dashboard_issue(issue: dict, repo: str, owner: str | None) -> DashboardIssue:
+    repo_owner = repo_owner_for_url(repo, owner) or owner or ""
+    repo_name = repo_name_for_url(repo)
+    return DashboardIssue(
+        number=str(issue.get("number", "")),
+        title=issue.get("title", ""),
+        repo=repo,
+        html_url=issue.get("html_url", ""),
+        state=issue.get("state", "open"),
+        created_at=issue.get("created_at", ""),
+        updated_at=issue.get("updated_at", ""),
+    )
+
+
+def get_issue_numbers_from_runs(runs: list[DashboardRun]) -> set[str]:
+    """Extract all issue numbers that have runs."""
+    issue_numbers = set()
+    for run in runs:
+        if run.issue_number:
+            issue_numbers.add(run.issue_number)
+    return issue_numbers
+
+
+def find_unstarted_issues(
+    runs: list[DashboardRun],
+    owner: str | None,
+    client: DashboardGitHubClient | None = None,
+) -> list[DashboardIssue]:
+    """Find open issues that don't have corresponding runs yet."""
+    if client is None:
+        return []
+
+    # Get all repos from runs
+    repos_with_runs = {run.repo for run in runs if run.repo}
+    if not repos_with_runs:
+        return []
+
+    # Get issue numbers that already have runs
+    issue_numbers_with_runs = get_issue_numbers_from_runs(runs)
+
+    unstarted: list[DashboardIssue] = []
+    for repo in repos_with_runs:
+        issues = client.get_open_issues(repo)
+        for issue in issues:
+            issue_number = str(issue.get("number", ""))
+            if issue_number not in issue_numbers_with_runs:
+                unstarted.append(issue_to_dashboard_issue(issue, repo, owner))
+
+    # Sort by updated_at descending (most recently updated first)
+    return sorted(
+        unstarted,
+        key=lambda i: i.updated_at if i.updated_at else "",
+        reverse=True,
+    )
 
 
 def repo_name_for_url(repo: str) -> str:
