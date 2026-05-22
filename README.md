@@ -9,6 +9,7 @@
 
 - [Was macht dieses Repo?](#was-macht-dieses-repo)
 - [Repository-Metadaten](#repository-metadaten)
+- [Sprachrichtlinie](#sprachrichtlinie)
 - [Voraussetzungen](#voraussetzungen)
 - [Setup & Installation](#setup--installation)
 - [Workflow im Überblick](#workflow-im-überblick)
@@ -60,6 +61,19 @@ KI-gestützte Issue-Lösung mit Codex oder aider.
 Die versionierbare Referenz für diese Angaben liegt in
 [.github/settings.yml](.github/settings.yml). Falls eine GitHub Settings App im
 Repo aktiv ist, kann sie daraus das About-Feld und die Topics synchronisieren.
+
+---
+
+## Sprachrichtlinie
+
+Dieses Projekt verwendet eine klare Sprachtrennung:
+
+- **🇩🇪 Deutsch** für nutzerzugewandte Dokumentation: README, Workflow-Beschreibungen, Setup-Anleitungen, CLI-Ausgaben
+- **🇬🇧 Englisch** für technische Inhalte: Backlog, Issue-Bodies, Tests, Code-Kommentare, KI-Prompts
+
+Detaillierte Richtlinien finden sich in [docs/LANGUAGE_POLICY.md](docs/LANGUAGE_POLICY.md).
+
+**Begründung:** Benutzerdokumentation bleibt in der Zielsprache (Deutsch), während technische Inhalte für bessere KI-Tool-Kompatibilität auf Englisch bleiben dürfen.
 
 ---
 
@@ -631,7 +645,8 @@ ai-issue-solver/
 │   ├── NEXT_BACKLOG.md          # Nächste Ausbaustufe
 │   ├── WORKFLOW.md              # Detaillierter Workflow
 │   ├── SETUP_AIDER.md           # Aider-Einrichtung
-│   └── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
+│   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
+│   └── LANGUAGE_POLICY.md        # Sprachrichtlinie / Language Policy
 └── tests/
     ├── test_analyze_repos.py    # Analyzer-Tests
     ├── test_github_summary.py   # GitHub-Übersichts-Tests
