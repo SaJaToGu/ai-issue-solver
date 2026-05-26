@@ -101,9 +101,9 @@ MODEL_CONFIGS = {
         "default_model_name": "deepseek-coder:6.7b",
     },
     "mistral-vibe": {
-    "display_name": "Mistral Vibe CLI",
-    "env_key": "MISTRAL_API_KEY",
-    "env_var": "MISTRAL_API_KEY",
+        "display_name": "Mistral Vibe CLI",
+        "env_key": "MISTRAL_API_KEY",
+        "env_var": "MISTRAL_API_KEY",
     },
 }
 
@@ -521,8 +521,26 @@ def find_codex_executable() -> str | None:
     return next((path for path in candidates if path and Path(path).exists()), None)
 
 
-def find_vibe_executable() -> str | None:
-    """Find the Mistral Vibe CLI available in the active environment or PATH."""
+def find_vibe_executable(repo_path: str | None = None) -> str | None:
+    """Find the Mistral Vibe CLI in the active environment, repo venv, or PATH."""
+    candidates = []
+
+    if sys.executable:
+        candidates.append(Path(sys.executable).with_name("vibe"))
+
+    if repo_path:
+        repo_root = Path(repo_path)
+        candidates.extend([
+            repo_root / ".venv" / "bin" / "vibe",
+            repo_root / "venv" / "bin" / "vibe",
+        ])
+
+    candidates.append(Path.home() / ".local" / "bin" / "vibe")
+
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
     return shutil.which("vibe")
 
 def clean_path_candidate(candidate: str) -> str:
@@ -661,7 +679,7 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
 def build_vibe_command(prompt: str, repo_path: str,
                        max_turns: int = 30,
                        output: str = "text") -> list:
-    vibe = find_vibe_executable()
+    vibe = find_vibe_executable(repo_path)
     if not vibe:
         raise FileNotFoundError("vibe")
 
@@ -1995,7 +2013,7 @@ def main():
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
         "--model", choices=list(MODEL_CONFIGS.keys()),
-        help="KI-Modell: codex, claude, openai, mistral oder ollama"
+        help="KI-Modell: codex, mistral-vibe, claude, openai, mistral oder ollama"
     )
     parser.add_argument(
         "--model-name",

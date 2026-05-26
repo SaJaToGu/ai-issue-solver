@@ -120,6 +120,15 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertIn("magistral-small-2509", cmd)
         self.assertNotIn("--defer-codex-rate-limit", cmd)
 
+    def test_build_worker_command_forwards_mistral_vibe(self):
+        args = self.make_args(model="mistral-vibe")
+
+        cmd = build_worker_command(args, IssueJob("demo", 7), Path("scripts/solve_issues.py"))
+
+        self.assertIn("--model", cmd)
+        self.assertIn("mistral-vibe", cmd)
+        self.assertNotIn("--defer-codex-rate-limit", cmd)
+
     def test_build_worker_command_forwards_queued_report_dir(self):
         args = self.make_args(model="codex")
 
