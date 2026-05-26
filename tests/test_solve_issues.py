@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
+    build_opencode_command,
     build_worker_env,
     cleanup_preserved_worktrees,
     create_run_report,
@@ -27,6 +29,7 @@ from solve_issues import (  # noqa: E402
     detect_codex_rate_limit,
     format_git_change_summary,
     format_worker_output_tail,
+    find_opencode_executable,
     git_status_porcelain,
     infer_aider_targets,
     parse_codex_reset_datetime,
@@ -606,6 +609,51 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertEqual(env["MISTRAL_API_KEY"], "real-mistral-key")
         self.assertEqual(env["KEEP"], "1")
+
+    def test_opencode_worker_env_drops_github_write_tokens(self):
+        env = build_worker_env(
+            "opencode",
+            {},
+            base_env={
+                "GITHUB_TOKEN": "github-write-token",
+                "GH_TOKEN": "gh-write-token",
+                "KEEP": "1",
+            },
+        )
+
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertEqual(env["KEEP"], "1")
+
+    def test_find_opencode_executable_uses_repo_venv(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            opencode = Path(tmpdir) / ".venv" / "bin" / "opencode"
+            opencode.parent.mkdir(parents=True)
+            opencode.write_text("#!/bin/sh\n", encoding="utf-8")
+            opencode.chmod(0o755)
+            inactive_python = str(Path(tmpdir) / "bin" / "python")
+
+            with patch("solve_issues.sys.executable", inactive_python):
+                found = find_opencode_executable(tmpdir)
+
+        self.assertEqual(found, str(opencode))
+
+    def test_opencode_command_uses_run_dir_prompt_and_model(self):
+        with patch("solve_issues.find_opencode_executable", return_value="/usr/local/bin/opencode"):
+            cmd = build_opencode_command("Fix issue", "/tmp/repo", model_name="mistral/mistral-small-2603")
+
+        self.assertEqual(cmd[0], "/usr/local/bin/opencode")
+        self.assertIn("run", cmd)
+        self.assertIn("--dir", cmd)
+        self.assertIn("/tmp/repo", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("mistral/mistral-small-2603", cmd)
+        self.assertEqual(cmd[-1], "Fix issue")
+
+    def test_opencode_command_requires_executable(self):
+        with patch("solve_issues.find_opencode_executable", return_value=None):
+            with self.assertRaises(FileNotFoundError):
+                build_opencode_command("Fix issue", "/tmp/repo")
 
 
 class WorkerOutputTests(unittest.TestCase):

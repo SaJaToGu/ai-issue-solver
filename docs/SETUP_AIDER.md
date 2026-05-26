@@ -57,6 +57,22 @@ Mistral/Magistral passt besonders für europäische Sprachen, mehrsprachiges
 Reasoning und Workflows, in denen ein europäischer Anbieter oder
 EU-Souveränitätsaspekte wichtig sind.
 
+### OpenCode CLI
+OpenCode ist kein aider-Backend, sondern ein eigener terminal-nativer Worker,
+der mehrere Provider bündeln kann. Der AI Issue Solver startet OpenCode im
+isolierten Worktree und behält Branch, Commit, Push und PR-Erstellung selbst.
+
+```bash
+# OpenCode nach offizieller Doku installieren und Provider dort konfigurieren.
+curl -fsSL https://opencode.ai/install | bash
+opencode auth login
+
+python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo ai-issue-solver --issue 84
+```
+
+GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
+
 ### Ollama (lokal)
 ```bash
 # Ollama muss laufen: ollama serve

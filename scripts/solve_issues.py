@@ -105,6 +105,11 @@ MODEL_CONFIGS = {
     "env_key": "MISTRAL_API_KEY",
     "env_var": "MISTRAL_API_KEY",
     },
+    "opencode": {
+        "display_name": "OpenCode CLI",
+        "env_key": None,
+        "env_var": None,
+    },
 }
 
 WORKER_OUTPUT_TAIL_LINES = 25
@@ -525,6 +530,30 @@ def find_vibe_executable() -> str | None:
     """Find the Mistral Vibe CLI available in the active environment or PATH."""
     return shutil.which("vibe")
 
+
+def find_opencode_executable(repo_path: str | None = None) -> str | None:
+    """Find the OpenCode CLI in common local install locations or PATH."""
+    candidates = []
+
+    if sys.executable:
+        candidates.append(Path(sys.executable).with_name("opencode"))
+
+    if repo_path:
+        repo_root = Path(repo_path)
+        candidates.extend([
+            repo_root / ".venv" / "bin" / "opencode",
+            repo_root / "venv" / "bin" / "opencode",
+        ])
+
+    candidates.append(Path.home() / ".local" / "bin" / "opencode")
+
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    return shutil.which("opencode")
+
+
 def clean_path_candidate(candidate: str) -> str:
     return candidate.strip().strip(" \t\r\n'\"“”‘’.,;:()[]{}<>")
 
@@ -639,6 +668,10 @@ def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None =
         ollama_host = config.get("OLLAMA_HOST", "http://localhost:11434")
         env["OLLAMA_API_BASE"] = ollama_host
 
+    if model == "opencode":
+        env.pop("GITHUB_TOKEN", None)
+        env.pop("GH_TOKEN", None)
+
     return env
 
 
@@ -673,6 +706,24 @@ def build_vibe_command(prompt: str, repo_path: str,
         "--max-turns", str(max_turns),
         "--output", output,
     ]
+
+
+def build_opencode_command(prompt: str, repo_path: str,
+                           model_name: str | None = None) -> list:
+    opencode = find_opencode_executable(repo_path)
+    if not opencode:
+        raise FileNotFoundError("opencode")
+
+    cmd = [
+        opencode,
+        "run",
+        "--dir", repo_path,
+    ]
+    if model_name:
+        cmd.extend(["--model", model_name])
+    cmd.append(prompt)
+    return cmd
+
 
 def run_worker_command(cmd: list, repo_dir: str, env: dict,
                        run_report: RunReport | None = None) -> WorkerRunResult:
@@ -1757,6 +1808,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         elif model == "mistral-vibe":
             print(f"      🤖 Starte Mistral Vibe ...", flush=True)
             cmd = build_vibe_command(prompt, repo_dir)
+        elif model == "opencode":
+            print(f"      🤖 Starte OpenCode ...", flush=True)
+            cmd = build_opencode_command(prompt, repo_dir, model_name or None)
         else:
             print(f"      🤖 Starte aider ...", flush=True)
             cmd = build_aider_command(model, model_name, prompt, repo_dir)
@@ -1995,7 +2049,7 @@ def main():
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
         "--model", choices=list(MODEL_CONFIGS.keys()),
-        help="KI-Modell: codex, claude, openai, mistral oder ollama"
+        help="KI-Modell: codex, mistral-vibe, opencode, claude, openai, mistral oder ollama"
     )
     parser.add_argument(
         "--model-name",
@@ -2076,8 +2130,13 @@ def main():
         print_err("Mistral Vibe CLI wurde nicht gefunden!")
         print("   → Installieren in der aktiven Umgebung mit: pip install mistral-vibe")
         sys.exit(1)
+
+    if args.model == "opencode" and not find_opencode_executable() and not args.dry_run:
+        print_err("OpenCode CLI wurde nicht gefunden!")
+        print("   → Installieren nach OpenCode-Doku und `opencode` in PATH verfügbar machen")
+        sys.exit(1)
     
-    if args.model not in ("codex", "mistral-vibe") and not check_aider_installed() and not args.dry_run:
+    if args.model not in ("codex", "mistral-vibe", "opencode") and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert!")
         print("   → Installieren mit: pip install aider-chat")
         print("   → Mehr Infos: docs/SETUP_AIDER.md")
