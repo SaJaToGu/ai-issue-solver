@@ -525,15 +525,15 @@ def find_vibe_executable(repo_path: str | None = None) -> str | None:
     """Find the Mistral Vibe CLI in the active environment, repo venv, or PATH."""
     candidates = []
 
-    if sys.executable:
-        candidates.append(Path(sys.executable).with_name("vibe"))
-
     if repo_path:
         repo_root = Path(repo_path)
         candidates.extend([
             repo_root / ".venv" / "bin" / "vibe",
             repo_root / "venv" / "bin" / "vibe",
         ])
+
+    if sys.executable:
+        candidates.append(Path(sys.executable).with_name("vibe"))
 
     candidates.append(Path.home() / ".local" / "bin" / "vibe")
 
