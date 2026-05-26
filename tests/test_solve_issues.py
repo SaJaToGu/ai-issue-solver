@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,11 +21,13 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
+    build_vibe_command,
     build_worker_env,
     cleanup_preserved_worktrees,
     create_run_report,
     create_issue_pull_request,
     detect_codex_rate_limit,
+    find_vibe_executable,
     format_git_change_summary,
     format_worker_output_tail,
     git_status_porcelain,
@@ -606,6 +609,47 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertEqual(env["MISTRAL_API_KEY"], "real-mistral-key")
         self.assertEqual(env["KEEP"], "1")
+
+    def test_mistral_vibe_worker_env_exports_api_key(self):
+        env = build_worker_env(
+            "mistral-vibe",
+            {"MISTRAL_API_KEY": "real-mistral-key"},
+            base_env={"KEEP": "1"},
+        )
+
+        self.assertEqual(env["MISTRAL_API_KEY"], "real-mistral-key")
+        self.assertEqual(env["KEEP"], "1")
+
+    def test_find_vibe_executable_uses_repo_venv(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vibe = Path(tmpdir) / ".venv" / "bin" / "vibe"
+            vibe.parent.mkdir(parents=True)
+            vibe.write_text("#!/bin/sh\n", encoding="utf-8")
+            vibe.chmod(0o755)
+
+            found = find_vibe_executable(tmpdir)
+
+        self.assertEqual(found, str(vibe))
+
+    def test_vibe_command_uses_workdir_prompt_and_limits(self):
+        with patch("solve_issues.find_vibe_executable", return_value="/usr/local/bin/vibe"):
+            cmd = build_vibe_command("Fix issue", "/tmp/repo", max_turns=12, output="json")
+
+        self.assertEqual(cmd[0], "/usr/local/bin/vibe")
+        self.assertIn("--workdir", cmd)
+        self.assertIn("/tmp/repo", cmd)
+        self.assertIn("--trust", cmd)
+        self.assertIn("-p", cmd)
+        self.assertIn("Fix issue", cmd)
+        self.assertIn("--max-turns", cmd)
+        self.assertIn("12", cmd)
+        self.assertIn("--output", cmd)
+        self.assertIn("json", cmd)
+
+    def test_vibe_command_requires_executable(self):
+        with patch("solve_issues.find_vibe_executable", return_value=None):
+            with self.assertRaises(FileNotFoundError):
+                build_vibe_command("Fix issue", "/tmp/repo")
 
 
 class WorkerOutputTests(unittest.TestCase):

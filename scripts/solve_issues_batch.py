@@ -562,7 +562,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model", required=True, choices=list(MODEL_CONFIGS.keys()),
-        help="KI-Modell: codex, claude, openai, mistral oder ollama"
+        help="KI-Modell: codex, mistral-vibe, claude, openai, mistral oder ollama"
     )
     parser.add_argument(
         "--model-name",
