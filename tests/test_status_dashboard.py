@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from status_dashboard import (  # noqa: E402
     DashboardIssue,
+    DashboardRun,
     classify_status,
     cleanup_stale_runs,
     enrich_runs_with_github,
@@ -985,6 +986,193 @@ worker_exit_code:
 
         self.assertEqual(default_result.candidates, [])
         self.assertEqual(len(explicit_result.candidates), 1)
+
+    def test_github_enrichment_marks_failed_run_with_closed_issue_as_superseded(self):
+        """Test that failed runs with closed issues are marked as superseded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-70",
+                """status: clone_failed
+repo: demo
+issue_number: 70
+branch: ai/fix-issue-70
+worker_exit_code: 1
+pr_url:
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                issues={"70": {"state": "closed"}},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+            html = render_dashboard(result.runs, "test-owner", Path(tmpdir) / "status.html")
+
+        self.assertTrue(result.used_github)
+        self.assertEqual(result.runs[0].category, "superseded")
+        self.assertEqual(result.runs[0].lifecycle_label, "Issue closed")
+        self.assertFalse(result.runs[0].lifecycle_needs_attention)
+        self.assertIn("Issue wurde geschlossen", result.runs[0].lifecycle_note)
+        self.assertIn("Superseded", html)
+        self.assertIn("Originaler fehlgeschlagener Run", html)
+
+    def test_github_enrichment_keeps_failed_run_failed_when_issue_is_open(self):
+        """Test that failed runs with open issues remain failed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-71",
+                """status: push_failed
+repo: demo
+issue_number: 71
+branch: ai/fix-issue-71
+worker_exit_code: 1
+pr_url:
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                issues={"71": {"state": "open"}},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+            html = render_dashboard(result.runs, "test-owner", Path(tmpdir) / "status.html")
+
+        self.assertTrue(result.used_github)
+        self.assertEqual(result.runs[0].category, "failed")
+        self.assertEqual(result.runs[0].lifecycle_label, "")
+        self.assertIn("Failed", html)
+        self.assertIn('<span class="badge badge-failed">Failed</span>', html)
+        self.assertIn('<section class="metric metric-superseded"><span>Superseded</span><strong>0</strong></section>', html)
+        self.assertNotIn('<span class="badge badge-superseded">Superseded</span>', html)
+
+    def test_github_enrichment_keeps_failed_run_without_issue_failed(self):
+        """Test that failed runs without issue number remain failed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-72",
+                """status: validation_failed
+repo: demo
+issue_number:
+branch: ai/fix-issue-72
+worker_exit_code: 1
+pr_url:
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient()
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+            html = render_dashboard(result.runs, "test-owner", Path(tmpdir) / "status.html")
+
+        self.assertFalse(result.used_github)
+        self.assertEqual(result.runs[0].category, "failed")
+        self.assertIn("Failed", html)
+        self.assertIn('<span class="badge badge-failed">Failed</span>', html)
+        self.assertIn('<section class="metric metric-superseded"><span>Superseded</span><strong>0</strong></section>', html)
+        self.assertNotIn('<span class="badge badge-superseded">Superseded</span>', html)
+
+    def test_github_enrichment_preserves_recovered_over_superseded_for_failed_runs(self):
+        """Test that recoverable failed runs with closed issues become recovered, not superseded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-73",
+                """status: rate_limit_deferred
+repo: demo
+issue_number: 73
+branch: ai/fix-issue-73
+worker_exit_code: 1
+pr_url:
+preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-73
+""",
+            )
+            pr = {
+                "number": 74,
+                "html_url": "https://github.com/test-owner/demo/pull/74",
+                "state": "closed",
+                "merged_at": "2026-05-21T10:00:00Z",
+                "merge_commit_sha": "recover74",
+                "base": {"ref": "develop"},
+            }
+            client = FakeLifecycleClient(
+                branch_pull_requests={"ai/fix-issue-73": [pr]},
+                issues={"73": {"state": "closed"}},
+            )
+
+            result = enrich_runs_with_github(
+                read_runs(runs_dir),
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
+        # Recoverable failed runs should become "recovered", not "superseded"
+        self.assertEqual(result.runs[0].category, "recovered")
+        self.assertNotEqual(result.runs[0].category, "superseded")
+        self.assertIn("recovered via PR #74", result.runs[0].lifecycle_note)
+
+    def test_render_dashboard_shows_superseded_count(self):
+        """Test that the dashboard shows Superseded count in metrics."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "status-dashboard.html"
+            runs = [
+                DashboardRun(
+                    path=Path("/tmp/run1"),
+                    name="run1",
+                    created_at=datetime(2026, 5, 21, 9, 0, 0),
+                    status="clone_failed",
+                    category="superseded",
+                    repo="demo",
+                    issue_number="75",
+                    issue_title="Test superseded",
+                    branch="ai/fix-75",
+                    base_branch="",
+                    model="",
+                    worker_exit_code="1",
+                    last_activity_at=None,
+                    last_report_update_at=None,
+                    health_status="",
+                    health_reason="",
+                    recovery_hint="",
+                    pr_url="",
+                    preserved_worktree="",
+                    note="",
+                    git_diff_stat="",
+                    output_tail="",
+                    lifecycle_label="Issue closed",
+                    lifecycle_state="issue-closed",
+                    lifecycle_needs_attention=False,
+                    lifecycle_note="Originaler fehlgeschlagener Run; Issue wurde geschlossen",
+                )
+            ]
+
+            html = render_dashboard(runs, "test-owner", output_path)
+
+        self.assertIn("Superseded", html)
+        self.assertIn('<section class="metric metric-superseded">', html)
+        self.assertIn(">1<", html)
 
 
 if __name__ == "__main__":
