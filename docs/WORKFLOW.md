@@ -159,6 +159,11 @@ damit innerhalb eines Laufs nicht zwei Worker denselben Issue-Branch bearbeiten.
 Worker-Ausgaben werden pro Job gesammelt und erst nach Abschluss dieses Jobs
 gedruckt. Wenn ein Worker fehlschlägt, laufen die übrigen Jobs weiter; am Ende
 meldet das Script erfolgreiche und fehlgeschlagene Jobs separat.
+Wenn Codex ein Nachrichtenlimit mit Reset-Zeit meldet, wird der betroffene Job
+als verzögert erfasst und nicht sofort erneut verbrannt. Mit
+`--requeue-rate-limited` schläft der Batch-Runner erst dann bis zur Reset-Zeit,
+wenn keine anderen Jobs mehr verfügbar sind, und legt den verzögerten Job danach
+wieder in die Queue.
 
 Die Run-Reports unter `reports/runs/` können anschließend mit dem lokalen
 Dashboard ausgewertet werden:
@@ -166,3 +171,19 @@ Dashboard ausgewertet werden:
 ```bash
 python scripts/status_dashboard.py
 ```
+
+Für unbeaufsichtigte längere Läufe bündelt `run_overnight.py` die wichtigsten
+Schritte in einem Wrapper: Basis-Branch aktualisieren, Tests ausführen,
+begrenzten Batch-Solver starten, Dashboard regenerieren und eine finale Summary
+mit Log-Pfaden schreiben.
+
+```bash
+python scripts/run_overnight.py --model codex --base-branch develop --workers 2
+python scripts/run_overnight.py --model claude --repo BedBoxDrawerRole --workers 3
+python scripts/run_overnight.py --model codex --issue 23 --issue 24 --dry-run --skip-pull
+```
+
+Die Logs liegen pro Lauf unter `reports/overnight/<timestamp>/`:
+`pull.log`, `tests.log`, `batch.log`, `dashboard.log` und `summary.txt`.
+Wenn Pull oder Tests fehlschlagen, wird der Batch nicht gestartet; Dashboard und
+Summary werden trotzdem geschrieben.

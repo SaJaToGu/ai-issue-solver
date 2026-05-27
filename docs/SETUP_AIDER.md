@@ -28,7 +28,7 @@ aider --version
 
 ---
 
-## Verwendung mit den drei Modellen
+## Verwendung mit den Modellen
 
 ### Claude (Anthropic)
 ```bash
@@ -41,6 +41,51 @@ aider --model claude-sonnet-4-20250514
 export OPENAI_API_KEY=sk-...
 aider --model gpt-4o
 ```
+
+### Mistral AI / Mistral Vibe / Magistral
+Mistral Vibe ist der bevorzugte Mistral-Coding-Worker, wenn die CLI installiert
+ist. Er braucht kein aider:
+
+```bash
+curl -LsSf https://mistral.ai/vibe/install.sh | bash
+# alternativ: uv tool install mistral-vibe
+# alternativ: pip install mistral-vibe
+
+export MISTRAL_API_KEY=...
+python scripts/solve_issues.py --model mistral-vibe
+```
+
+Der aider-basierte Mistral-Modus bleibt verfügbar:
+
+```bash
+export MISTRAL_API_KEY=...
+aider --model mistral/magistral-medium-2509
+```
+
+Der AI Issue Solver verwendet für `--model mistral` standardmäßig
+`magistral-medium-2509`. `--model-name magistral-small-2509` ist möglich,
+falls Magistral Small 1.2 im eigenen Account noch verfügbar ist; die aktuelle
+Mistral-Dokumentation markiert es inzwischen als Legacy/Deprecated und nennt
+`mistral-small-2603` als offene Small-Alternative ausserhalb Magistral.
+Mistral/Magistral passt besonders für europäische Sprachen, mehrsprachiges
+Reasoning und Workflows, in denen ein europäischer Anbieter oder
+EU-Souveränitätsaspekte wichtig sind.
+
+### OpenCode CLI
+OpenCode ist kein aider-Backend, sondern ein eigener terminal-nativer Worker,
+der mehrere Provider bündeln kann. Der AI Issue Solver startet OpenCode im
+isolierten Worktree und behält Branch, Commit, Push und PR-Erstellung selbst.
+
+```bash
+# OpenCode nach offizieller Doku installieren und Provider dort konfigurieren.
+curl -fsSL https://opencode.ai/install | bash
+opencode auth login
+
+python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo ai-issue-solver --issue 84
+```
+
+GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
 
 ### Ollama (lokal)
 ```bash

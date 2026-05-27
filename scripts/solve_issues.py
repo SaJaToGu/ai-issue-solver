@@ -4,17 +4,21 @@ solve_issues.py — Schritt 3: Issues mit KI lösen (Morpheus-Methode)
 Morpheus-Style AI Issue Solver — github.com/SaJaToGu
 
 Holt offene GitHub Issues, übergibt sie an Codex oder `aider` mit dem
-gewählten KI-Modell (Codex / Claude / OpenAI / Ollama), erstellt
+gewählten KI-Worker (Codex / Mistral Vibe / Claude / OpenAI / Mistral / Ollama), erstellt
 einen Branch und einen Commit mit der Lösung.
 
 Verwendung:
     python scripts/solve_issues.py --model codex
     python scripts/solve_issues.py --model claude
     python scripts/solve_issues.py --model openai
+    python scripts/solve_issues.py --model mistral-vibe
+    python scripts/solve_issues.py --model mistral
+    python scripts/solve_issues.py --model mistral --model-name magistral-small-2509
     python scripts/solve_issues.py --model ollama --model-name deepseek-coder:6.7b
     python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
     python scripts/solve_issues.py --model claude --issue 3
     python scripts/solve_issues.py --model claude --dry-run
+
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import json
 import os
 import re
 import shutil
@@ -77,6 +82,15 @@ MODEL_CONFIGS = {
         "env_key": "OPENAI_API_KEY",
         "env_var": "OPENAI_API_KEY",
     },
+    "mistral": {
+        "display_name": "Mistral AI Magistral (magistral-medium-2509)",
+        "aider_flags": [
+            "--model", "mistral/{model_name}",
+        ],
+        "env_key": "MISTRAL_API_KEY",
+        "env_var": "MISTRAL_API_KEY",
+        "default_model_name": "magistral-medium-2509",
+    },
     "ollama": {
         "display_name": "Ollama (lokal)",
         "aider_flags": [
@@ -86,15 +100,36 @@ MODEL_CONFIGS = {
         "env_var": None,
         "default_model_name": "deepseek-coder:6.7b",
     },
+    "mistral-vibe": {
+        "display_name": "Mistral Vibe CLI",
+        "env_key": "MISTRAL_API_KEY",
+        "env_var": "MISTRAL_API_KEY",
+    },
+    "opencode": {
+        "display_name": "OpenCode CLI",
+        "env_key": None,
+        "env_var": None,
+    },
 }
 
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
 RUN_REPORTS_ROOT = Path("reports") / "runs"
+PRESERVED_WORKTREES_ROOT = Path("reports") / "preserved-worktrees"
+PRESERVED_WORKTREE_RETENTION_DAYS = 14
 GIT_SUMMARY_MAX_STATUS_LINES = 20
 GIT_SUMMARY_MAX_STAT_LINES = 12
-GIT_SUMMARY_MAX_DIFF_LINES = 18
+GIT_SUMMARY_STAT_GRAPH_WIDTH = 30
 CODEX_RATE_LIMIT_RETRY_LIMIT = 3
+PRESERVE_WORKTREE_STATUSES = {
+    "nonzero_without_changes",
+    "pr_failed",
+    "pr_failed_from_existing_branch",
+    "push_failed",
+    "rate_limit_deferred",
+    "validation_failed",
+}
+CONFLICT_MARKER_RE = re.compile(r"^\s*(?:<{7}\s|>{7}\s|={7}\s*$)")
 COMMON_REPO_FILES = {
     ".dockerignore",
     ".env.example",
@@ -144,12 +179,24 @@ WORKER_NOISY_OUTPUT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+WORKER_NOISY_FRAGMENT_RE = re.compile(
+    r"("
+    r"^\s*[+-]?\s*[A-Za-z_]\w*\s*:\s*[A-Za-z_][\w\[\], .|\"']*\s*=\s*"
+    r"|^\s*[+]?\s*f\.write\("
+    r"|^\s*[+-]?\s*(?:self\.)?assert[A-Za-z_]*\("
+    r"|^\s*[A-Za-z_][\w.\[\]0-9]*\)$"
+    r"|^\s*\"[^\"]+\"\s*:\s*$"
+    r"|^\s*[\"'][^\"']+[\"']\)?[,]?\s*$"
+    r")",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
 class WorkerRunResult:
     returncode: int
     output: str
+    last_activity_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -160,10 +207,17 @@ class WorkerAssessment:
 
 
 @dataclass(frozen=True)
+class WorkerValidation:
+    ok: bool
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RunReport:
     path: Path
     repo: str
     issue_number: int
+    issue_title: str
     branch: str
     model: str
 
@@ -410,8 +464,68 @@ class GitHubClient:
 # Aider Integration
 # ─────────────────────────────────────────────────────────────
 
+# Bekannte Projektverzeichnisse, in denen Dateien bevorzugt werden
+KNOWN_PROJECT_DIRS = frozenset({"scripts", "tests", "src", "lib", "app", "config", "docs"})
+
+
+def find_aider_executable() -> str | None:
+    """Find the aider executable, checking venv-local paths first, then PATH.
+
+    Suchreihenfolge:
+    1. .venv/bin/aider (wenn aktueller Python in .venv ist)
+    2. venv/bin/aider (Standard-Venv-Pfad)
+    3. <python_prefix>/bin/aider (für die aktuelle Python-Umgebung)
+    4. PATH via shutil.which()
+
+    Returns:
+        Pfad zum aider-Executable oder None
+    """
+    candidates = []
+
+    # Prüfe ob aktueller Python aus einem venv kommt
+    python_executable = sys.executable
+    if python_executable:
+        python_path = Path(python_executable).resolve()
+        # .venv/bin/python -> .venv/bin/aider
+        venv_bin = python_path.parent
+        if venv_bin.exists() and venv_bin.name == "bin":
+            venv_path = venv_bin.parent
+            if venv_path.name in ("venv", ".venv"):
+                aider_path = venv_bin / "aider"
+                if aider_path.exists():
+                    return str(aider_path)
+                candidates.append(str(aider_path))
+
+    # Standard venv Pfade
+    for venv_name in (".venv", "venv"):
+        venv_path = Path.cwd() / venv_name
+        aider_path = venv_path / "bin" / "aider"
+        if aider_path.exists():
+            return str(aider_path)
+        candidates.append(str(aider_path))
+
+    # Prüfe site-packages Pfad der aktuellen Python-Umgebung
+    try:
+        import site
+        for site_path in site.getsitepackages() + site.getusersitepackages():
+            aider_path = Path(site_path).parent / "bin" / "aider"
+            if aider_path.exists():
+                return str(aider_path)
+            candidates.append(str(aider_path))
+    except Exception:
+        pass
+
+    # PATH
+    path_aider = shutil.which("aider")
+    if path_aider:
+        return path_aider
+
+    return None
+
+
 def check_aider_installed() -> bool:
-    return shutil.which("aider") is not None
+    """Prüfe ob aider verfügbar ist (inkl. venv-lokaler Installation)."""
+    return find_aider_executable() is not None
 
 
 def find_codex_executable() -> str | None:
@@ -421,6 +535,52 @@ def find_codex_executable() -> str | None:
         "/Applications/Codex.app/Contents/Resources/codex",
     ]
     return next((path for path in candidates if path and Path(path).exists()), None)
+
+
+def find_vibe_executable(repo_path: str | None = None) -> str | None:
+    """Find the Mistral Vibe CLI in the active environment, repo venv, or PATH."""
+    candidates = []
+
+    if repo_path:
+        repo_root = Path(repo_path)
+        candidates.extend([
+            repo_root / ".venv" / "bin" / "vibe",
+            repo_root / "venv" / "bin" / "vibe",
+        ])
+
+    if sys.executable:
+        candidates.append(Path(sys.executable).with_name("vibe"))
+
+    candidates.append(Path.home() / ".local" / "bin" / "vibe")
+
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    return shutil.which("vibe")
+
+
+def find_opencode_executable(repo_path: str | None = None) -> str | None:
+    """Find the OpenCode CLI in common local install locations or PATH."""
+    candidates = []
+
+    if sys.executable:
+        candidates.append(Path(sys.executable).with_name("opencode"))
+
+    if repo_path:
+        repo_root = Path(repo_path)
+        candidates.extend([
+            repo_root / ".venv" / "bin" / "opencode",
+            repo_root / "venv" / "bin" / "opencode",
+        ])
+
+    candidates.append(Path.home() / ".local" / "bin" / "opencode")
+
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    return shutil.which("opencode")
 
 
 def clean_path_candidate(candidate: str) -> str:
@@ -524,6 +684,26 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
     return cmd
 
 
+def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Erzeugt die Worker-Umgebung und validiert provider-spezifische Pflichtwerte."""
+    env = dict(base_env if base_env is not None else os.environ)
+    model_config = MODEL_CONFIGS[model]
+    env_key = model_config.get("env_key")
+    if env_key:
+        api_key = require_config_value(config, env_key)
+        env[model_config["env_var"]] = api_key
+
+    if model == "ollama":
+        ollama_host = config.get("OLLAMA_HOST", "http://localhost:11434")
+        env["OLLAMA_API_BASE"] = ollama_host
+
+    if model == "opencode":
+        env.pop("GITHUB_TOKEN", None)
+        env.pop("GH_TOKEN", None)
+
+    return env
+
+
 def build_codex_command(prompt: str, repo_path: str, model_name: str | None = None) -> list:
     codex = find_codex_executable()
     if not codex:
@@ -540,8 +720,42 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
     cmd.append(prompt)
     return cmd
 
+def build_vibe_command(prompt: str, repo_path: str,
+                       max_turns: int = 30,
+                       output: str = "text") -> list:
+    vibe = find_vibe_executable(repo_path)
+    if not vibe:
+        raise FileNotFoundError("vibe")
 
-def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
+    return [
+        vibe,
+        "--workdir", repo_path,
+        "--trust",
+        "-p", prompt,
+        "--max-turns", str(max_turns),
+        "--output", output,
+    ]
+
+
+def build_opencode_command(prompt: str, repo_path: str,
+                           model_name: str | None = None) -> list:
+    opencode = find_opencode_executable(repo_path)
+    if not opencode:
+        raise FileNotFoundError("opencode")
+
+    cmd = [
+        opencode,
+        "run",
+        "--dir", repo_path,
+    ]
+    if model_name:
+        cmd.extend(["--model", model_name])
+    cmd.append(prompt)
+    return cmd
+
+
+def run_worker_command(cmd: list, repo_dir: str, env: dict,
+                       run_report: RunReport | None = None) -> WorkerRunResult:
     """Fuehrt den KI-Worker aus, zeigt verdichteten Output und haelt Rohdaten fest."""
     try:
         process = subprocess.Popen(
@@ -559,11 +773,15 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
 
     output_parts = []
     suppressed_lines = 0
+    last_activity_at = datetime.now()
     if process.stdout:
         for line in process.stdout:
             output_parts.append(line)
             if should_surface_worker_line(line):
                 print(f"        | {line}", end="")
+                last_activity_at = datetime.now()
+                if run_report:
+                    write_run_health(run_report, "".join(output_parts), last_activity_at)
             else:
                 suppressed_lines += 1
         process.stdout.close()
@@ -573,6 +791,7 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict) -> WorkerRunResult:
     return WorkerRunResult(
         returncode=process.wait(),
         output="".join(output_parts),
+        last_activity_at=last_activity_at,
     )
 
 
@@ -582,6 +801,8 @@ def should_surface_worker_line(line: str) -> bool:
     if not stripped:
         return False
     if WORKER_NOISY_OUTPUT_RE.search(stripped):
+        return False
+    if WORKER_NOISY_FRAGMENT_RE.search(stripped):
         return False
     return bool(WORKER_LIVE_OUTPUT_RE.search(stripped))
 
@@ -637,7 +858,7 @@ def pluralize_de(count: int, singular: str, plural: str) -> str:
     return singular if count == 1 else plural
 
 
-def format_untracked_file_stats(repo_dir: str, status_lines: list[str]) -> tuple[list[str], int]:
+def format_untracked_file_stats(repo_dir: str, status_lines: list[str]) -> tuple[list[tuple[str, int]], int]:
     repo_root = Path(repo_dir)
     stats = []
     insertions = 0
@@ -650,42 +871,36 @@ def format_untracked_file_stats(repo_dir: str, status_lines: list[str]) -> tuple
             continue
         line_count = count_file_lines(path)
         insertions += line_count
-        pluses = "+" * min(max(line_count, 1), 30)
-        stats.append(f"{relative_path} | {line_count} {pluses}")
+        stats.append((relative_path, line_count))
     return stats, insertions
 
 
-def format_git_diff_preview(repo_dir: str, status_lines: list[str]) -> list[str]:
-    preview_lines = []
-    diff = git_output(
-        repo_dir,
-        ["diff", "--unified=3", "--no-ext-diff", "HEAD", "--"],
-    )
-    for line in diff.splitlines():
-        if line.startswith("index "):
+def format_untracked_diff_stat_lines(untracked_stats: list[tuple[str, int]],
+                                     path_width: int = 0) -> list[str]:
+    if not untracked_stats:
+        return []
+    path_width = max(path_width, max(len(path) for path, _line_count in untracked_stats))
+    lines = []
+    for relative_path, line_count in untracked_stats:
+        pluses = "+" * min(max(line_count, 1), GIT_SUMMARY_STAT_GRAPH_WIDTH)
+        lines.append(f"{relative_path:<{path_width}} | {line_count:>3} {pluses}")
+    return lines
+
+
+def normalize_diff_stat_lines(stat_lines: list[str],
+                              untracked_stats: list[tuple[str, int]]) -> list[str]:
+    file_lines = []
+    summary_lines = []
+    path_width = 0
+    for line in stat_lines:
+        if "|" not in line:
+            summary_lines.append(line)
             continue
-        preview_lines.append(line)
-        if len(preview_lines) >= GIT_SUMMARY_MAX_DIFF_LINES:
-            break
+        path_width = max(path_width, len(line.split("|", 1)[0].rstrip()))
+        file_lines.append(line)
 
-    if len(preview_lines) < GIT_SUMMARY_MAX_DIFF_LINES:
-        for status_line in status_lines:
-            if not status_line.startswith("?? "):
-                continue
-            relative_path = status_line[3:]
-            path = Path(repo_dir) / relative_path
-            if not path.is_file():
-                continue
-            line_count = count_file_lines(path)
-            preview_lines.append(f"diff --git a/{relative_path} b/{relative_path}")
-            preview_lines.append(
-                f"new file, {line_count} "
-                f"{pluralize_de(line_count, 'eingefuegte Zeile', 'eingefuegte Zeilen')}"
-            )
-            if len(preview_lines) >= GIT_SUMMARY_MAX_DIFF_LINES:
-                break
-
-    return preview_lines
+    untracked_lines = format_untracked_diff_stat_lines(untracked_stats, path_width)
+    return file_lines + untracked_lines + summary_lines
 
 
 def format_git_change_summary(repo_dir: str, git_status: str | None = None) -> list[str]:
@@ -695,58 +910,37 @@ def format_git_change_summary(repo_dir: str, git_status: str | None = None) -> l
         return []
 
     summary = ["Git-Änderungsübersicht:"]
-    summary.append(f"  Dateien geändert: {len(status_lines)}")
-    changed_paths = changed_status_paths(status_lines)
-    if changed_paths:
-        summary.append("  Dateien:")
-        for path in changed_paths[:GIT_SUMMARY_MAX_STATUS_LINES]:
-            summary.append(f"    {path}")
-        if len(changed_paths) > GIT_SUMMARY_MAX_STATUS_LINES:
-            summary.append(
-                f"    ... {len(changed_paths) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
-            )
-
-    shortstat = git_output(repo_dir, ["diff", "--shortstat", "HEAD", "--"])
     untracked_stats, untracked_insertions = format_untracked_file_stats(
         repo_dir,
         status_lines,
     )
-    if shortstat:
-        summary.append(f"  Statistik: {shortstat}")
+    stat = git_output(repo_dir, ["diff", "--stat", "HEAD", "--"])
+    stat_lines = normalize_diff_stat_lines(
+        [line for line in stat.splitlines() if line.strip()],
+        untracked_stats,
+    )
+    if stat_lines:
+        for line in stat_lines[:GIT_SUMMARY_MAX_STAT_LINES]:
+            summary.append(f"  {line}")
+        if len(stat_lines) > GIT_SUMMARY_MAX_STAT_LINES:
+            summary.append(
+                f"  ... {len(stat_lines) - GIT_SUMMARY_MAX_STAT_LINES} weitere Stat-Zeilen"
+            )
+    else:
+        changed_paths = changed_status_paths(status_lines)
+        for path in changed_paths[:GIT_SUMMARY_MAX_STATUS_LINES]:
+            summary.append(f"  {path}")
+        if len(changed_paths) > GIT_SUMMARY_MAX_STATUS_LINES:
+            summary.append(
+                f"  ... {len(changed_paths) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
+            )
+
     if untracked_insertions:
         summary.append(
-            f"  Neue Dateien: {len(untracked_stats)} "
+            f"  {len(untracked_stats)} neue "
             f"{pluralize_de(len(untracked_stats), 'Datei', 'Dateien')}, "
             f"{untracked_insertions} "
             f"{pluralize_de(untracked_insertions, 'eingefuegte Zeile', 'eingefuegte Zeilen')}"
-        )
-
-    stat = git_output(repo_dir, ["diff", "--stat", "HEAD", "--"])
-    stat_lines = [line for line in stat.splitlines() if line.strip()]
-    stat_lines.extend(untracked_stats)
-    if stat_lines:
-        summary.append("  Diff-Stat:")
-        for line in stat_lines[:GIT_SUMMARY_MAX_STAT_LINES]:
-            summary.append(f"    {line}")
-        if len(stat_lines) > GIT_SUMMARY_MAX_STAT_LINES:
-            summary.append(
-                f"    ... {len(stat_lines) - GIT_SUMMARY_MAX_STAT_LINES} weitere Stat-Zeilen"
-            )
-
-    preview_lines = format_git_diff_preview(repo_dir, status_lines)
-    if preview_lines:
-        summary.append("  Diff-Vorschau:")
-        for line in preview_lines:
-            summary.append(f"    {line}")
-        if len(preview_lines) == GIT_SUMMARY_MAX_DIFF_LINES:
-            summary.append("    ... Diff-Vorschau gekuerzt")
-
-    summary.append("  Status:")
-    for line in status_lines[:GIT_SUMMARY_MAX_STATUS_LINES]:
-        summary.append(f"    {line}")
-    if len(status_lines) > GIT_SUMMARY_MAX_STATUS_LINES:
-        summary.append(
-            f"    ... {len(status_lines) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
         )
     return summary
 
@@ -761,25 +955,171 @@ def safe_run_repo_name(repo: str) -> str:
 
 
 def create_run_report(repo: str, issue_number: int, branch: str, model: str,
-                      now_fn=datetime.now) -> RunReport | None:
-    timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
-    run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
+                      now_fn=datetime.now,
+                      issue_title: str = "",
+                      run_dir: Path | str | None = None) -> RunReport | None:
+    if run_dir is None:
+        timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
+        run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
+        exist_ok = False
+    else:
+        run_dir = Path(run_dir)
+        exist_ok = True
     try:
-        run_dir.mkdir(parents=True, exist_ok=False)
+        run_dir.mkdir(parents=True, exist_ok=exist_ok)
     except OSError as exc:
         print_warn(f"Run-Report konnte nicht angelegt werden: {exc}")
         return None
-    return RunReport(run_dir, repo, issue_number, branch, model)
+    return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
+
+
+def write_run_health(report: RunReport, output: str = "",
+                     last_activity_at: datetime | None = None,
+                     status: str = "running") -> None:
+    """Speichert leichte Health-Daten, ohne den eigentlichen Summary-Report umzubauen."""
+    last_activity_at = last_activity_at or datetime.now()
+    tail = format_worker_output_tail(output)
+    payload = {
+        "status": status,
+        "last_activity_at": last_activity_at.isoformat(timespec="seconds"),
+        "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
+        "output_tail": tail,
+    }
+    try:
+        (report.path / "health.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        if tail:
+            (report.path / "output-tail.log").write_text(tail + "\n", encoding="utf-8")
+    except OSError as exc:
+        print_warn(f"Run-Health konnte nicht gespeichert werden: {exc}")
+
+
+def preserved_worktree_cleanup_command(retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS) -> str:
+    return (
+        "python scripts/solve_issues.py --cleanup-preserved-worktrees "
+        f"--retention-days {retention_days}"
+    )
+
+
+def preserved_worktree_recovery_note(path: Path, branch: str, base_branch: str | None = None) -> str:
+    diff_base = f"origin/{base_branch}...HEAD" if base_branch else "origin/main...HEAD"
+    return "\n".join([
+        "Manuelle Recovery:",
+        f"  cd {path}",
+        "  git status --short",
+        f"  git diff --stat {diff_base}",
+        f"  git push origin HEAD:{branch}",
+        "  # Danach PR manuell erstellen oder den Solver erneut starten.",
+    ])
+
+
+def write_preserved_worktree_readme(path: Path, repo: str, issue_number: int,
+                                    branch: str, status: str,
+                                    base_branch: str | None = None) -> None:
+    content = "\n".join([
+        "# Preserved AI Solver Worktree",
+        "",
+        f"- Repository: `{repo}`",
+        f"- Issue: `#{issue_number}`",
+        f"- Branch: `{branch}`",
+        f"- Failure status: `{status}`",
+        "",
+        preserved_worktree_recovery_note(path, branch, base_branch),
+        "",
+        "Aufraeumen:",
+        "",
+        f"```bash\n{preserved_worktree_cleanup_command()}\n```",
+        "",
+    ])
+    (path / "RECOVERY.md").write_text(content, encoding="utf-8")
+
+
+def sanitize_preserved_remote(repo_dir: Path, owner: str, repo: str) -> None:
+    public_url = f"https://github.com/{owner}/{repo}.git"
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", public_url],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "--unset-all", "remote.origin.pushurl"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+
+
+def unique_preserved_worktree_path(report: RunReport, repo: str) -> Path:
+    base = PRESERVED_WORKTREES_ROOT / report.path.name / safe_run_repo_name(repo)
+    candidate = base
+    suffix = 2
+    while candidate.exists():
+        candidate = base.with_name(f"{base.name}-{suffix}")
+        suffix += 1
+    return candidate
+
+
+def worktree_has_recoverable_changes(repo_dir: str, base_branch: str) -> bool:
+    return bool(git_status_porcelain(repo_dir).strip()) or branch_has_changes_against_base(
+        repo_dir, base_branch
+    )
+
+
+def should_preserve_worktree(status: str, repo_dir: str, base_branch: str,
+                             changes_exist: bool = False) -> bool:
+    if status not in PRESERVE_WORKTREE_STATUSES:
+        return False
+    return changes_exist or worktree_has_recoverable_changes(repo_dir, base_branch)
+
+
+def preserve_worker_worktree(repo_dir: str, report: RunReport, owner: str, repo: str,
+                             issue_number: int, branch: str, status: str,
+                             base_branch: str) -> Path | None:
+    source = Path(repo_dir)
+    if not source.exists():
+        return None
+
+    destination = unique_preserved_worktree_path(report, repo)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        sanitize_preserved_remote(source, owner, repo)
+        shutil.move(str(source), str(destination))
+    except (OSError, shutil.Error) as exc:
+        print_warn(f"Worktree konnte nicht gesichert werden: {exc}")
+        return None
+
+    try:
+        write_preserved_worktree_readme(
+            destination,
+            repo=repo,
+            issue_number=issue_number,
+            branch=branch,
+            status=status,
+            base_branch=base_branch,
+        )
+    except OSError as exc:
+        print_warn(f"Recovery-Hinweis konnte nicht geschrieben werden: {exc}")
+    print_warn(f"Worktree fuer Recovery gesichert: {destination}")
+    return destination
 
 
 def write_run_report(report: RunReport, status: str,
                      worker_result: WorkerRunResult | None = None,
                      pr_url: str | None = None,
-                     note: str | None = None) -> Path | None:
+                     note: str | None = None,
+                     preserved_worktree_path: Path | str | None = None,
+                     base_branch: str | None = None,
+                     git_change_summary: list[str] | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
+    last_activity_at = worker_result.last_activity_at if worker_result else None
     pr_value = pr_url or ""
+    preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
+    cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
 
     try:
         if worker_result is not None:
@@ -787,21 +1127,56 @@ def write_run_report(report: RunReport, status: str,
         if output_tail:
             (report.path / "output-tail.log").write_text(output_tail + "\n", encoding="utf-8")
 
+        metadata = {
+            "status": status,
+            "selected_repo": report.repo,
+            "repo": report.repo,
+            "issue_number": report.issue_number,
+            "issue": report.issue_number,
+            "issue_title": report.issue_title,
+            "branch": report.branch,
+            "model": report.model,
+            "worker_exit_code": worker_exit_code,
+            "last_activity_at": last_activity_at.isoformat(timespec="seconds") if last_activity_at else "",
+            "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
+            "pr_url": pr_value,
+            "note": note or "",
+            "preserved_worktree": preserved_value,
+            "cleanup_command": cleanup_command,
+            "git_change_summary": git_change_summary or [],
+        }
+        (report.path / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
         summary_lines = [
             f"status: {status}",
             f"selected_repo: {report.repo}",
             f"repo: {report.repo}",
             f"issue_number: {report.issue_number}",
             f"issue: {report.issue_number}",
+            f"issue_title: {report.issue_title}",
             f"branch: {report.branch}",
             f"model: {report.model}",
             f"worker_exit_code: {worker_exit_code}",
+            f"last_activity_at: {last_activity_at.isoformat(timespec='seconds') if last_activity_at else ''}",
+            f"last_report_update_at: {datetime.now().isoformat(timespec='seconds')}",
             f"pr_url: {pr_value}",
+            f"preserved_worktree: {preserved_value}",
         ]
+        if cleanup_command:
+            summary_lines.append(f"cleanup_command: {cleanup_command}")
+            summary_lines.extend([
+                "",
+                preserved_worktree_recovery_note(Path(preserved_value), report.branch, base_branch),
+            ])
         if note:
             summary_lines.extend(["", f"note: {note}"])
         if worker_result is not None:
             summary_lines.extend(["", "Der vollstaendige Worker-Output liegt in worker-output.log."])
+        if git_change_summary:
+            summary_lines.extend(["", "git_diff_stat:", *git_change_summary])
         if output_tail:
             summary_lines.extend(["", "output_tail:", output_tail])
 
@@ -817,12 +1192,93 @@ def write_run_report(report: RunReport, status: str,
 
 def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: int,
                              model: str, branch: str = "",
+                             issue_title: str = "",
                              pr_url: str | None = None,
                              status: str = "worker_finished") -> Path | None:
-    report = create_run_report(repo, issue_number, branch, model)
+    report = create_run_report(repo, issue_number, branch, model, issue_title=issue_title)
     if not report:
         return None
     return write_run_report(report, status, worker_result=result, pr_url=pr_url)
+
+
+def cleanup_preserved_worktrees(root: Path = PRESERVED_WORKTREES_ROOT,
+                                retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS,
+                                dry_run: bool = True,
+                                now_fn=time.time) -> list[Path]:
+    if not root.exists():
+        return []
+
+    cutoff = now_fn() - max(retention_days, 0) * 24 * 60 * 60
+    stale_paths: list[Path] = []
+    for path in sorted(item for item in root.iterdir() if item.is_dir()):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime <= cutoff:
+            stale_paths.append(path)
+            if not dry_run:
+                shutil.rmtree(path)
+    return stale_paths
+
+
+
+def changed_paths_from_status(git_status: str) -> list[Path]:
+    paths: list[Path] = []
+    for line in git_status.splitlines():
+        if len(line) < 4:
+            continue
+        path_text = line[3:].strip()
+        if " -> " in path_text:
+            path_text = path_text.rsplit(" -> ", 1)[1]
+        path_text = path_text.strip('"')
+        if path_text:
+            paths.append(Path(path_text))
+    return paths
+
+
+def conflict_marker_line(path: Path) -> int | None:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if CONFLICT_MARKER_RE.match(line.rstrip("\n")):
+                    return line_number
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def validate_worker_changes(repo_dir: str, git_status: str | None = None) -> WorkerValidation:
+    status = git_status if git_status is not None else git_status_porcelain(repo_dir)
+    repo_root = Path(repo_dir)
+    errors: list[str] = []
+    changed_paths = changed_paths_from_status(status)
+
+    for relative_path in changed_paths:
+        path = repo_root / relative_path
+        if not path.is_file():
+            continue
+        marker_line = conflict_marker_line(path)
+        if marker_line is not None:
+            errors.append(f"{relative_path}:{marker_line}: enthaelt Git-Konfliktmarker")
+
+    python_files = [
+        str(repo_root / relative_path)
+        for relative_path in changed_paths
+        if relative_path.suffix == ".py" and (repo_root / relative_path).is_file()
+    ]
+    if python_files:
+        result = subprocess.run(
+            [sys.executable, "-m", "py_compile", *python_files],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            first_line = (result.stderr or result.stdout).strip().splitlines()[0]
+            errors.append(f"Python-Syntaxpruefung fehlgeschlagen: {first_line[:240]}")
+
+    return WorkerValidation(ok=not errors, errors=tuple(errors))
 
 
 def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAssessment:
@@ -894,7 +1350,10 @@ def format_worker_output_tail(output: str) -> str:
     if not cleaned:
         return ""
 
-    tail = "\n".join(cleaned.splitlines()[-WORKER_OUTPUT_TAIL_LINES:])
+    lines = cleaned.splitlines()
+    surfaced_lines = [line for line in lines if should_surface_worker_line(line)]
+    tail_lines = surfaced_lines[-WORKER_OUTPUT_TAIL_LINES:] if surfaced_lines else lines[-WORKER_OUTPUT_TAIL_LINES:]
+    tail = "\n".join(tail_lines)
     if len(tail) > WORKER_OUTPUT_TAIL_CHARS:
         tail = tail[-WORKER_OUTPUT_TAIL_CHARS:]
         return f"...\n{tail}"
@@ -1240,7 +1699,9 @@ def create_issue_pull_request(client: GitHubClient, repo: str, number: int, titl
 def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 model: str, model_name: str, config: dict,
                 token: str, dry_run: bool, base_branch: str,
-                close_issues: bool) -> bool:
+                close_issues: bool,
+                defer_codex_rate_limit: bool = False,
+                run_report_dir: Path | str | None = None) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -1265,9 +1726,17 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
     recovery_plan = plan_branch_recovery(client, repo, number, default_branch_name)
     print_branch_recovery_plan(recovery_plan)
-    run_report = create_run_report(repo, number, recovery_plan.branch, model)
+    run_report = create_run_report(
+        repo,
+        number,
+        recovery_plan.branch,
+        model,
+        issue_title=title,
+        run_dir=run_report_dir,
+    )
     if run_report:
         write_run_report(run_report, "started")
+        write_run_health(run_report, status="running")
         print(f"      Run-Report: {run_report.path}")
     if recovery_plan.action.startswith("skip"):
         if recovery_plan.pull_request and recovery_plan.pull_request.html_url:
@@ -1282,7 +1751,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         return True
 
     # Repo klonen
-    with tempfile.TemporaryDirectory(prefix="ai-solver-") as tmpdir:
+    tmpdir = tempfile.mkdtemp(prefix="ai-solver-")
+    preserved_worktree: Path | None = None
+    try:
         repo_dir = os.path.join(tmpdir, repo)
         print(f"      📥 Klone {repo} ...", end=" ", flush=True)
 
@@ -1303,6 +1774,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     write_run_report(run_report, "checkout_failed")
                 return False
             if branch_has_changes_against_base(repo_dir, base_branch):
+                git_status = git_status_porcelain(repo_dir)
+                git_change_summary = format_git_change_summary(repo_dir, git_status)
                 print(
                     "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
                     "erstelle fehlenden PR."
@@ -1319,11 +1792,31 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     close_issues=close_issues,
                     dry_run=dry_run,
                 )
+                status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
+                if not pr and run_report and should_preserve_worktree(
+                    status,
+                    repo_dir,
+                    base_branch,
+                    changes_exist=True,
+                ):
+                    preserved_worktree = preserve_worker_worktree(
+                        repo_dir=repo_dir,
+                        report=run_report,
+                        owner=config["owner"],
+                        repo=repo,
+                        issue_number=number,
+                        branch=branch_name,
+                        status=status,
+                        base_branch=base_branch,
+                    )
                 if run_report:
                     write_run_report(
                         run_report,
-                        "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch",
+                        status,
                         pr_url=pr.get("html_url") if pr else None,
+                        preserved_worktree_path=preserved_worktree,
+                        base_branch=base_branch,
+                        git_change_summary=git_change_summary,
                     )
                 return bool(pr)
         elif not create_branch(repo_dir, branch_name):
@@ -1339,38 +1832,54 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             body=body or "(kein Beschreibungstext)"
         )
 
-        # API-Key setzen
-        env = os.environ.copy()
-        env_key = MODEL_CONFIGS[model]["env_key"]
-        if env_key:
-            api_key = require_config_value(config["config"], env_key)
-            env[MODEL_CONFIGS[model]["env_var"]] = api_key
-
-        if model == "ollama":
-            ollama_host = config["config"].get("OLLAMA_HOST", "http://localhost:11434")
-            env["OLLAMA_API_BASE"] = ollama_host
+        # API-Key bzw. lokale Endpoint-Variablen setzen
+        env = build_worker_env(model, config["config"])
 
         # KI-Worker ausführen
         if model == "codex":
             print(f"      🤖 Starte Codex ...", flush=True)
             cmd = build_codex_command(prompt, repo_dir, model_name or None)
+        elif model == "mistral-vibe":
+            print(f"      🤖 Starte Mistral Vibe ...", flush=True)
+            cmd = build_vibe_command(prompt, repo_dir)
+        elif model == "opencode":
+            print(f"      🤖 Starte OpenCode ...", flush=True)
+            cmd = build_opencode_command(prompt, repo_dir, model_name or None)
         else:
             print(f"      🤖 Starte aider ...", flush=True)
             cmd = build_aider_command(model, model_name, prompt, repo_dir)
 
         rate_limit_retries = 0
+        rate_limit_deferred_note = None
         diagnostic_outputs = []
         while True:
-            result = run_worker_command(cmd, repo_dir, env)
+            result = run_worker_command(cmd, repo_dir, env, run_report=run_report)
             diagnostic_outputs.append(result.output)
             rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
             if not rate_limit:
                 break
+            if defer_codex_rate_limit:
+                if rate_limit.reset_text:
+                    print_warn(
+                        "Codex-Rate-Limit erreicht; "
+                        f"Batch-Runner soll nach {rate_limit.reset_text} neu einplanen"
+                    )
+                else:
+                    print_warn(
+                        "Codex-Rate-Limit erreicht; "
+                        "Batch-Runner soll diesen Job verzögern"
+                    )
+                break
             if not rate_limit.reset_at:
+                rate_limit_deferred_note = "Codex-Rate-Limit ohne verwertbare Reset-Zeit"
                 sleep_until_codex_reset(rate_limit)
                 break
             rate_limit_retries += 1
             if rate_limit_retries > CODEX_RATE_LIMIT_RETRY_LIMIT:
+                rate_limit_deferred_note = (
+                    f"Codex-Rate-Limit nach {CODEX_RATE_LIMIT_RETRY_LIMIT} "
+                    "Retries weiter aktiv"
+                )
                 print_warn("Codex-Rate-Limit wurde mehrfach erreicht; breche dieses Issue ab")
                 break
             sleep_until_codex_reset(rate_limit)
@@ -1384,15 +1893,100 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             diagnostic_result = WorkerRunResult(result.returncode, combined_output)
 
         git_status = git_status_porcelain(repo_dir)
-        print_git_change_summary(repo_dir, git_status)
+        git_change_summary = format_git_change_summary(repo_dir, git_status)
+        for line in git_change_summary:
+            print(f"      {line}")
         assessment = assess_worker_result(result, git_status)
         print_worker_assessment(result, assessment)
-        if not assessment.should_continue:
+        if rate_limit_deferred_note:
+            status = "rate_limit_deferred"
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
             if run_report:
                 write_run_report(
                     run_report,
-                    assessment.reason,
+                    status,
                     worker_result=diagnostic_result,
+                    note=rate_limit_deferred_note,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
+                )
+            return False
+        if not assessment.should_continue:
+            status = assessment.reason
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
+            if run_report:
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
+                )
+            return False
+
+        validation = validate_worker_changes(repo_dir, git_status)
+        if not validation.ok:
+            print_warn("Worker-Validierung fehlgeschlagen; erstelle keinen Commit und keinen PR")
+            for error in validation.errors[:5]:
+                print(f"      {error}")
+            status = "validation_failed"
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
+            if run_report:
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    note="; ".join(validation.errors),
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
                 )
             return False
 
@@ -1404,11 +1998,31 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         if not pushed:
             print_warn("Push fehlgeschlagen oder keine Änderungen")
+            status = "push_failed"
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
             if run_report:
                 write_run_report(
                     run_report,
-                    "push_failed",
+                    status,
                     worker_result=diagnostic_result,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
                 )
             return False
         print("✅")
@@ -1425,14 +2039,36 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             close_issues=close_issues,
             dry_run=dry_run,
         )
+        status = "pr_created" if pr else "pr_failed"
+        if not pr and run_report and should_preserve_worktree(
+            status,
+            repo_dir,
+            base_branch,
+            changes_exist=assessment.has_changes,
+        ):
+            preserved_worktree = preserve_worker_worktree(
+                repo_dir=repo_dir,
+                report=run_report,
+                owner=config["owner"],
+                repo=repo,
+                issue_number=number,
+                branch=branch_name,
+                status=status,
+                base_branch=base_branch,
+            )
         if run_report:
             write_run_report(
                 run_report,
-                "pr_created" if pr else "pr_failed",
+                status,
                 worker_result=diagnostic_result,
                 pr_url=pr.get("html_url") if pr else None,
+                preserved_worktree_path=preserved_worktree,
+                base_branch=base_branch,
+                git_change_summary=git_change_summary,
             )
         return bool(pr)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     return True
 
@@ -1446,12 +2082,15 @@ def main():
 
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
-        "--model", required=True, choices=["codex", "claude", "openai", "ollama"],
-        help="KI-Modell: codex, claude, openai oder ollama"
+        "--model", choices=list(MODEL_CONFIGS.keys()),
+        help="KI-Modell: codex, mistral-vibe, opencode, claude, openai, mistral oder ollama"
     )
     parser.add_argument(
         "--model-name",
-        help="Spezifisches Modell (für Codex optional, für Ollama z.B. 'deepseek-coder:6.7b')"
+        help=(
+            "Spezifisches Modell (für Codex optional, für Mistral z.B. "
+            "'magistral-small-2509', für Ollama z.B. 'deepseek-coder:6.7b')"
+        )
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
@@ -1466,7 +2105,44 @@ def main():
         action="store_true",
         help="Issues nach PR-Erstellung direkt schließen",
     )
+    parser.add_argument(
+        "--defer-codex-rate-limit",
+        action="store_true",
+        help="Bei Codex-Rate-Limits nicht schlafen; Batch-Runner kann den Job verzögern",
+    )
+    parser.add_argument(
+        "--run-report-dir",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--cleanup-preserved-worktrees",
+        action="store_true",
+        help="Alte gesicherte Recovery-Worktrees unter reports/preserved-worktrees aufraeumen",
+    )
+    parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=PRESERVED_WORKTREE_RETENTION_DAYS,
+        help=f"Aufbewahrung fuer gesicherte Worktrees in Tagen (Default: {PRESERVED_WORKTREE_RETENTION_DAYS})",
+    )
     args = parser.parse_args()
+
+    if args.cleanup_preserved_worktrees:
+        stale_paths = cleanup_preserved_worktrees(
+            retention_days=args.retention_days,
+            dry_run=args.dry_run,
+        )
+        action = "Wuerde loeschen" if args.dry_run else "Geloescht"
+        if not stale_paths:
+            print("   Keine alten gesicherten Worktrees gefunden.")
+        for path in stale_paths:
+            print(f"   {action}: {path}")
+        if args.dry_run and stale_paths:
+            print("   Ohne --dry-run ausfuehren, um diese Worktrees zu loeschen.")
+        return
+
+    if not args.model:
+        parser.error("--model ist erforderlich, ausser bei --cleanup-preserved-worktrees")
 
     if requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")
@@ -1484,13 +2160,23 @@ def main():
         print("   → Codex Desktop App installieren oder `codex` in PATH verfügbar machen")
         sys.exit(1)
 
-    if args.model != "codex" and not check_aider_installed() and not args.dry_run:
+    if args.model == "mistral-vibe" and not find_vibe_executable() and not args.dry_run:
+        print_err("Mistral Vibe CLI wurde nicht gefunden!")
+        print("   → Installieren in der aktiven Umgebung mit: pip install mistral-vibe")
+        sys.exit(1)
+
+    if args.model == "opencode" and not find_opencode_executable() and not args.dry_run:
+        print_err("OpenCode CLI wurde nicht gefunden!")
+        print("   → Installieren nach OpenCode-Doku und `opencode` in PATH verfügbar machen")
+        sys.exit(1)
+
+    if args.model not in ("codex", "mistral-vibe", "opencode") and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert!")
         print("   → Installieren mit: pip install aider-chat")
         print("   → Mehr Infos: docs/SETUP_AIDER.md")
         sys.exit(1)
 
-    # Modell-Name
+     # Modell-Name
     model_config = MODEL_CONFIGS[args.model]
     model_name = args.model_name or model_config.get("default_model_name", "")
 
@@ -1556,6 +2242,8 @@ def main():
                 dry_run=args.dry_run,
                 base_branch=base_branch,
                 close_issues=args.close_issues,
+                defer_codex_rate_limit=args.defer_codex_rate_limit,
+                run_report_dir=args.run_report_dir,
             )
             if ok:
                 solved += 1

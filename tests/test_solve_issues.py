@@ -1,12 +1,14 @@
 import contextlib
 from datetime import datetime
 import io
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,20 +21,29 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
+    build_opencode_command,
+    build_vibe_command,
+    build_worker_env,
+    cleanup_preserved_worktrees,
     create_run_report,
     create_issue_pull_request,
     detect_codex_rate_limit,
+    find_vibe_executable,
     format_git_change_summary,
     format_worker_output_tail,
+    find_opencode_executable,
     git_status_porcelain,
     infer_aider_targets,
     parse_codex_reset_datetime,
     plan_branch_recovery,
     print_branch_recovery_plan,
+    preserve_worker_worktree,
     retry_branch_name,
     run_worker_command,
+    should_preserve_worktree,
     should_surface_worker_line,
     sleep_until_codex_reset,
+    validate_worker_changes,
     solve_issue,
     write_run_report,
     write_worker_diagnostics,
@@ -453,6 +464,39 @@ class WorkerAssessmentTests(unittest.TestCase):
         self.assertEqual(assessment.reason, "nonzero_without_changes")
 
 
+
+class WorkerValidationTests(unittest.TestCase):
+    def test_validation_detects_conflict_marker(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "README.md"
+            path.write_text("<<<<<<< HEAD\nbroken\n=======\nother\n>>>>>>> branch\n", encoding="utf-8")
+
+            validation = validate_worker_changes(tmpdir, " M README.md\n")
+
+        self.assertFalse(validation.ok)
+        self.assertIn("Git-Konfliktmarker", validation.errors[0])
+
+    def test_validation_detects_python_syntax_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broken.py"
+            path.write_text("def broken(:\n    pass\n", encoding="utf-8")
+
+            validation = validate_worker_changes(tmpdir, " M broken.py\n")
+
+        self.assertFalse(validation.ok)
+        self.assertIn("Python-Syntaxpruefung fehlgeschlagen", validation.errors[0])
+
+    def test_validation_accepts_valid_python_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "ok.py"
+            path.write_text("print('ok')\n", encoding="utf-8")
+
+            validation = validate_worker_changes(tmpdir, " M ok.py\n")
+
+        self.assertTrue(validation.ok)
+        self.assertEqual(validation.errors, ())
+
+
 class CodexRateLimitTests(unittest.TestCase):
     def test_detects_codex_rate_limit_and_parses_reset_time(self):
         output = (
@@ -526,6 +570,134 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn("ollama/llama3.2:3b", cmd)
         self.assertEqual(cmd[-1], "src/app.py")
 
+    def test_mistral_command_uses_default_magistral_model(self):
+        cmd = build_aider_command(
+            "mistral",
+            "magistral-medium-2509",
+            "Fix",
+            "/tmp/repo",
+            file_targets=[],
+        )
+
+        self.assertIn("--model", cmd)
+        self.assertIn("mistral/magistral-medium-2509", cmd)
+
+    def test_mistral_command_allows_model_name_override(self):
+        cmd = build_aider_command(
+            "mistral",
+            "magistral-small-2509",
+            "Fix",
+            "/tmp/repo",
+            file_targets=[],
+        )
+
+        self.assertIn("mistral/magistral-small-2509", cmd)
+
+    def test_mistral_worker_env_requires_api_key(self):
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit) as raised:
+            build_worker_env("mistral", {"MISTRAL_API_KEY": "sk-DEIN_KEY_HIER"}, base_env={})
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("MISTRAL_API_KEY fehlt", printed.getvalue())
+
+    def test_mistral_worker_env_exports_api_key(self):
+        env = build_worker_env(
+            "mistral",
+            {"MISTRAL_API_KEY": "real-mistral-key"},
+            base_env={"KEEP": "1"},
+        )
+
+        self.assertEqual(env["MISTRAL_API_KEY"], "real-mistral-key")
+        self.assertEqual(env["KEEP"], "1")
+
+    def test_mistral_vibe_worker_env_exports_api_key(self):
+        env = build_worker_env(
+            "mistral-vibe",
+            {"MISTRAL_API_KEY": "real-mistral-key"},
+            base_env={"KEEP": "1"},
+        )
+
+        self.assertEqual(env["MISTRAL_API_KEY"], "real-mistral-key")
+        self.assertEqual(env["KEEP"], "1")
+
+    def test_find_vibe_executable_uses_repo_venv(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vibe = Path(tmpdir) / ".venv" / "bin" / "vibe"
+            vibe.parent.mkdir(parents=True)
+            vibe.write_text("#!/bin/sh\n", encoding="utf-8")
+            vibe.chmod(0o755)
+
+            found = find_vibe_executable(tmpdir)
+
+        self.assertEqual(found, str(vibe))
+
+    def test_vibe_command_uses_workdir_prompt_and_limits(self):
+        with patch("solve_issues.find_vibe_executable", return_value="/usr/local/bin/vibe"):
+            cmd = build_vibe_command("Fix issue", "/tmp/repo", max_turns=12, output="json")
+
+        self.assertEqual(cmd[0], "/usr/local/bin/vibe")
+        self.assertIn("--workdir", cmd)
+        self.assertIn("/tmp/repo", cmd)
+        self.assertIn("--trust", cmd)
+        self.assertIn("-p", cmd)
+        self.assertIn("Fix issue", cmd)
+        self.assertIn("--max-turns", cmd)
+        self.assertIn("12", cmd)
+        self.assertIn("--output", cmd)
+        self.assertIn("json", cmd)
+
+    def test_vibe_command_requires_executable(self):
+        with patch("solve_issues.find_vibe_executable", return_value=None):
+            with self.assertRaises(FileNotFoundError):
+                build_vibe_command("Fix issue", "/tmp/repo")
+
+    def test_opencode_worker_env_drops_github_write_tokens(self):
+        env = build_worker_env(
+            "opencode",
+            {},
+            base_env={
+                "GITHUB_TOKEN": "github-write-token",
+                "GH_TOKEN": "gh-write-token",
+                "KEEP": "1",
+            },
+        )
+
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertEqual(env["KEEP"], "1")
+
+    def test_find_opencode_executable_uses_repo_venv(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            opencode = Path(tmpdir) / ".venv" / "bin" / "opencode"
+            opencode.parent.mkdir(parents=True)
+            opencode.write_text("#!/bin/sh\n", encoding="utf-8")
+            opencode.chmod(0o755)
+            inactive_python = str(Path(tmpdir) / "bin" / "python")
+
+            with patch("solve_issues.sys.executable", inactive_python):
+                found = find_opencode_executable(tmpdir)
+
+        self.assertEqual(found, str(opencode))
+
+    def test_opencode_command_uses_run_dir_prompt_and_model(self):
+        with patch("solve_issues.find_opencode_executable", return_value="/usr/local/bin/opencode"):
+            cmd = build_opencode_command("Fix issue", "/tmp/repo", model_name="mistral/mistral-small-2603")
+
+        self.assertEqual(cmd[0], "/usr/local/bin/opencode")
+        self.assertIn("run", cmd)
+        self.assertIn("--dir", cmd)
+        self.assertIn("/tmp/repo", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("mistral/mistral-small-2603", cmd)
+        self.assertEqual(cmd[-1], "Fix issue")
+
+    def test_opencode_command_requires_executable(self):
+        with patch("solve_issues.find_opencode_executable", return_value=None):
+            with self.assertRaises(FileNotFoundError):
+                build_opencode_command("Fix issue", "/tmp/repo")
+
 
 class WorkerOutputTests(unittest.TestCase):
     def test_output_tail_uses_last_lines(self):
@@ -564,6 +736,42 @@ class WorkerOutputTests(unittest.TestCase):
         self.assertTrue(should_surface_worker_line("WARNING: test command failed\n"))
         self.assertFalse(should_surface_worker_line("+print('implementation detail')\n"))
         self.assertFalse(should_surface_worker_line("@@ -1,2 +1,3 @@\n"))
+
+    def test_worker_live_filter_hides_aider_mistral_patch_fragments(self):
+        noisy_lines = [
+            '-    error: str = ""',
+            '+        f.write("            <th>Repo</th>\\n")',
+            '"https://github.com/test-owner/demo/issues/7")',
+            'result.runs[0].lifecycle_note)',
+            '"test-owner|demo|44|ai/fix-issue-44|https://github.com/test-owner/demo/pull/44":',
+            'self.assertIn("test-owner", links["issue"])',
+        ]
+
+        for line in noisy_lines:
+            with self.subTest(line=line):
+                self.assertFalse(should_surface_worker_line(line))
+
+    def test_worker_output_tail_prefers_compact_useful_lines(self):
+        output = "\n".join(
+            [
+                'Plan: update dashboard rendering',
+                '-    error: str = ""',
+                '+        f.write("            <th>Repo</th>\\n")',
+                'self.assertIn("test-owner", links["issue"])',
+                'WARNING: tests failed, retrying',
+                '"test-owner|demo|44|ai/fix-issue-44|https://github.com/test-owner/demo/pull/44":',
+                'Final result: PR ready',
+            ]
+        )
+
+        tail = format_worker_output_tail(output)
+
+        self.assertIn("Plan: update dashboard rendering", tail)
+        self.assertIn("WARNING: tests failed, retrying", tail)
+        self.assertIn("Final result: PR ready", tail)
+        self.assertNotIn("f.write", tail)
+        self.assertNotIn("test-owner|demo|44", tail)
+        self.assertNotIn("self.assertIn", tail)
 
     def test_run_worker_preserves_full_output_while_printing_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -715,7 +923,7 @@ class GitStatusTests(unittest.TestCase):
 
             self.assertTrue(branch_has_changes_against_base(tmpdir, "main"))
 
-    def test_git_change_summary_contains_status_and_diff_stat(self):
+    def test_git_change_summary_uses_diff_stat_table(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             subprocess.run(["git", "init"], cwd=tmpdir, check=True, capture_output=True)
             subprocess.run(
@@ -745,12 +953,24 @@ class GitStatusTests(unittest.TestCase):
             summary = "\n".join(format_git_change_summary(tmpdir))
 
         self.assertIn("Git-Änderungsübersicht", summary)
-        self.assertIn("README.md", summary)
-        self.assertIn("notes.txt", summary)
-        self.assertIn("Statistik:", summary)
-        self.assertIn("Neue Dateien: 1 Datei, 1 eingefuegte Zeile", summary)
-        self.assertIn("Diff-Vorschau:", summary)
-        self.assertIn("new file, 1 eingefuegte Zeile", summary)
+        self.assertRegex(summary, r"README\.md\s+\|\s+1 \+")
+        self.assertRegex(summary, r"notes\.txt\s+\|\s+1 \+")
+        self.assertIn("1 neue Datei, 1 eingefuegte Zeile", summary)
+        self.assertNotIn("Diff-Vorschau:", summary)
+        self.assertNotIn("Status:", summary)
+
+    def test_git_change_summary_truncates_large_diff_stat(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(["git", "init"], cwd=tmpdir, check=True, capture_output=True)
+            for index in range(15):
+                Path(tmpdir, f"file-{index:02d}.txt").write_text("new\n", encoding="utf-8")
+            git_status = "\n".join(f"?? file-{index:02d}.txt" for index in range(15))
+
+            summary = "\n".join(format_git_change_summary(tmpdir, git_status))
+
+        self.assertIn("file-00.txt", summary)
+        self.assertNotIn("file-14.txt", summary)
+        self.assertIn("... 3 weitere Stat-Zeilen", summary)
 
     def test_worker_diagnostics_write_full_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -782,6 +1002,7 @@ class GitStatusTests(unittest.TestCase):
                     issue_number=24,
                     branch="ai/fix-issue-24",
                     model="codex",
+                    issue_title="Show issue titles in the status dashboard",
                     now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7, 123456),
                 )
                 run_dir = write_run_report(
@@ -792,10 +1013,15 @@ class GitStatusTests(unittest.TestCase):
                         "\n".join(f"line {index}" for index in range(40)) + "\n",
                     ),
                     pr_url="https://github.com/test-owner/demo/pull/24",
+                    git_change_summary=[
+                        "Git-Änderungsübersicht:",
+                        "  README.md | 1 +",
+                    ],
                 )
                 run_dir = Path(run_dir).resolve()
                 summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
                 tail = (run_dir / "output-tail.log").read_text(encoding="utf-8")
+                metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
             finally:
                 os.chdir(old_cwd)
 
@@ -804,11 +1030,23 @@ class GitStatusTests(unittest.TestCase):
         self.assertIn("repo: demo/repo", summary)
         self.assertIn("issue_number: 24", summary)
         self.assertIn("issue: 24", summary)
+        self.assertIn("issue_title: Show issue titles in the status dashboard", summary)
         self.assertIn("branch: ai/fix-issue-24", summary)
         self.assertIn("model: codex", summary)
         self.assertIn("worker_exit_code: 0", summary)
         self.assertIn("pr_url: https://github.com/test-owner/demo/pull/24", summary)
+        self.assertIn("preserved_worktree: \n", summary)
+        self.assertIn("git_diff_stat:", summary)
+        self.assertIn("README.md | 1 +", summary)
         self.assertIn("output_tail:", summary)
+        self.assertEqual(metadata["git_change_summary"], [
+            "Git-Änderungsübersicht:",
+            "  README.md | 1 +",
+        ])
+        self.assertEqual(metadata["status"], "pr_created")
+        self.assertEqual(metadata["repo"], "demo/repo")
+        self.assertEqual(metadata["issue_title"], "Show issue titles in the status dashboard")
+        self.assertEqual(metadata["preserved_worktree"], "")
         self.assertNotIn("line 0", tail)
         self.assertIn("line 39", tail)
 
@@ -834,6 +1072,142 @@ class GitStatusTests(unittest.TestCase):
         self.assertIn("worker_exit_code: \n", summary)
         self.assertIn("note: base_branch: main", summary)
         self.assertFalse((run_dir / "worker-output.log").exists())
+
+    def test_run_report_records_preserved_worktree_and_recovery_command(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                report = create_run_report(
+                    repo="demo",
+                    issue_number=46,
+                    branch="ai/fix-issue-46",
+                    model="codex",
+                    now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+                )
+                preserved = Path(tmpdir) / "reports" / "preserved-worktrees" / "demo"
+                run_dir = write_run_report(
+                    report,
+                    "push_failed",
+                    preserved_worktree_path=preserved,
+                    base_branch="main",
+                )
+                run_dir = Path(run_dir).resolve()
+                summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
+                metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertIn(f"preserved_worktree: {preserved}", summary)
+        self.assertIn("cleanup_command: python scripts/solve_issues.py --cleanup-preserved-worktrees", summary)
+        self.assertIn("git push origin HEAD:ai/fix-issue-46", summary)
+        self.assertEqual(metadata["preserved_worktree"], str(preserved))
+
+    def test_preserve_worker_worktree_moves_clone_and_sanitizes_remote(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                repo_dir = Path(tmpdir) / "tmp-clone" / "demo"
+                repo_dir.mkdir(parents=True)
+                subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+                subprocess.run(
+                    ["git", "remote", "add", "origin", "https://secret-token@github.com/test-owner/demo.git"],
+                    cwd=repo_dir,
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "config", "remote.origin.pushurl", "https://push-token@github.com/test-owner/demo.git"],
+                    cwd=repo_dir,
+                    check=True,
+                    capture_output=True,
+                )
+                (repo_dir / "README.md").write_text("change\n", encoding="utf-8")
+                report = create_run_report(
+                    repo="demo",
+                    issue_number=46,
+                    branch="ai/fix-issue-46",
+                    model="codex",
+                    now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+                )
+
+                preserved = preserve_worker_worktree(
+                    repo_dir=str(repo_dir),
+                    report=report,
+                    owner="test-owner",
+                    repo="demo",
+                    issue_number=46,
+                    branch="ai/fix-issue-46",
+                    status="push_failed",
+                    base_branch="main",
+                )
+                self.assertIsNotNone(preserved)
+                self.assertFalse(repo_dir.exists())
+                self.assertTrue((preserved / "README.md").exists())
+                self.assertTrue((preserved / "RECOVERY.md").exists())
+                remote = subprocess.run(
+                    ["git", "remote", "get-url", "origin"],
+                    cwd=preserved,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                pushurl = subprocess.run(
+                    ["git", "config", "--get", "remote.origin.pushurl"],
+                    cwd=preserved,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(remote, "https://github.com/test-owner/demo.git")
+        self.assertNotIn("secret-token", remote)
+        self.assertEqual(pushurl.returncode, 1)
+        self.assertNotIn("push-token", pushurl.stdout + pushurl.stderr)
+
+    def test_should_preserve_worktree_detects_committed_branch_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "main"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "ai/fix-issue-46"], cwd=repo, check=True, capture_output=True)
+            (repo / "README.md").write_text("base\nchange\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-am", "fix"], cwd=repo, check=True, capture_output=True)
+
+            preserve = should_preserve_worktree(
+                "nonzero_without_changes",
+                str(repo),
+                "main",
+            )
+
+        self.assertTrue(preserve)
+
+    def test_cleanup_preserved_worktrees_deletes_only_expired_dirs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "preserved"
+            old_path = root / "old"
+            fresh_path = root / "fresh"
+            old_path.mkdir(parents=True)
+            fresh_path.mkdir()
+            os.utime(old_path, (1000, 1000))
+            os.utime(fresh_path, (99_000, 99_000))
+
+            stale = cleanup_preserved_worktrees(
+                root=root,
+                retention_days=1,
+                dry_run=False,
+                now_fn=lambda: 100_000,
+            )
+            self.assertEqual(stale, [old_path])
+            self.assertFalse(old_path.exists())
+            self.assertTrue(fresh_path.exists())
 
 
 if __name__ == "__main__":
