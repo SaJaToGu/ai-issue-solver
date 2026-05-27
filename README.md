@@ -239,6 +239,27 @@ werden nur mit `--apply --confirm-create` erstellt. Importierte Issues erhalten
 einen stabilen Marker im Body, damit offene RepoLens-Issues nicht doppelt
 angelegt werden.
 
+RepoLens-Audits sollten getrennt vom Solver laufen. Der Solver braucht
+GitHub-Write-Zugriff fuer Branches und PRs; RepoLens bekommt diesen Zugriff
+nicht automatisch. Fuer lokale Audits gibt es einen Docker-Wrapper mit
+read-only Projektmount und separatem Report-Mount:
+
+```bash
+scripts/run_repolens_docker.sh \
+  --project-dir /path/to/repo \
+  --report-dir /path/to/repo/reports/repolens \
+  --domain security \
+  --network none \
+  --cpus 2 \
+  --memory 4g
+```
+
+Der Wrapper mountet das Projekt als `/project:ro` und schreibt Reports nach
+`/reports`. Er reicht keine `.env`, kein `GITHUB_TOKEN` und keine GitHub-Write-
+Credentials in den Container. Falls ein RepoLens-Agent Provider-Zugriff braucht,
+wird Netzwerk bewusst ueber `--network bridge` oder ein anderes Docker-Netzwerk
+aktiviert; fuer lokale Analysen bleibt `--network none` die sichere Vorgabe.
+
 ---
 
 ### `solve_issues.py`
@@ -675,6 +696,7 @@ ai-issue-solver/
 │   ├── import_repolens_results.py # RepoLens-Reports als Issues importieren
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
 │   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
+│   ├── run_repolens_docker.sh   # RepoLens in Docker-Sandbox ausfuehren
 │   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
 │   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
 │   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
