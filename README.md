@@ -127,6 +127,7 @@ geben sichere Hinweise aus, ohne Secret-Werte im Terminal anzuzeigen.
 
 ```bash
 python scripts/solve_issues.py --model codex     # Codex CLI
+python scripts/solve_issues.py --model opencode  # OpenCode CLI
 python scripts/solve_issues.py --model mistral-vibe  # Mistral Vibe CLI
 python scripts/solve_issues.py --model claude    # Anthropic Claude
 python scripts/solve_issues.py --model openai    # OpenAI GPT-4
@@ -231,10 +232,11 @@ als Dry-Run.
 ---
 
 ### `solve_issues.py`
-Löst offene Issues automatisch mit KI + Codex, Mistral Vibe oder aider.
+Löst offene Issues automatisch mit KI + Codex, Mistral Vibe, OpenCode oder aider.
 
 ```bash
 python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model mistral-vibe --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model mistral --repo BedBoxDrawerRole
@@ -310,7 +312,7 @@ Dateiargumente. Pfade werden vorab gegen das Repo validiert, damit keine
 externen oder ungültigen Pfade an aider durchgereicht werden.
 
 **Flags:**
-- `--model` — `codex`, `mistral-vibe`, `claude`, `openai`, `mistral` oder `ollama`
+- `--model` — `codex`, `mistral-vibe`, `opencode`, `claude`, `openai`, `mistral` oder `ollama`
 - `--model-name` — spezifisches Modell, z.B. für Codex, Mistral oder Ollama
 - `--dry-run` — zeigt Plan ohne Änderungen
 - `--issue` — nur ein bestimmtes Issue lösen
@@ -575,6 +577,24 @@ Ein **Personal Access Token (PAT)** ist dein persönlicher API-Schlüssel für G
 ### OpenAI
 1. API-Key holen: https://platform.openai.com/api-keys
 2. In `.env` eintragen: `OPENAI_API_KEY=sk-...`
+
+### OpenCode
+OpenCode kann als terminal-nativer Worker verschiedene Provider bündeln. Der
+AI Issue Solver nutzt OpenCode nur im isolierten Worktree; Branch, Commit, Push
+und PR bleiben beim Wrapper.
+
+```bash
+# OpenCode nach offizieller Doku installieren und Provider dort konfigurieren.
+curl -fsSL https://opencode.ai/install | bash
+opencode auth login
+
+python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo ai-issue-solver --issue 84
+```
+
+Der Solver sucht `opencode` in der aktiven Umgebung, in `.venv/bin` bzw.
+`venv/bin` des Arbeitsbaums, in `~/.local/bin` und danach auf `PATH`.
+GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
 
 ### Mistral AI / Mistral Vibe / Magistral
 1. API-Key holen: https://console.mistral.ai/
