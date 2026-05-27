@@ -20,6 +20,7 @@ from solve_issues_batch import (  # noqa: E402
     dedupe_issue_jobs,
     discover_issue_jobs,
     finalize_unclaimed_queued_report,
+    run_issue_job_with_optional_fallback,
     run_issue_job,
     run_issue_jobs,
 )
@@ -49,6 +50,8 @@ class BatchRunnerTests(unittest.TestCase):
             "base_branch": None,
             "dry_run": False,
             "close_issues": False,
+            "fallback_model": None,
+            "fallback_model_name": None,
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -153,6 +156,23 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertIn("--run-report-dir", cmd)
         self.assertIn("reports/runs/queued-demo", cmd)
 
+    def test_build_worker_command_can_override_fallback_model(self):
+        args = self.make_args(model="codex", model_name="")
+
+        cmd = build_worker_command(
+            args,
+            IssueJob("demo", 7),
+            Path("scripts/solve_issues.py"),
+            model="mistral",
+            model_name="magistral-medium-2509",
+        )
+
+        self.assertIn("--model", cmd)
+        self.assertIn("mistral", cmd)
+        self.assertIn("--model-name", cmd)
+        self.assertIn("magistral-medium-2509", cmd)
+        self.assertNotIn("--defer-codex-rate-limit", cmd)
+
     def test_create_queued_run_report_writes_lightweight_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             report = create_queued_run_report(
@@ -174,6 +194,83 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertIn("queued_at: 2026-05-21T09:08:07", summary)
         self.assertEqual(metadata["status"], "queued")
         self.assertEqual(metadata["base_branch"], "main")
+
+    def test_codex_rate_limit_can_run_explicit_fallback_model(self):
+        args = self.make_args(
+            model="codex",
+            fallback_model="mistral",
+            fallback_model_name="magistral-medium-2509",
+        )
+        calls = []
+
+        def run_job(job, cmd, project_root, env, **kwargs):
+            calls.append(cmd)
+            if len(calls) == 1:
+                return IssueJobResult(
+                    job,
+                    1,
+                    "Your rate limit will be reset on May 20, 2026, at 1:36 AM.\n",
+                    1.0,
+                )
+            return IssueJobResult(job, 0, "fallback solved\n", 2.0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_queued_run_report(
+                IssueJob("demo", 7),
+                "codex",
+                now_fn=lambda: datetime(2026, 5, 21, 9, 8, 7),
+                reports_root=Path(tmpdir) / "runs",
+            )
+
+            result = run_issue_job_with_optional_fallback(
+                IssueJob("demo", 7),
+                args,
+                Path("scripts/solve_issues.py"),
+                Path(tmpdir),
+                {},
+                report,
+                health_timeout_seconds=60,
+                unhealthy_action="warn",
+                detect_rate_limit_fn=lambda output: object() if "rate limit" in output.lower() else None,
+                run_issue_job_fn=run_job,
+            )
+            summary = (report.path / "summary.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.fallback_from, "codex")
+        self.assertEqual(result.actual_model, "mistral")
+        self.assertIn("[batch-fallback]", result.output)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("codex", calls[0])
+        self.assertIn("mistral", calls[1])
+        self.assertIn("magistral-medium-2509", calls[1])
+        self.assertIn("fallback_from: codex", summary)
+        self.assertIn("actual_model: mistral", summary)
+
+    def test_fallback_does_not_run_for_non_rate_limit_failure(self):
+        args = self.make_args(model="codex", fallback_model="mistral")
+        calls = []
+
+        def run_job(job, cmd, project_root, env, **kwargs):
+            calls.append(cmd)
+            return IssueJobResult(job, 1, "tests failed\n", 1.0)
+
+        result = run_issue_job_with_optional_fallback(
+            IssueJob("demo", 7),
+            args,
+            Path("scripts/solve_issues.py"),
+            Path("."),
+            {},
+            None,
+            health_timeout_seconds=60,
+            unhealthy_action="warn",
+            detect_rate_limit_fn=lambda output: None,
+            run_issue_job_fn=run_job,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIsNone(result.fallback_from)
+        self.assertEqual(len(calls), 1)
 
     def test_finalize_unclaimed_queued_report_replaces_stale_queue_status(self):
         with tempfile.TemporaryDirectory() as tmpdir:

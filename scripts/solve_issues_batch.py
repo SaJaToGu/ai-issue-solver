@@ -70,6 +70,9 @@ class IssueJobResult:
     delayed_reset_text: str | None = None
     unhealthy: bool = False
     unhealthy_reason: str | None = None
+    requested_model: str | None = None
+    actual_model: str | None = None
+    fallback_from: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -131,12 +134,16 @@ def discover_issue_jobs(client: GitHubClient, repos: list[str],
 
 def build_worker_command(args: argparse.Namespace, job: IssueJob,
                          solve_script: Path,
-                         run_report_dir: Path | None = None) -> list[str]:
+                         run_report_dir: Path | None = None,
+                         model: str | None = None,
+                         model_name: str | None = None) -> list[str]:
+    selected_model = model or args.model
+    selected_model_name = args.model_name if model_name is None else model_name
     cmd = [
         sys.executable,
         str(solve_script),
         "--model",
-        args.model,
+        selected_model,
         "--repo",
         job.repo,
         "--issue",
@@ -145,15 +152,15 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
         args.label,
     ]
 
-    if args.model_name:
-        cmd.extend(["--model-name", args.model_name])
+    if selected_model_name:
+        cmd.extend(["--model-name", selected_model_name])
     if args.base_branch:
         cmd.extend(["--base-branch", args.base_branch])
     if args.dry_run:
         cmd.append("--dry-run")
     if args.close_issues:
         cmd.append("--close-issues")
-    if args.model == "codex":
+    if selected_model == "codex":
         cmd.append("--defer-codex-rate-limit")
     if run_report_dir:
         cmd.extend(["--run-report-dir", str(run_report_dir)])
@@ -291,6 +298,38 @@ def finalize_unclaimed_queued_report(report: QueuedRunReport,
     return report.path
 
 
+def annotate_fallback_run_report(run_dir: Path, requested_model: str, actual_model: str) -> None:
+    note = f"Fallback verwendet: {requested_model} -> {actual_model}"
+    summary_path = run_dir / "summary.txt"
+    metadata_path = run_dir / "metadata.json"
+    try:
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["requested_model"] = requested_model
+            metadata["actual_model"] = actual_model
+            metadata["fallback_from"] = requested_model
+            existing_note = str(metadata.get("note") or "")
+            metadata["note"] = f"{existing_note} {note}".strip()
+            metadata_path.write_text(
+                json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        if summary_path.exists():
+            summary = summary_path.read_text(encoding="utf-8")
+            additions = [
+                f"requested_model: {requested_model}",
+                f"actual_model: {actual_model}",
+                f"fallback_from: {requested_model}",
+                f"note: {note}",
+            ]
+            for line in additions:
+                if line not in summary:
+                    summary += line + "\n"
+            summary_path.write_text(summary, encoding="utf-8")
+    except (OSError, json.JSONDecodeError) as exc:
+        print_warn(f"Fallback-Info konnte nicht im Run-Report vermerkt werden: {exc}")
+
+
 def resolve_batch_base_branches(client: GitHubClient, repos: list[str],
                                 requested_base: str | None) -> dict[str, str]:
     base_branches: dict[str, str] = {}
@@ -406,6 +445,8 @@ def run_issue_job(job: IssueJob, cmd: list[str], project_root: Path,
 def mark_rate_limited_result(result: IssueJobResult, detect_rate_limit_fn) -> IssueJobResult:
     if result.returncode == 0:
         return result
+    if result.fallback_from:
+        return result
 
     rate_limit = detect_rate_limit_fn(result.output)
     if not rate_limit:
@@ -421,6 +462,78 @@ def mark_rate_limited_result(result: IssueJobResult, detect_rate_limit_fn) -> Is
 def worker_is_known_waiting(output: str, detect_rate_limit_fn, now_fn=datetime.now) -> bool:
     rate_limit = detect_rate_limit_fn(output)
     return bool(rate_limit and rate_limit.reset_at and rate_limit.reset_at > now_fn())
+
+
+def run_issue_job_with_optional_fallback(
+    job: IssueJob,
+    args: argparse.Namespace,
+    solve_script: Path,
+    project_root: Path,
+    env: dict[str, str],
+    queued_report: QueuedRunReport | None,
+    *,
+    health_timeout_seconds: float | None,
+    unhealthy_action: str,
+    detect_rate_limit_fn,
+    run_issue_job_fn=run_issue_job,
+) -> IssueJobResult:
+    primary_cmd = build_worker_command(
+        args,
+        job,
+        solve_script,
+        run_report_dir=queued_report.path if queued_report else None,
+    )
+    primary_result = run_issue_job_fn(
+        job,
+        primary_cmd,
+        project_root,
+        env,
+        health_timeout_seconds=health_timeout_seconds,
+        unhealthy_action=unhealthy_action,
+        detect_rate_limit_fn=detect_rate_limit_fn,
+    )
+    primary_result = replace(
+        primary_result,
+        requested_model=args.model,
+        actual_model=args.model,
+    )
+    rate_limit = detect_rate_limit_fn(primary_result.output) if args.fallback_model else None
+    if not (args.fallback_model and primary_result.returncode != 0 and rate_limit):
+        return primary_result
+
+    fallback_cmd = build_worker_command(
+        args,
+        job,
+        solve_script,
+        run_report_dir=queued_report.path if queued_report else None,
+        model=args.fallback_model,
+        model_name=args.fallback_model_name or "",
+    )
+    fallback_result = run_issue_job_fn(
+        job,
+        fallback_cmd,
+        project_root,
+        env,
+        health_timeout_seconds=health_timeout_seconds,
+        unhealthy_action=unhealthy_action,
+        detect_rate_limit_fn=lambda output: None,
+    )
+    combined_output = (
+        primary_result.output.rstrip()
+        + "\n\n[batch-fallback] Codex-Rate-Limit erkannt; "
+        + f"Fallback mit {args.fallback_model} gestartet.\n"
+        + fallback_result.output
+    )
+    if queued_report:
+        annotate_fallback_run_report(queued_report.path, args.model, args.fallback_model)
+    return replace(
+        fallback_result,
+        output=combined_output,
+        duration_seconds=primary_result.duration_seconds + fallback_result.duration_seconds,
+        requested_model=args.model,
+        actual_model=args.fallback_model,
+        fallback_from=args.model,
+    )
 
 
 def run_issue_jobs(jobs: list[IssueJob],
@@ -529,6 +642,8 @@ def print_job_result(result: IssueJobResult, completed: int, total: int) -> None
             "Codex-Rate-Limit erkannt; "
             f"Job bleibt bis {reset or 'zum naechsten Reset'} verzögert."
         )
+    if result.fallback_from:
+        print(f"Fallback verwendet: {result.fallback_from} -> {result.actual_model}")
     if result.unhealthy:
         print(f"Worker-Health: {result.unhealthy_reason or 'unhealthy'}")
     print("─" * 60)
@@ -570,6 +685,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Spezifisches Modell (für Codex optional, für Mistral z.B. "
             "'magistral-small-2509', für Ollama z.B. 'deepseek-coder:6.7b')"
         ),
+    )
+    parser.add_argument(
+        "--fallback-model",
+        choices=list(MODEL_CONFIGS.keys()),
+        help="Optionaler Fallback-Provider fuer erkannte Codex-Rate-Limits",
+    )
+    parser.add_argument(
+        "--fallback-model-name",
+        help="Optionaler Modellname fuer --fallback-model",
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument(
@@ -634,6 +758,16 @@ def main(argv: list[str] | None = None) -> int:
     print_banner("ISSUES PARALLEL MIT KI LÖSEN")
     args = parse_args(argv)
 
+    if args.fallback_model and args.model != "codex":
+        print_err("--fallback-model ist nur fuer --model codex erlaubt")
+        return 1
+    if args.fallback_model == "codex":
+        print_err("--fallback-model darf nicht erneut codex sein")
+        return 1
+    if args.fallback_model_name and not args.fallback_model:
+        print_err("--fallback-model-name braucht auch --fallback-model")
+        return 1
+
     if requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")
         print("   → Installieren mit: pip install -r requirements.txt")
@@ -649,6 +783,13 @@ def main(argv: list[str] | None = None) -> int:
         print_warn(f"{env_key} fehlt oder ist noch ein Platzhalter")
     elif env_key:
         require_config_value(cfg, env_key)
+    if args.fallback_model:
+        fallback_config = MODEL_CONFIGS[args.fallback_model]
+        fallback_env_key = fallback_config.get("env_key")
+        if fallback_env_key and args.dry_run and is_placeholder_value(cfg.get(fallback_env_key)):
+            print_warn(f"{fallback_env_key} fehlt oder ist noch ein Platzhalter")
+        elif fallback_env_key:
+            require_config_value(cfg, fallback_env_key)
 
     client = GitHubClient(token, user)
     repos = [args.repo] if args.repo else [
@@ -695,17 +836,13 @@ def main(argv: list[str] | None = None) -> int:
 
     def run(job: IssueJob) -> IssueJobResult:
         queued_report = queued_reports.get(job)
-        cmd = build_worker_command(
+        return run_issue_job_with_optional_fallback(
+            job,
             args,
-            job,
             solve_script,
-            run_report_dir=queued_report.path if queued_report else None,
-        )
-        return run_issue_job(
-            job,
-            cmd,
             project_root,
             env,
+            queued_report,
             health_timeout_seconds=args.worker_health_timeout_minutes * 60,
             unhealthy_action=args.unhealthy_action,
             detect_rate_limit_fn=detect_rate_limit_fn,

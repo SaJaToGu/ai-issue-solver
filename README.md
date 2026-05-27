@@ -378,6 +378,7 @@ python scripts/solve_issues_batch.py --model codex --workers 2
 python scripts/solve_issues_batch.py --model claude --repo BedBoxDrawerRole --workers 3
 python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --issue 23 --issue 24 --dry-run
 python scripts/solve_issues_batch.py --model codex --workers 2 --requeue-rate-limited
+python scripts/solve_issues_batch.py --model codex --workers 2 --fallback-model mistral --fallback-model-name magistral-medium-2509
 python scripts/solve_issues_batch.py --model codex --workers 2 --unhealthy-action retry
 ```
 
@@ -387,6 +388,8 @@ python scripts/solve_issues_batch.py --model codex --workers 2 --unhealthy-actio
 - `--requeue-rate-limited` — Codex-Jobs nach erkanntem Reset erneut einplanen
 - `--rate-limit-retries` — maximale Requeue-Versuche pro rate-limitiertem Job,
   Standard: `1`
+- `--fallback-model` / `--fallback-model-name` — expliziter Provider-Fallback
+  nur bei erkanntem Codex-Rate-Limit; normale Fehler wechseln den Provider nicht
 - `--worker-health-timeout-minutes` — Minuten ohne Worker-Ausgabe bis zur
   Health-Warnung, Standard: `60`
 - `--unhealthy-action` — Verhalten bei unhealthy Worker: `warn`, `stop` oder
@@ -411,6 +414,7 @@ Morgen.
 python scripts/run_overnight.py --model codex --base-branch develop --workers 2
 python scripts/run_overnight.py --model claude --repo BedBoxDrawerRole --workers 3
 python scripts/run_overnight.py --model codex --issue 23 --issue 24 --dry-run --skip-pull
+python scripts/run_overnight.py --model codex --workers 2 --fallback-model mistral --fallback-model-name magistral-medium-2509
 ```
 
 Wenn Pull oder Tests fehlschlagen, startet der Batch nicht. Das Dashboard und die
@@ -425,6 +429,8 @@ bleibt.
 - `--skip-pull` / `--skip-tests` — einzelne Preflight-Schritte bewusst auslassen
 - `--log-root` — Zielverzeichnis für Overnight-Logs, Standard:
   `reports/overnight`
+- `--fallback-model` / `--fallback-model-name` — an den Batch-Runner
+  weitergereichter Fallback fuer erkannte Codex-Rate-Limits
 - alle relevanten Batch-Flags wie `--model`, `--model-name`, `--repo`,
   `--issue`, `--label`, `--dry-run`, `--close-issues` und Dashboard-Optionen
 

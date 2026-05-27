@@ -84,6 +84,10 @@ def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[st
     ]
     if args.model_name:
         command.extend(["--model-name", args.model_name])
+    if args.fallback_model:
+        command.extend(["--fallback-model", args.fallback_model])
+    if args.fallback_model_name:
+        command.extend(["--fallback-model-name", args.fallback_model_name])
     if args.repo:
         command.extend(["--repo", args.repo])
     for issue_number in args.issue or []:
@@ -233,6 +237,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--model", required=True, choices=list(MODEL_CONFIGS.keys()))
     parser.add_argument("--model-name", help="Spezifisches Modell fuer Codex/Ollama/aider")
+    parser.add_argument("--fallback-model", choices=list(MODEL_CONFIGS.keys()), help="Fallback-Provider fuer Codex-Rate-Limits")
+    parser.add_argument("--fallback-model-name", help="Optionaler Modellname fuer --fallback-model")
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument(
         "--issue",

@@ -464,6 +464,11 @@ def read_runs(runs_dir: Path,
                 recovery_hint = recovery_hint_for_unhealthy(run_dir)
         elif category == "running" and in_known_wait:
             health_reason = f"Codex-Rate-Limit-Wartezeit bis {format_datetime(rate_limit_until)}"
+        model = fields.get("model", "")
+        fallback_from = fields.get("fallback_from", "")
+        actual_model = fields.get("actual_model", "")
+        if fallback_from and actual_model:
+            model = f"{actual_model} (Fallback von {fallback_from})"
         runs.append(
             DashboardRun(
                 path=run_dir,
@@ -476,7 +481,7 @@ def read_runs(runs_dir: Path,
                 issue_title=fields.get("issue_title", ""),
                 branch=fields.get("branch", ""),
                 base_branch=fields.get("base_branch", ""),
-                model=fields.get("model", ""),
+                model=model,
                 worker_exit_code=exit_code,
                 last_activity_at=last_activity_at,
                 last_report_update_at=last_report_update_at,
