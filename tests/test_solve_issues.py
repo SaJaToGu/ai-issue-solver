@@ -737,6 +737,42 @@ class WorkerOutputTests(unittest.TestCase):
         self.assertFalse(should_surface_worker_line("+print('implementation detail')\n"))
         self.assertFalse(should_surface_worker_line("@@ -1,2 +1,3 @@\n"))
 
+    def test_worker_live_filter_hides_aider_mistral_patch_fragments(self):
+        noisy_lines = [
+            '-    error: str = ""',
+            '+        f.write("            <th>Repo</th>\\n")',
+            '"https://github.com/test-owner/demo/issues/7")',
+            'result.runs[0].lifecycle_note)',
+            '"test-owner|demo|44|ai/fix-issue-44|https://github.com/test-owner/demo/pull/44":',
+            'self.assertIn("test-owner", links["issue"])',
+        ]
+
+        for line in noisy_lines:
+            with self.subTest(line=line):
+                self.assertFalse(should_surface_worker_line(line))
+
+    def test_worker_output_tail_prefers_compact_useful_lines(self):
+        output = "\n".join(
+            [
+                'Plan: update dashboard rendering',
+                '-    error: str = ""',
+                '+        f.write("            <th>Repo</th>\\n")',
+                'self.assertIn("test-owner", links["issue"])',
+                'WARNING: tests failed, retrying',
+                '"test-owner|demo|44|ai/fix-issue-44|https://github.com/test-owner/demo/pull/44":',
+                'Final result: PR ready',
+            ]
+        )
+
+        tail = format_worker_output_tail(output)
+
+        self.assertIn("Plan: update dashboard rendering", tail)
+        self.assertIn("WARNING: tests failed, retrying", tail)
+        self.assertIn("Final result: PR ready", tail)
+        self.assertNotIn("f.write", tail)
+        self.assertNotIn("test-owner|demo|44", tail)
+        self.assertNotIn("self.assertIn", tail)
+
     def test_run_worker_preserves_full_output_while_printing_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             script = Path(tmpdir) / "worker.py"
