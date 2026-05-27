@@ -217,6 +217,8 @@ python scripts/create_issues.py --report reports/analysis.json --dry-run
 python scripts/create_issues.py --report reports/analysis.json --confirm-create  # echte Issues
 python scripts/create_backlog_issues.py                         # Backlog-Dry-Run
 python scripts/create_backlog_issues.py --apply --confirm-create # echte Backlog-Issues
+python scripts/import_repolens_results.py --report-dir reports/repolens --repo ai-issue-solver
+python scripts/import_repolens_results.py --report-dir reports/repolens --repo ai-issue-solver --apply --confirm-create
 ```
 
 **Flags:**
@@ -228,6 +230,14 @@ python scripts/create_backlog_issues.py --apply --confirm-create # echte Backlog
 `create_backlog_issues.py` liest [docs/BACKLOG.md](docs/BACKLOG.md) und erstellt
 daraus die initialen Projekt-Issues. Ohne `--apply --confirm-create` läuft es
 als Dry-Run.
+
+`import_repolens_results.py` liest lokale RepoLens-Markdown-Reports rekursiv aus
+`--report-dir`, erkennt Findings aus Severity-Headings oder Listenpunkten und
+bereitet daraus GitHub-Issues mit Labels wie `repolens`, `security`,
+`performance` und `severity:high` vor. Standard ist eine Vorschau; echte Issues
+werden nur mit `--apply --confirm-create` erstellt. Importierte Issues erhalten
+einen stabilen Marker im Body, damit offene RepoLens-Issues nicht doppelt
+angelegt werden.
 
 ---
 
@@ -662,6 +672,7 @@ ai-issue-solver/
 │   ├── analyze_repos.py         # Schritt 1: Repos analysieren
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
+│   ├── import_repolens_results.py # RepoLens-Reports als Issues importieren
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
 │   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
 │   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
