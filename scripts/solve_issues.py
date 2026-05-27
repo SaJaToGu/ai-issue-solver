@@ -18,7 +18,7 @@ Verwendung:
     python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
     python scripts/solve_issues.py --model claude --issue 3
     python scripts/solve_issues.py --model claude --dry-run
-    
+
 """
 
 from __future__ import annotations
@@ -470,18 +470,18 @@ KNOWN_PROJECT_DIRS = frozenset({"scripts", "tests", "src", "lib", "app", "config
 
 def find_aider_executable() -> str | None:
     """Find the aider executable, checking venv-local paths first, then PATH.
-    
+
     Suchreihenfolge:
     1. .venv/bin/aider (wenn aktueller Python in .venv ist)
     2. venv/bin/aider (Standard-Venv-Pfad)
     3. <python_prefix>/bin/aider (für die aktuelle Python-Umgebung)
     4. PATH via shutil.which()
-    
+
     Returns:
         Pfad zum aider-Executable oder None
     """
     candidates = []
-    
+
     # Prüfe ob aktueller Python aus einem venv kommt
     python_executable = sys.executable
     if python_executable:
@@ -495,7 +495,7 @@ def find_aider_executable() -> str | None:
                 if aider_path.exists():
                     return str(aider_path)
                 candidates.append(str(aider_path))
-    
+
     # Standard venv Pfade
     for venv_name in (".venv", "venv"):
         venv_path = Path.cwd() / venv_name
@@ -503,7 +503,7 @@ def find_aider_executable() -> str | None:
         if aider_path.exists():
             return str(aider_path)
         candidates.append(str(aider_path))
-    
+
     # Prüfe site-packages Pfad der aktuellen Python-Umgebung
     try:
         import site
@@ -514,12 +514,12 @@ def find_aider_executable() -> str | None:
             candidates.append(str(aider_path))
     except Exception:
         pass
-    
+
     # PATH
     path_aider = shutil.which("aider")
     if path_aider:
         return path_aider
-    
+
     return None
 
 
@@ -2169,7 +2169,7 @@ def main():
         print_err("OpenCode CLI wurde nicht gefunden!")
         print("   → Installieren nach OpenCode-Doku und `opencode` in PATH verfügbar machen")
         sys.exit(1)
-    
+
     if args.model not in ("codex", "mistral-vibe", "opencode") and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert!")
         print("   → Installieren mit: pip install aider-chat")
