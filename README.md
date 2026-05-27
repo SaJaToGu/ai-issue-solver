@@ -380,6 +380,7 @@ python scripts/solve_issues_batch.py --model codex --repo ai-issue-solver --issu
 python scripts/solve_issues_batch.py --model codex --workers 2 --requeue-rate-limited
 python scripts/solve_issues_batch.py --model codex --workers 2 --fallback-model mistral --fallback-model-name magistral-medium-2509
 python scripts/solve_issues_batch.py --model codex --workers 2 --unhealthy-action retry
+python scripts/plan_issue_batches.py --repo ai-issue-solver --emit-commands --model codex
 ```
 
 **Flags:**
@@ -398,6 +399,12 @@ python scripts/solve_issues_batch.py --model codex --workers 2 --unhealthy-actio
   `--unhealthy-action retry`, Standard: `1`
 - alle relevanten Solver-Flags wie `--model`, `--model-name`, `--repo`,
   `--label`, `--base-branch`, `--dry-run` und `--close-issues`
+
+`plan_issue_batches.py` plant offene Issues lokal in konfliktarme Wellen, ohne
+Worker zu starten. Es schaetzt erwartete Datei-Ueberschneidungen aus Titel,
+Body, Labels und optionalen `Touches:`-Zeilen im Issue-Body. Mit
+`--emit-commands` gibt es passende `solve_issues_batch.py`-Kommandos pro Welle
+aus.
 
 ---
 
@@ -701,6 +708,7 @@ ai-issue-solver/
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
 │   ├── import_repolens_results.py # RepoLens-Reports als Issues importieren
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
+│   ├── plan_issue_batches.py    # Konfliktarme Issue-Wellen planen
 │   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
 │   ├── run_repolens_docker.sh   # RepoLens in Docker-Sandbox ausfuehren
 │   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
