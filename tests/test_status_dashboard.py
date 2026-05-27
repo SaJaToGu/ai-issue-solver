@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from status_dashboard import (  # noqa: E402
+    DashboardIssue,
     classify_status,
     cleanup_stale_runs,
     enrich_runs_with_github,
@@ -28,6 +29,7 @@ class FakeLifecycleClient:
         branch_pull_requests=None,
         issue_pull_requests=None,
         issues=None,
+        open_issues=None,
         main_contains=None,
         fail=False,
     ):
@@ -35,6 +37,7 @@ class FakeLifecycleClient:
         self.branch_pull_requests = branch_pull_requests or {}
         self.issue_pull_requests = issue_pull_requests or {}
         self.issues = issues or {}
+        self.open_issues = open_issues or {}
         self.main_contains = main_contains or set()
         self.fail = fail
         self.calls = 0
@@ -62,6 +65,10 @@ class FakeLifecycleClient:
     def get_issue(self, repo, issue_number):
         self._record(repo)
         return self.issues.get(str(issue_number))
+
+    def get_open_issues(self, repo):
+        self._record(repo)
+        return self.open_issues.get(repo, [])
 
     def branch_contains_commit(self, repo, branch, sha):
         self._record(repo)
@@ -293,6 +300,43 @@ preserved_worktree: reports/preserved-worktrees/run/demo
         self.assertIn("Recovery-Worktree", html)
         self.assertIn("reports/preserved-worktrees/run/demo", html)
         self.assertTrue(output_exists)
+
+    def test_render_dashboard_shows_unstarted_issues(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "status-dashboard.html"
+
+            html = render_dashboard(
+                [],
+                "test-owner",
+                output_path,
+                unstarted_issues=[
+                    DashboardIssue(
+                        number="80",
+                        title="Harden Mistral Vibe integration",
+                        repo="ai-issue-solver",
+                        html_url="https://github.com/test-owner/ai-issue-solver/issues/80",
+                        state="open",
+                        created_at="2026-05-22T05:49:02Z",
+                        updated_at="2026-05-25T21:29:10Z",
+                    )
+                ],
+            )
+
+        self.assertIn("Offene Issues ohne Run", html)
+        self.assertIn("#80", html)
+        self.assertIn("Harden Mistral Vibe integration", html)
+        self.assertIn("https://github.com/test-owner/ai-issue-solver/issues/80", html)
+        self.assertIn("<code>opencode</code>", html)
+        self.assertIn("<code>provider</code>", html)
+        self.assertIn("Konfliktrisiko: mittel", html)
+        self.assertIn(
+            "python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 80 --base-branch develop --dry-run",
+            html,
+        )
+        self.assertIn(
+            "python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 80 --base-branch develop",
+            html,
+        )
 
     def test_github_enrichment_marks_failed_preserved_run_as_recovered(self):
         with tempfile.TemporaryDirectory() as tmpdir:

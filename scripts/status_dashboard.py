@@ -21,6 +21,7 @@ from html import escape
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -1057,10 +1058,116 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
     ])
 
 
+def classify_issue_cluster(issue: DashboardIssue) -> tuple[str, str]:
+    text = f"{issue.title} {issue.repo}".lower()
+    if "repolens" in text:
+        return "repolens", "mittel"
+    if any(word in text for word in ("dashboard", "scheduler", "cluster")):
+        return "control-center", "mittel"
+    if any(word in text for word in ("mistral", "opencode", "codex", "provider", "worker")):
+        return "provider", "mittel"
+    if any(word in text for word in ("doc", "language", "policy", "readme")):
+        return "docs", "niedrig"
+    return "general", "unbekannt"
+
+
+def recommended_provider_for_issue(issue: DashboardIssue) -> str:
+    cluster, _ = classify_issue_cluster(issue)
+    if cluster == "docs":
+        return "opencode"
+    if cluster in {"provider", "control-center", "repolens"}:
+        return "opencode"
+    return "opencode"
+
+
+def issue_solver_command(issue: DashboardIssue, provider: str, dry_run: bool) -> str:
+    parts = [
+        "python",
+        "scripts/solve_issues.py",
+        "--model",
+        provider,
+        "--repo",
+        issue.repo,
+        "--issue",
+        issue.number,
+        "--base-branch",
+        "develop",
+    ]
+    if dry_run:
+        parts.append("--dry-run")
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def render_command_block(command: str, label: str) -> str:
+    return (
+        f'<div class="command-label">{escape(label)}</div>'
+        f'<code class="command">{escape(command)}</code>'
+    )
+
+
+def render_unstarted_issue_row(issue: DashboardIssue) -> str:
+    updated = escape(issue.updated_at[:19].replace("T", " ") if issue.updated_at else "-")
+    provider = recommended_provider_for_issue(issue)
+    cluster, risk = classify_issue_cluster(issue)
+    dry_run_command = issue_solver_command(issue, provider, dry_run=True)
+    start_command = issue_solver_command(issue, provider, dry_run=False)
+    actions = []
+    if issue.html_url:
+        actions.append(render_link(issue.html_url, f"Issue #{issue.number}"))
+    actions.extend([
+        render_command_block(dry_run_command, "Dry-run"),
+        render_command_block(start_command, "Start"),
+    ])
+    return "\n".join([
+        "<tr>",
+        '  <td><span class="badge badge-queued">Open</span></td>',
+        f"  <td>{updated}</td>",
+        f"  <td>{escape(issue.repo or '-')}</td>",
+        f"  <td><div class=\"issue-number\">#{escape(issue.number)}</div>"
+        f"<div class=\"issue-title\">{escape(issue.title)}</div></td>",
+        f"  <td><code>{escape(provider)}</code></td>",
+        f"  <td><code>{escape(cluster)}</code><div class=\"note\">Konfliktrisiko: {escape(risk)}</div></td>",
+        f"  <td>{escape(issue.state or 'open')}</td>",
+        f"  <td>{''.join(actions)}</td>",
+        "</tr>",
+    ])
+
+
+def render_unstarted_issues_section(unstarted_issues: list[DashboardIssue]) -> str:
+    if not unstarted_issues:
+        return ""
+    rows = "\n".join(render_unstarted_issue_row(issue) for issue in unstarted_issues)
+    return f"""
+    <section class="section-block">
+      <h2>Offene Issues ohne Run</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Aktualisiert</th>
+              <th>Repo</th>
+              <th>Issue</th>
+              <th>Provider</th>
+              <th>Cluster</th>
+              <th>State</th>
+              <th>Aktionen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+"""
+
+
 def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: Path,
                      generated_at: datetime | None = None,
                      allow_shutdown: bool = False,
-                     refresh_seconds: int | None = None) -> str:
+                     refresh_seconds: int | None = None,
+                     unstarted_issues: list[DashboardIssue] | None = None) -> str:
     runs = [
         fallback_lifecycle_for_run(run)
         if run.category == "successful" and not run.lifecycle_label
@@ -1087,6 +1194,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
         "</section>"
         for category in STATUS_ORDER
     )
+    unstarted_section = render_unstarted_issues_section(unstarted_issues or [])
 
     refresh_meta = ""
     refresh_label = ""
@@ -1168,6 +1276,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       background: var(--panel);
     }}
     h1 {{ margin: 0 0 6px; font-size: 26px; letter-spacing: 0; }}
+    h2 {{ margin: 0 0 12px; font-size: 18px; letter-spacing: 0; }}
     .meta {{ color: var(--muted); }}
     .header-row {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }}
     .shutdown-button {{
@@ -1213,6 +1322,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       border: 1px solid var(--line);
       border-radius: 6px;
     }}
+    .section-block {{ margin-bottom: 22px; }}
     table {{ width: 100%; border-collapse: collapse; min-width: 980px; }}
     th, td {{ padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }}
     th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; background: #fbfcfd; }}
@@ -1239,6 +1349,18 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .badge-archived {{ background: var(--archived); }}
     .badge-unknown {{ background: var(--unknown); }}
     .note {{ margin-top: 4px; color: var(--muted); }}
+    .command-label {{ margin-top: 6px; color: var(--muted); font-size: 12px; }}
+    .command {{
+      display: block;
+      max-width: 520px;
+      margin-top: 2px;
+      padding: 6px 8px;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      background: #f3f5f7;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+    }}
     .lifecycle {{
       display: inline-flex;
       align-items: center;
@@ -1295,6 +1417,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     <section class="metrics" aria-label="Status-Zusammenfassung">
       {cards}
     </section>
+    {unstarted_section}
     <section class="table-wrap">
       <table>
         <thead>
@@ -1333,6 +1456,10 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
                     github_cache_ttl_seconds: int = DEFAULT_GITHUB_CACHE_TTL_SECONDS) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_owner = owner or infer_owner_from_runs(runs)
+    unstarted_issues: list[DashboardIssue] = []
+    github_client = None
+    if requests is not None and effective_owner and not is_placeholder_value(github_token):
+        github_client = DashboardGitHubClient(str(github_token), effective_owner)
     if github_enrich:
         enrichment = enrich_runs_with_github(
             runs,
@@ -1340,10 +1467,16 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
             github_token,
             cache_path=github_cache_path,
             cache_ttl_seconds=github_cache_ttl_seconds,
+            client=github_client,
         )
         runs = enrichment.runs
     else:
         runs = with_fallback_lifecycle(runs)
+    if github_client is not None:
+        try:
+            unstarted_issues = find_unstarted_issues(runs, effective_owner, client=github_client)
+        except Exception:
+            unstarted_issues = []
     output_path.write_text(
         render_dashboard(
             runs,
@@ -1351,6 +1484,7 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
             output_path,
             allow_shutdown=allow_shutdown,
             refresh_seconds=refresh_seconds,
+            unstarted_issues=unstarted_issues,
         ),
         encoding="utf-8",
     )
