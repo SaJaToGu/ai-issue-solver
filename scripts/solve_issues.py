@@ -179,6 +179,17 @@ WORKER_NOISY_OUTPUT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+WORKER_NOISY_FRAGMENT_RE = re.compile(
+    r"("
+    r"^\s*[+-]?\s*[A-Za-z_]\w*\s*:\s*[A-Za-z_][\w\[\], .|\"']*\s*=\s*"
+    r"|^\s*[+]?\s*f\.write\("
+    r"|^\s*[+-]?\s*(?:self\.)?assert[A-Za-z_]*\("
+    r"|^\s*[A-Za-z_][\w.\[\]0-9]*\)$"
+    r"|^\s*\"[^\"]+\"\s*:\s*$"
+    r"|^\s*[\"'][^\"']+[\"']\)?[,]?\s*$"
+    r")",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -791,6 +802,8 @@ def should_surface_worker_line(line: str) -> bool:
         return False
     if WORKER_NOISY_OUTPUT_RE.search(stripped):
         return False
+    if WORKER_NOISY_FRAGMENT_RE.search(stripped):
+        return False
     return bool(WORKER_LIVE_OUTPUT_RE.search(stripped))
 
 
@@ -1337,7 +1350,10 @@ def format_worker_output_tail(output: str) -> str:
     if not cleaned:
         return ""
 
-    tail = "\n".join(cleaned.splitlines()[-WORKER_OUTPUT_TAIL_LINES:])
+    lines = cleaned.splitlines()
+    surfaced_lines = [line for line in lines if should_surface_worker_line(line)]
+    tail_lines = surfaced_lines[-WORKER_OUTPUT_TAIL_LINES:] if surfaced_lines else lines[-WORKER_OUTPUT_TAIL_LINES:]
+    tail = "\n".join(tail_lines)
     if len(tail) > WORKER_OUTPUT_TAIL_CHARS:
         tail = tail[-WORKER_OUTPUT_TAIL_CHARS:]
         return f"...\n{tail}"
