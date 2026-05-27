@@ -128,6 +128,7 @@ geben sichere Hinweise aus, ohne Secret-Werte im Terminal anzuzeigen.
 ```bash
 python scripts/solve_issues.py --model codex     # Codex CLI
 python scripts/solve_issues.py --model opencode  # OpenCode CLI
+python scripts/solve_issues.py --model mistral-vibe  # Mistral Vibe CLI
 python scripts/solve_issues.py --model claude    # Anthropic Claude
 python scripts/solve_issues.py --model openai    # OpenAI GPT-4
 python scripts/solve_issues.py --model ollama    # Lokales Modell
@@ -231,11 +232,12 @@ als Dry-Run.
 ---
 
 ### `solve_issues.py`
-Löst offene Issues automatisch mit KI + Codex, OpenCode oder aider.
+Löst offene Issues automatisch mit KI + Codex, Mistral Vibe, OpenCode oder aider.
 
 ```bash
 python scripts/solve_issues.py --model codex --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo BedBoxDrawerRole
+python scripts/solve_issues.py --model mistral-vibe --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model mistral --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model mistral --model-name magistral-small-2509
@@ -594,13 +596,25 @@ Der Solver sucht `opencode` in der aktiven Umgebung, in `.venv/bin` bzw.
 `venv/bin` des Arbeitsbaums, in `~/.local/bin` und danach auf `PATH`.
 GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
 
-### Mistral AI / Magistral
+### Mistral AI / Mistral Vibe / Magistral
 1. API-Key holen: https://console.mistral.ai/
 2. In `.env` eintragen: `MISTRAL_API_KEY=...`
-3. Starten mit:
+3. Mistral Vibe CLI installieren, z.B. nach offizieller Doku mit:
    ```bash
+   curl -LsSf https://mistral.ai/vibe/install.sh | bash
+   # alternativ: uv tool install mistral-vibe
+   # alternativ: pip install mistral-vibe
+   ```
+4. Starten mit:
+   ```bash
+   python scripts/solve_issues.py --model mistral-vibe
    python scripts/solve_issues.py --model mistral
    ```
+
+`mistral-vibe` nutzt die Mistral Vibe CLI direkt und braucht kein aider. Der
+Solver sucht `vibe` in der aktiven Umgebung, in `.venv/bin` bzw. `venv/bin` des
+Repos, in `~/.local/bin` und im `PATH`. `mistral` bleibt der aider-basierte
+Magistral-Modus.
 
 Der Solver nutzt standardmäßig `magistral-medium-2509`. Nach den offiziellen
 Mistral-Modellübersichten vom 21. Mai 2026 ist Magistral Medium 1.2 als

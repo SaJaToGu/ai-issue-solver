@@ -42,7 +42,21 @@ export OPENAI_API_KEY=sk-...
 aider --model gpt-4o
 ```
 
-### Mistral AI / Magistral
+### Mistral AI / Mistral Vibe / Magistral
+Mistral Vibe ist der bevorzugte Mistral-Coding-Worker, wenn die CLI installiert
+ist. Er braucht kein aider:
+
+```bash
+curl -LsSf https://mistral.ai/vibe/install.sh | bash
+# alternativ: uv tool install mistral-vibe
+# alternativ: pip install mistral-vibe
+
+export MISTRAL_API_KEY=...
+python scripts/solve_issues.py --model mistral-vibe
+```
+
+Der aider-basierte Mistral-Modus bleibt verfügbar:
+
 ```bash
 export MISTRAL_API_KEY=...
 aider --model mistral/magistral-medium-2509
