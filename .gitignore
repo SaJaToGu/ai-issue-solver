@@ -17,6 +17,8 @@ reports/*
 !reports/.gitkeep
 
 # Local editor and OS files
+.codex/
+.vibe/
 .DS_Store
 .idea/
 .vscode/
