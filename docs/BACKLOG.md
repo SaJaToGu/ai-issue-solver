@@ -2,9 +2,9 @@
 
 > **📌 Sprachhinweis / Language Note:**
 > Diese Datei bleibt bewusst auf Englisch, da sie als Vorlage für GitHub Issues dient
-> und von KI-Workern verarbeitet wird. Siehe [Sprachrichtlinie](../docs/LANGUAGE_POLICY.md)
+> und von KI-Workern verarbeitet wird. Siehe [Sprachrichtlinie](LANGUAGE_POLICY.md)
 > This file remains in English as it serves as a template for GitHub Issues and is
-> processed by AI workers. See [Language Policy](../docs/LANGUAGE_POLICY.md)
+> processed by AI workers. See [Language Policy](LANGUAGE_POLICY.md)
 
 This backlog captures the first issues for the `develop` workflow. These tasks
 formed the first implementation round and are kept as project history. The next
