@@ -1019,7 +1019,7 @@ pr_url:
         self.assertEqual(result.runs[0].category, "superseded")
         self.assertEqual(result.runs[0].lifecycle_label, "Issue closed")
         self.assertFalse(result.runs[0].lifecycle_needs_attention)
-        self.assertIn("Issue closed", result.runs[0].lifecycle_note)
+        self.assertIn("Issue wurde geschlossen", result.runs[0].lifecycle_note)
         self.assertIn("Superseded", html)
         self.assertIn("Originaler fehlgeschlagener Run", html)
 
@@ -1055,7 +1055,9 @@ pr_url:
         self.assertEqual(result.runs[0].category, "failed")
         self.assertEqual(result.runs[0].lifecycle_label, "")
         self.assertIn("Failed", html)
-        self.assertNotIn("Superseded", html)
+        self.assertIn('<span class="badge badge-failed">Failed</span>', html)
+        self.assertIn('<section class="metric metric-superseded"><span>Superseded</span><strong>0</strong></section>', html)
+        self.assertNotIn('<span class="badge badge-superseded">Superseded</span>', html)
 
     def test_github_enrichment_keeps_failed_run_without_issue_failed(self):
         """Test that failed runs without issue number remain failed."""
@@ -1086,7 +1088,9 @@ pr_url:
         self.assertFalse(result.used_github)
         self.assertEqual(result.runs[0].category, "failed")
         self.assertIn("Failed", html)
-        self.assertNotIn("Superseded", html)
+        self.assertIn('<span class="badge badge-failed">Failed</span>', html)
+        self.assertIn('<section class="metric metric-superseded"><span>Superseded</span><strong>0</strong></section>', html)
+        self.assertNotIn('<span class="badge badge-superseded">Superseded</span>', html)
 
     def test_github_enrichment_preserves_recovered_over_superseded_for_failed_runs(self):
         """Test that recoverable failed runs with closed issues become recovered, not superseded."""

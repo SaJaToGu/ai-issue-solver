@@ -811,7 +811,7 @@ def recovered_lifecycle_from_github(run: DashboardRun, pr: dict,
 def superseded_lifecycle_from_github(run: DashboardRun, issue: dict | None) -> DashboardRun:
     """Mark a failed run as superseded when the related issue is closed."""
     issue_closed = bool(issue and issue.get("state") == "closed")
-    
+
     if issue_closed:
         return replace(
             run,
