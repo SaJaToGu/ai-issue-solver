@@ -27,6 +27,8 @@ class OvernightRunnerTests(unittest.TestCase):
         defaults = {
             "model": "codex",
             "model_name": "",
+            "fallback_model": None,
+            "fallback_model_name": None,
             "repo": None,
             "issue": None,
             "label": "ai-generated",
@@ -56,6 +58,8 @@ class OvernightRunnerTests(unittest.TestCase):
             workers=3,
             dry_run=True,
             close_issues=True,
+            fallback_model="mistral",
+            fallback_model_name="magistral-medium-2509",
         )
 
         command = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
@@ -67,6 +71,10 @@ class OvernightRunnerTests(unittest.TestCase):
         self.assertIn("--base-branch", command)
         self.assertIn("develop", command)
         self.assertEqual(command.count("--issue"), 2)
+        self.assertIn("--fallback-model", command)
+        self.assertIn("mistral", command)
+        self.assertIn("--fallback-model-name", command)
+        self.assertIn("magistral-medium-2509", command)
         self.assertIn("--dry-run", command)
         self.assertIn("--close-issues", command)
 

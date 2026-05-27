@@ -162,6 +162,25 @@ worker_exit_code: 0
         self.assertEqual(runs[0].issue_number, "25")
         self.assertEqual(runs[0].issue_title, "")
 
+    def test_read_runs_marks_fallback_model(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-60",
+                """status: pr_created
+repo: demo
+issue_number: 60
+model: mistral
+actual_model: mistral
+fallback_from: codex
+worker_exit_code: 0
+""",
+            )
+
+            runs = read_runs(runs_dir)
+
+        self.assertEqual(runs[0].model, "mistral (Fallback von codex)")
+
     def test_read_runs_parses_diff_stat_before_output_tail(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runs_dir = Path(tmpdir) / "reports" / "runs"
