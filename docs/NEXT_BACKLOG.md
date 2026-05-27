@@ -6,9 +6,8 @@
 > This file remains in English as it serves as a template for GitHub Issues and is
 > processed by AI workers. See [Language Policy](LANGUAGE_POLICY.md)
 
-This backlog captures the next phase after the parallel workflow is available:
-running longer unattended sessions, keeping the dashboard truthful, and reducing
-manual review cleanup after generated PRs.
+This backlog captures the next small refactoring phase after the v0.2.0 release:
+reduce complexity in the largest workflow modules without changing behavior.
 
 Create them as GitHub issues with:
 
@@ -17,38 +16,55 @@ python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md
 python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-create
 ```
 
-## 1. Add a dashboard cleanup command for stale and legacy runs
+## 1. Refactor solve_issues worker command construction
 
-Labels: `workflow`, `quality`
+Labels: `quality`, `workflow`
 
-Add a small command or status-dashboard option that can mark old legacy run
-reports as successful, failed, no-op, or archived. It should avoid editing recent
-active runs by default, show a dry-run preview first, and make the dashboard stop
-counting incomplete historical reports as active work.
+Make the worker command construction in `scripts/solve_issues.py` easier to read
+and test without changing behavior.
 
-## 2. Add an unattended overnight runner
+Touches: `scripts/solve_issues.py`, `tests/test_solve_issues.py`
 
-Labels: `automation`, `workflow`
+Keep CLI behavior and existing model support unchanged. Prefer extracting or
+tightening small helper functions around worker command selection/building. Do
+not change GitHub branch, commit, push, or PR behavior. Do not add new features.
 
-Create a wrapper command for longer unattended sessions. It should pull the base
-branch, run tests before starting, invoke the bounded batch solver with a worker
-limit, regenerate the dashboard, write a final summary, and keep enough logs to
-review the run the next morning.
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
 
-## 3. Reschedule batch jobs after Codex rate limits
+## 2. Refactor status dashboard run classification helpers
 
-Labels: `codex`, `automation`, `safety`
+Labels: `quality`, `workflow`
 
-When a worker hits the Codex message limit, the batch runner should not burn the
-same issue repeatedly. It should recognize the reset time from the worker output,
-record the issue as delayed, sleep or requeue it for after the reset when
-configured, and continue processing other available jobs.
+Make `scripts/status_dashboard.py` run classification and lifecycle helper logic
+easier to maintain without changing dashboard behavior.
 
-## 4. Add a post-merge cleanup helper
+Touches: `scripts/status_dashboard.py`, `tests/test_status_dashboard.py`
 
-Labels: `github`, `workflow`
+Keep rendered dashboard behavior equivalent except for test-backed cleanup if
+needed. Prefer small helper extraction or clearer predicate naming around
+failed/recovered/superseded classification. Do not add new dashboard features. Do
+not alter unrelated HTML/CSS layout.
 
-Add a command that summarizes merged AI PRs, closes their referenced issues when
-safe, deletes stale AI branches, and reports anything that still needs manual
-review. It should use the existing GitHub API configuration and support a dry-run
-mode before changing GitHub state.
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 3. Refactor batch runner retry and result bookkeeping
+
+Labels: `quality`, `workflow`, `automation`
+
+Make `scripts/solve_issues_batch.py` retry, delayed-job, and result bookkeeping
+easier to follow without changing behavior.
+
+Touches: `scripts/solve_issues_batch.py`, `tests/test_solve_issues_batch.py`
+
+Preserve rate-limit requeue behavior, fallback behavior, and worker health
+behavior. Prefer small helper extraction around result recording or retry
+counters. Do not change `solve_issues.py` command semantics. Do not add new
+features.
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
