@@ -73,6 +73,7 @@ STATUS_ORDER = ("queued", "running", "unhealthy", "failed", "recovered", "supers
 # Solver-Status-Werte: Gruppen für die Klassifizierung
 SUCCESS_STATUSES = {
     "pr_created",
+    "pr_created_with_warning",
     "pr_created_from_existing_branch",
     "cleanup_successful",
 }
@@ -869,6 +870,8 @@ def fallback_lifecycle_for_run(run: DashboardRun) -> DashboardRun:
 
     if is_successful_pr_created(run):
         note = "GitHub-Status nicht geladen; pruefe PR-Link."
+        if run.status == "pr_created_with_warning":
+            note = "GitHub-Status nicht geladen; PR erstellt aber mit Warnung (z.B. Turn-Limit erreicht). Pruefe PR-Link."
         return replace(
             run,
             lifecycle_label="PR created",
@@ -928,48 +931,69 @@ def lifecycle_from_github(run: DashboardRun, pr: dict | None,
                           issue: dict | None, in_main: bool) -> DashboardRun:
     issue_closed = bool(issue and issue.get("state") == "closed")
     if in_main:
+        note = (
+            "Code ist in main und Issue ist geschlossen."
+            if issue_closed
+            else "Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main."
+        )
+        if run.status == "pr_created_with_warning":
+            note = (
+                "Code ist in main und Issue ist geschlossen (PR mit Warnung, z.B. Turn-Limit erreicht)."
+                if issue_closed
+                else "Code ist in main; Issue ist noch offen (PR mit Warnung, z.B. Turn-Limit erreicht)."
+                if issue else "Merge-Commit ist in main (PR mit Warnung, z.B. Turn-Limit erreicht)."
+            )
         return replace(
             run,
             lifecycle_label="Issue closed" if issue_closed else "In main",
             lifecycle_state="issue-closed" if issue_closed else "in-main",
             lifecycle_needs_attention=not issue_closed,
-            lifecycle_note=(
-                "Code ist in main und Issue ist geschlossen."
-                if issue_closed
-                else "Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main."
-            ),
+            lifecycle_note=note,
         )
 
     if pr and pr.get("merged_at"):
         base = ((pr.get("base") or {}).get("ref")) or run.base_branch or "develop"
+        note = (
+            "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht."
+            if issue_closed
+            else "Noch nicht in main erkannt."
+        )
+        if run.status == "pr_created_with_warning":
+            note = (
+                "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht (PR mit Warnung, z.B. Turn-Limit erreicht)."
+                if issue_closed
+                else "Noch nicht in main erkannt (PR mit Warnung, z.B. Turn-Limit erreicht)."
+            )
         return replace(
             run,
             lifecycle_label=f"Merged to {base}",
             lifecycle_state="merged",
             lifecycle_needs_attention=True,
-            lifecycle_note=(
-                "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht."
-                if issue_closed
-                else "Noch nicht in main erkannt."
-            ),
+            lifecycle_note=note,
         )
 
     if pr and pr.get("state") == "open":
+        note = "Review oder Merge steht noch aus."
+        if run.status == "pr_created_with_warning":
+            note = "PR offen, aber mit Warnung (z.B. Turn-Limit erreicht); Review oder Merge steht noch aus."
         return replace(
             run,
             lifecycle_label="PR open",
             lifecycle_state="pr-open",
             lifecycle_needs_attention=True,
-            lifecycle_note="Review oder Merge steht noch aus.",
+            lifecycle_note=note,
         )
 
     if pr and pr.get("state") == "closed":
+        note = "PR wurde ohne Merge geschlossen."
+        if run.status == "pr_created_with_warning":
+            note = "PR ohne Merge geschlossen, aber mit Warnung (z.B. Turn-Limit erreicht)."
         return replace(
             run,
             lifecycle_label="PR closed",
             lifecycle_state="pr-closed",
             lifecycle_needs_attention=True,
-            lifecycle_note="PR wurde ohne Merge geschlossen.",
+            lifecycle_note=note,
         )
 
     return fallback_lifecycle_for_run(run)

@@ -162,6 +162,10 @@ CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
     r"(?:reached the codex message limit|rate limit will be reset)",
     re.IGNORECASE,
 )
+VIBE_TURN_LIMIT_RE = re.compile(
+    r"<vibe_stop_event>Turn limit of \d+ reached</vibe_stop_event>",
+    re.IGNORECASE,
+)
 WORKER_LIVE_OUTPUT_RE = re.compile(
     r"("
     r"\b(task|aufgabe|plan|planung|planning|reasoning|reasoning summary|"
@@ -2065,7 +2069,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             close_issues=close_issues,
             dry_run=dry_run,
         )
-        status = "pr_created" if pr else "pr_failed"
+        # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
+        is_vibe_turn_limit = (
+            model == "mistral-vibe"
+            and pr
+            and VIBE_TURN_LIMIT_RE.search(diagnostic_result.output)
+        )
+        status = "pr_created_with_warning" if is_vibe_turn_limit else ("pr_created" if pr else "pr_failed")
         if not pr and run_report and should_preserve_worktree(
             status,
             repo_dir,
