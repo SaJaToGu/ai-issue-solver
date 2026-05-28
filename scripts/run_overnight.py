@@ -50,6 +50,40 @@ class StepResult:
         return self.skipped or self.returncode == 0
 
 
+def get_step_priority(step: StepResult) -> int:
+    """
+    Prioritaets-Funktion fuer die Sortierung von Schritten in Summaries.
+    
+    Rueckgabewert:
+        0 = hohe Prioritaet (erfolgreich, clean)
+        1 = mittlere Prioritaet (uebersprungen)
+        2 = niedrige Prioritaet (fehlgeschlagen)
+    
+    Sortierreihenfolge: clean runs zuerst, dann skipped, dann failed.
+    """
+    if step.ok and not step.skipped:
+        return 0  # Erfolgreiche Schritte
+    if step.skipped:
+        return 1  # Uebersprungene Schritte
+    return 2  # Fehlerhafte Schritte
+
+
+def get_step_badge(step: StepResult) -> str:
+    """
+    Erzeugt ein Status-Badge fuer einen Schritt.
+    
+    Badges:
+        [OK]     - Schritt erfolgreich (exit_code = 0)
+        [SKIP]   - Schritt uebersprungen
+        [FAIL]   - Schritt fehlgeschlagen (exit_code != 0)
+    """
+    if step.skipped:
+        return "[SKIP]"
+    if step.returncode == 0:
+        return "[OK]"
+    return "[FAIL]"
+
+
 def shell_words(command: str) -> list[str]:
     try:
         return shlex.split(command)

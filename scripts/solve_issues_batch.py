@@ -83,6 +83,51 @@ class IssueJobResult:
         return self.rate_limited
 
 
+def get_result_priority(result: IssueJobResult) -> int:
+    """
+    Prioritaets-Funktion fuer die Sortierung von Job-Ergebnissen in Summaries.
+    
+    Rueckgabewert:
+        0 = hohe Prioritaet (erfolgreich, clean, exit_code = 0)
+        1 = mittlere Prioritaet (Rate-Limit verzögert oder warnings)
+        2 = niedrige Prioritaet (fehlgeschlagen, unhealthy oder exit_code != 0)
+    
+    Sortierreihenfolge: clean runs zuerst, dann delayed/warnings, dann failed.
+    """
+    if result.ok:
+        return 0  # Erfolgreich: exit_code 0, kein delay, nicht unhealthy
+    if result.delayed or result.returncode == 0:
+        return 1  # Verzögert oder exit_code 0 aber mit Warnings (z.B. turn-limit)
+    return 2  # Fehlerhaft: exit_code != 0 oder unhealthy
+
+
+def get_result_badge(result: IssueJobResult) -> str:
+    """
+    Erzeugt ein Status-Badge fuer ein Job-Ergebnis.
+    
+    Badges:
+        [OK]         - Erfolgreich (exit_code = 0, kein delay, nicht unhealthy)
+        [DELAYED]    - Rate-Limit verzögert
+        [WARNING]    - Exit code 0 aber mit Potenzialen Problemen (z.B. turn-limit)
+        [FAIL]       - Fehlerhaft (exit_code != 0)
+        [UNHEALTHY]  - Worker unhealthy
+        [FALLBACK]   - Fallback wurde verwendet
+    """
+    if result.fallback_from:
+        return "[FALLBACK]"
+    if result.unhealthy:
+        return "[UNHEALTHY]"
+    if result.delayed:
+        return "[DELAYED]"
+    if result.returncode == 0:
+        # Pruefe ob es Warnungen wie turn-limit in der Ausgabe gibt
+        output_lower = result.output.lower()
+        if "turn limit" in output_lower or "turn-limit" in output_lower:
+            return "[WARNING]"
+        return "[OK]"
+    return "[FAIL]"
+
+
 @dataclass(frozen=True)
 class QueuedRunReport:
     job: IssueJob
@@ -815,10 +860,11 @@ def _format_reset_time(result: IssueJobResult) -> str:
 
 def _print_result_header(result: IssueJobResult, completed: int, total: int) -> None:
     """Druckt den Header für ein Job-Ergebnis."""
+    badge = get_result_badge(result)
     status = _get_result_status_label(result)
     print("\n" + "─" * 60)
     print(
-        f"[{completed}/{total}] {result.job.label} — {status} "
+        f"[{completed}/{total}] {result.job.label} {badge} — {status} "
         f"({result.duration_seconds:.1f}s, Exit {result.returncode})"
     )
 
@@ -1068,17 +1114,34 @@ def main(argv: list[str] | None = None) -> int:
         on_delay=print_job_delay if requeue_delayed or args.unhealthy_action == "retry" else None,
     )
 
+    # Sortiere Ergebnisse nach Prioritaet fuer die finale Zusammenfassung
+    sorted_results = sorted(results, key=get_result_priority)
+    
     solved = sum(1 for result in results if result.ok)
-    delayed = sum(1 for result in results if result.delayed)
-    failed = len(results) - solved - delayed
+    delayed_count = sum(1 for result in results if result.delayed)
+    warning_count = sum(
+        1 for result in results 
+        if result.returncode == 0 and not result.ok and not result.delayed
+    )
+    failed = len(results) - solved - delayed_count - warning_count
 
     print("\n" + "─" * 50)
     print(f"  ✅ Erfolgreich: {solved}")
-    print(f"  ⏳ Verzögert:   {delayed}")
+    print(f"  ⚠️  Warnungen:   {warning_count}")
+    print(f"  ⏳ Verzögert:   {delayed_count}")
     print(f"  ❌ Fehler:      {failed}")
+    print("─" * 50)
+    
+    # Zeige sortierte Ergebnisse mit Badges
+    print("\nReview-Reihenfolge (clean -> warnings -> delayed -> failed):")
+    for result in sorted_results:
+        badge = get_result_badge(result)
+        status = "OK" if result.ok else ("DELAYED" if result.delayed else "FAIL")
+        print(f"  {badge} {result.job.label} — {status} (Exit {result.returncode})")
+    
     print("─" * 50 + "\n")
 
-    return 0 if failed == 0 and delayed == 0 else 1
+    return 0 if failed == 0 and delayed_count == 0 else 1
 
 
 if __name__ == "__main__":
