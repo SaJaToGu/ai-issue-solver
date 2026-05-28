@@ -931,11 +931,14 @@ def lifecycle_from_github(run: DashboardRun, pr: dict | None,
                           issue: dict | None, in_main: bool) -> DashboardRun:
     issue_closed = bool(issue and issue.get("state") == "closed")
     if in_main:
-        note = (
-            "Code ist in main und Issue ist geschlossen."
-            if issue_closed
-            else "Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main."
-        )
+        if issue_closed:
+            label = "Issue closed"
+            state = "issue-closed"
+            note = "Code ist in main und Issue ist geschlossen."
+        else:
+            label = "In main (Issue offen)"
+            state = "in-main-issue-open"
+            note = "Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main."
         if run.status == "pr_created_with_warning":
             note = (
                 "Code ist in main und Issue ist geschlossen (PR mit Warnung, z.B. Turn-Limit erreicht)."
@@ -945,29 +948,32 @@ def lifecycle_from_github(run: DashboardRun, pr: dict | None,
             )
         return replace(
             run,
-            lifecycle_label="Issue closed" if issue_closed else "In main",
-            lifecycle_state="issue-closed" if issue_closed else "in-main",
+            lifecycle_label=label,
+            lifecycle_state=state,
             lifecycle_needs_attention=not issue_closed,
             lifecycle_note=note,
         )
 
     if pr and pr.get("merged_at"):
         base = ((pr.get("base") or {}).get("ref")) or run.base_branch or "develop"
-        note = (
-            "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht."
-            if issue_closed
-            else "Noch nicht in main erkannt."
-        )
+        if issue_closed:
+            note = "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht."
+            label = f"Merged to {base}"
+            state = "merged"
+        else:
+            note = "PR gemergt, aber Issue ist noch offen."
+            label = f"Merged to {base} (Issue offen)"
+            state = "merged-issue-open"
         if run.status == "pr_created_with_warning":
             note = (
                 "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht (PR mit Warnung, z.B. Turn-Limit erreicht)."
                 if issue_closed
-                else "Noch nicht in main erkannt (PR mit Warnung, z.B. Turn-Limit erreicht)."
+                else "PR gemergt, aber Issue ist noch offen (PR mit Warnung, z.B. Turn-Limit erreicht)."
             )
         return replace(
             run,
-            lifecycle_label=f"Merged to {base}",
-            lifecycle_state="merged",
+            lifecycle_label=label,
+            lifecycle_state=state,
             lifecycle_needs_attention=True,
             lifecycle_note=note,
         )
@@ -1007,15 +1013,22 @@ def recovered_lifecycle_from_github(run: DashboardRun, pr: dict,
     base = ((pr.get("base") or {}).get("ref")) or run.base_branch or "develop"
 
     if in_main:
-        label = "Issue closed" if issue_closed else "In main"
-        state = "issue-closed" if issue_closed else "in-main"
+        label = "Issue closed" if issue_closed else "In main (Issue offen)"
+        state = "issue-closed" if issue_closed else "in-main-issue-open"
         needs_attention = not issue_closed
     else:
-        label = f"Recovered to {base}"
-        state = "recovered"
-        needs_attention = not issue_closed
+        if issue_closed:
+            label = f"Recovered to {base}"
+            state = "recovered"
+            needs_attention = False
+        else:
+            label = f"Recovered to {base} (Issue offen)"
+            state = "recovered-issue-open"
+            needs_attention = True
 
     note = f"Original run failed; recovered via {pr_label}"
+    if not issue_closed and not in_main:
+        note += "; Issue ist noch offen."
     return replace(
         run,
         category="recovered",
@@ -1696,8 +1709,11 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     }}
     .lifecycle small {{ color: var(--muted); font-weight: 500; }}
     .lifecycle-pr-open, .lifecycle-merged, .lifecycle-pr-closed, .lifecycle-unknown {{ background: #fff4d6; color: #6f4500; }}
+    .lifecycle-merged-issue-open {{ background: #fef3c7; color: #92400e; }}
     .lifecycle-recovered {{ background: #ccfbf1; color: #115e59; }}
+    .lifecycle-recovered-issue-open {{ background: #fde68a; color: #92400e; }}
     .lifecycle-in-main {{ background: #dbeafe; color: #174ea6; }}
+    .lifecycle-in-main-issue-open {{ background: #bfdbfe; color: #1e40af; }}
     .lifecycle-issue-closed, .lifecycle-done {{ background: #dcfce7; color: #166534; }}
     .issue-number {{ font-weight: 700; white-space: nowrap; }}
     .issue-title {{ max-width: 320px; margin-top: 2px; color: var(--text); overflow-wrap: anywhere; }}
