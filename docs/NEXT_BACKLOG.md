@@ -16,6 +16,13 @@ python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md
 python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-create
 ```
 
+Clean up completed items (after their GitHub issues are closed) with:
+
+```bash
+python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md
+python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-remove
+```
+
 ## 1. Refactor solve_issues worker command construction
 
 Labels: `quality`, `workflow`
