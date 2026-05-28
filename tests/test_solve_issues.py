@@ -497,6 +497,29 @@ class WorkerValidationTests(unittest.TestCase):
         self.assertEqual(validation.errors, ())
 
 
+class VibeTurnLimitTests(unittest.TestCase):
+    def test_detects_vibe_turn_limit_event(self):
+        from solve_issues import VIBE_TURN_LIMIT_RE
+
+        output = "Worker finished with <vibe_stop_event>Turn limit of 30 reached</vibe_stop_event>"
+
+        self.assertTrue(VIBE_TURN_LIMIT_RE.search(output))
+
+    def test_detects_vibe_turn_limit_with_different_number(self):
+        from solve_issues import VIBE_TURN_LIMIT_RE
+
+        output = "Worker finished with <vibe_stop_event>Turn limit of 50 reached</vibe_stop_event>"
+
+        self.assertTrue(VIBE_TURN_LIMIT_RE.search(output))
+
+    def test_ignores_regular_output_without_turn_limit(self):
+        from solve_issues import VIBE_TURN_LIMIT_RE
+
+        output = "Worker finished normally with some changes"
+
+        self.assertIsNone(VIBE_TURN_LIMIT_RE.search(output))
+
+
 class CodexRateLimitTests(unittest.TestCase):
     def test_detects_codex_rate_limit_and_parses_reset_time(self):
         output = (
