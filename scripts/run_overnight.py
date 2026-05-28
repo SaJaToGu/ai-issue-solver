@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import re
 import shlex
 import subprocess
 import sys
@@ -22,6 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from solve_issues import MODEL_CONFIGS  # noqa: E402
 from solve_issues_batch import DEFAULT_WORKERS, positive_int  # noqa: E402
 from utils import print_banner, print_err, print_ok, print_step, print_warn  # noqa: E402
+
+
+# Regex zur Erkennung von Konfliktmarkern in Dateien
+CONFLICT_MARKER_RE = re.compile(r"^\s*(?:<{7}\s|>{7}\s|={7}\s*$)")
 
 
 DEFAULT_BASE_BRANCH = "main"
@@ -184,6 +189,182 @@ def format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+@dataclass(frozen=True)
+class IssueOutcome:
+    """Zusammenfassung der Ergebnisse eines einzelnen Issue-Runs."""
+    repo: str
+    issue_number: str
+    issue_title: str
+    status: str
+    category: str
+    worker_exit_code: str
+    pr_url: str
+    git_diff_stat: str
+    warning_markers: str  # "conflict" oder "syntax" oder leer
+    branch: str
+    model: str
+    run_dir: str
+
+
+def parse_summary_file(summary_path: Path) -> dict[str, str]:
+    """Parsed eine summary.txt Datei in ein Dictionary."""
+    fields: dict[str, str] = {}
+    if not summary_path.exists():
+        return fields
+
+    multiline_keys = {"git_diff_stat", "output_tail", "note", "cleanup_note"}
+    current_multiline_key = None
+    multiline_parts: list[str] = []
+
+    for raw_line in summary_path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = raw_line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        starts_multiline_key = bool(separator and key in multiline_keys)
+
+        if current_multiline_key:
+            if starts_multiline_key:
+                fields[current_multiline_key] = "\n".join(multiline_parts).strip()
+                current_multiline_key = key
+                multiline_parts = [value] if value else []
+                continue
+            multiline_parts.append(raw_line)
+            continue
+
+        if not raw_line.strip():
+            continue
+        if not separator:
+            continue
+        if key in multiline_keys:
+            current_multiline_key = key
+            if value:
+                multiline_parts.append(value)
+            continue
+        fields[key] = value
+
+    if current_multiline_key:
+        fields[current_multiline_key] = "\n".join(multiline_parts).strip()
+    return fields
+
+
+def classify_status(status: str, worker_exit_code: str = "") -> str:
+    """Klassifiziert den Status eines Runs (kopiert aus status_dashboard.py)."""
+    if not status:
+        return "unknown"
+    if status == "queued":
+        return "queued"
+    if status == "started":
+        return "running"
+    # Erfolgreiche Staende
+    if status in {"pr_created", "pr_created_from_existing_branch", "cleanup_successful"}:
+        return "successful"
+    # No-op Staende
+    if status in {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr", "cleanup_noop"}:
+        return "noop"
+    # Fehlgeschlagene Staende
+    if status in {
+        "branch_create_failed", "checkout_failed", "clone_failed",
+        "nonzero_without_changes", "pr_failed", "pr_failed_from_existing_branch",
+        "push_failed", "cleanup_failed", "rate_limit_deferred", "validation_failed",
+    } or status.endswith("_failed"):
+        return "failed"
+    # Archiviert
+    if status in {"archived", "cleanup_archived"}:
+        return "archived"
+    if worker_exit_code and worker_exit_code != "0":
+        return "failed"
+    return "noop"
+
+
+def detect_warning_markers(run_dir: Path) -> str:
+    """Erkennt Warnungsmarker in geaenderten Dateien eines Runs.
+
+    Gibt zurueck: "conflict" wenn Konfliktmarker gefunden, "syntax" bei
+    Python-Syntaxfehlern, sonst leer.
+    """
+    markers = []
+
+    # Pruefe auf Konfliktmarker in git_diff_stat oder in den Dateien
+    summary_path = run_dir / "summary.txt"
+    fields = parse_summary_file(summary_path)
+
+    git_diff_stat = fields.get("git_diff_stat", "")
+    if git_diff_stat and "conflict" in git_diff_stat.lower():
+        markers.append("conflict")
+
+    # Pruefe output_tail auf Konfliktmarker-Hinweise
+    output_tail = fields.get("output_tail", "")
+    if output_tail:
+        if "Konfliktmarker" in output_tail or "conflict marker" in output_tail.lower():
+            markers.append("conflict")
+        if "Syntaxpruefung fehlgeschlagen" in output_tail or "Syntaxfehler" in output_tail:
+            markers.append("syntax")
+
+    # Pruefe worker-output.log auf Konfliktmarker
+    worker_output_path = run_dir / "worker-output.log"
+    if worker_output_path.exists():
+        try:
+            output = worker_output_path.read_text(encoding="utf-8")
+            if "enthaelt Git-Konfliktmarker" in output:
+                markers.append("conflict")
+            if "Python-Syntaxpruefung fehlgeschlagen" in output:
+                markers.append("syntax")
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    return ",".join(sorted(set(markers)))
+
+
+def collect_issue_outcomes(runs_dir: Path) -> list[IssueOutcome]:
+    """Sammelt IssueOutcome-Objekte aus allen Run-Reports in runs_dir.
+
+    Sortiert nach Run-Verzeichnisname (zeitlich absteigend).
+    """
+    outcomes = []
+
+    if not runs_dir.exists():
+        return outcomes
+
+    for run_dir in sorted(runs_dir.iterdir(), reverse=True):
+        if not run_dir.is_dir():
+            continue
+
+        summary_path = run_dir / "summary.txt"
+        if not summary_path.exists():
+            continue
+
+        fields = parse_summary_file(summary_path)
+
+        status = fields.get("status", "")
+        exit_code = fields.get("worker_exit_code", "")
+        category = classify_status(status, exit_code)
+
+        # Skip queued/running runs - diese haben noch kein Ergebnis
+        if category in {"queued", "running", "unhealthy", "unknown"}:
+            continue
+
+        warning_markers = detect_warning_markers(run_dir)
+
+        outcome = IssueOutcome(
+            repo=fields.get("repo") or fields.get("selected_repo", ""),
+            issue_number=fields.get("issue_number") or fields.get("issue", ""),
+            issue_title=fields.get("issue_title", ""),
+            status=status,
+            category=category,
+            worker_exit_code=exit_code,
+            pr_url=fields.get("pr_url", ""),
+            git_diff_stat=fields.get("git_diff_stat", ""),
+            warning_markers=warning_markers,
+            branch=fields.get("branch", ""),
+            model=fields.get("model", ""),
+            run_dir=run_dir.name,
+        )
+        outcomes.append(outcome)
+    
+    # Sortiere nach Issue-Nummer (numerisch) und dann nach Run-Verzeichnis
+    return sorted(outcomes, key=lambda o: (int(o.issue_number) if o.issue_number.isdigit() else 999999, o.run_dir))
+
+
 def write_final_summary(
     summary_path: Path,
     session_dir: Path,
@@ -191,7 +372,13 @@ def write_final_summary(
     steps: list[StepResult],
     started_at: datetime,
     finished_at: datetime,
+    runs_dir: Path | None = None,
 ) -> None:
+    """Schreibt die finale Zusammenfassung der Overnight-Session.
+
+    Enthaelt neben den Schritten auch eine detaillierte Uebersicht pro Issue
+    mit PR-URL, Worker-Exit-Code, Warnungsmarkern, geaenderten Dateien und Status.
+    """
     failed_steps = [step for step in steps if not step.ok]
     status = "failed" if failed_steps else "successful"
     lines = [
@@ -228,6 +415,38 @@ def write_final_summary(
     if failed_steps:
         lines.extend(["", "failed_steps:"])
         lines.extend(f"- {step.name}" for step in failed_steps)
+
+    # Issue-Outcomes hinzufuegen, falls runs_dir verfuegbar
+    if runs_dir and runs_dir.exists():
+        outcomes = collect_issue_outcomes(runs_dir)
+        if outcomes:
+            lines.extend(["", "issues:"])
+            for outcome in outcomes:
+                lines.extend([
+                    f"- issue: {outcome.issue_number}",
+                    f"  repo: {outcome.repo}",
+                    f"  title: {outcome.issue_title}",
+                    f"  status: {outcome.status}",
+                    f"  category: {outcome.category}",
+                    f"  worker_exit_code: {outcome.worker_exit_code}",
+                ])
+                if outcome.pr_url:
+                    lines.append(f"  pr_url: {outcome.pr_url}")
+                if outcome.warning_markers:
+                    lines.append(f"  warning_markers: {outcome.warning_markers}")
+                if outcome.git_diff_stat:
+                    # Kompakt halten: nur die Zeilen mit Dateiaenderungen
+                    diff_lines = outcome.git_diff_stat.strip().split('\n')
+                    # Filtere nur die Zeilen mit tatsaechlichen Aenderungen (entferne Leerzeilen und Header)
+                    compact_diff = [line for line in diff_lines if line.strip() and not line.startswith('Git-')]
+                    if compact_diff:
+                        lines.append(f"  changed_files: {', '.join(compact_diff)}")
+                if outcome.branch:
+                    lines.append(f"  branch: {outcome.branch}")
+                if outcome.model:
+                    lines.append(f"  model: {outcome.model}")
+                lines.append(f"  run_dir: {outcome.run_dir}")
+
     summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -359,7 +578,8 @@ def main(argv: list[str] | None = None) -> int:
 
     finished_at = datetime.now()
     summary_path = session_dir / "summary.txt"
-    write_final_summary(summary_path, session_dir, args, steps, started_at, finished_at)
+    # Uebergibe args.runs_dir, um Issue-Outcomes in die Summary aufzunehmen
+    write_final_summary(summary_path, session_dir, args, steps, started_at, finished_at, args.runs_dir)
 
     failed_steps = [step for step in steps if not step.ok]
     print_step(6, "Finale Summary")

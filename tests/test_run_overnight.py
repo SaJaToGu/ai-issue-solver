@@ -11,13 +11,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from run_overnight import (  # noqa: E402
+    IssueOutcome,
     StepResult,
     build_batch_command,
     build_dashboard_command,
     build_pull_command,
+    classify_status,
+    collect_issue_outcomes,
     create_session_dir,
+    detect_warning_markers,
     format_duration,
     parse_args,
+    parse_summary_file,
     write_final_summary,
 )
 
@@ -144,6 +149,7 @@ class OvernightRunnerTests(unittest.TestCase):
                 steps,
                 datetime(2026, 5, 21, 22, 0, 0),
                 datetime(2026, 5, 21, 22, 0, 4),
+                runs_dir=None,  # Keine Issue-Outcomes
             )
             summary = summary_path.read_text(encoding="utf-8")
 
@@ -153,6 +159,204 @@ class OvernightRunnerTests(unittest.TestCase):
         self.assertIn("status: skipped", summary)
         self.assertIn("failed_steps:", summary)
         self.assertIn("- tests", summary)
+        self.assertNotIn("issues:", summary)
+
+    def test_write_final_summary_includes_issue_outcomes_when_runs_dir_provided(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir = Path(tmpdir) / "reports" / "overnight" / "run"
+            session_dir.mkdir(parents=True)
+            runs_dir = Path(tmpdir) / "reports" / "runs"
+            runs_dir.mkdir(parents=True)
+
+            # Erstelle einen Run-Report
+            run_dir = runs_dir / "20260521-090807-demo-issue-25"
+            run_dir.mkdir(parents=True)
+            (run_dir / "summary.txt").write_text(
+                """status: pr_created
+repo: demo
+issue_number: 25
+issue_title: Fix dashboard title
+branch: ai/fix-issue-25
+model: codex
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/25
+git_diff_stat:
+  README.md | 1 +
+  scripts/dashboard.py | 2 +-
+""",
+                encoding="utf-8",
+            )
+
+            summary_path = session_dir / "summary.txt"
+            args = self.make_args(repo="demo", dry_run=False, runs_dir=runs_dir)
+            steps = [
+                StepResult("batch", [], 0, session_dir / "batch.log", 10.5),
+            ]
+
+            write_final_summary(
+                summary_path,
+                session_dir,
+                args,
+                steps,
+                datetime(2026, 5, 21, 22, 0, 0),
+                datetime(2026, 5, 21, 22, 0, 11),
+                runs_dir=runs_dir,
+            )
+            summary = summary_path.read_text(encoding="utf-8")
+
+        self.assertIn("status: successful", summary)
+        self.assertIn("issues:", summary)
+        self.assertIn("- issue: 25", summary)
+        self.assertIn("  repo: demo", summary)
+        self.assertIn("  title: Fix dashboard title", summary)
+        self.assertIn("  status: pr_created", summary)
+        self.assertIn("  category: successful", summary)
+        self.assertIn("  worker_exit_code: 0", summary)
+        self.assertIn("  pr_url: https://github.com/test-owner/demo/pull/25", summary)
+        self.assertIn("  changed_files:", summary)
+        self.assertIn("README.md | 1 +", summary)
+
+    def test_parse_summary_file_handles_basic_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary_path = Path(tmpdir) / "summary.txt"
+            summary_path.write_text(
+                """status: pr_created
+repo: demo
+issue_number: 25
+worker_exit_code: 0
+""",
+                encoding="utf-8",
+            )
+            fields = parse_summary_file(summary_path)
+
+        self.assertEqual(fields["status"], "pr_created")
+        self.assertEqual(fields["repo"], "demo")
+        self.assertEqual(fields["issue_number"], "25")
+        self.assertEqual(fields["worker_exit_code"], "0")
+
+    def test_parse_summary_file_handles_multiline_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary_path = Path(tmpdir) / "summary.txt"
+            summary_path.write_text(
+                """status: pr_created
+git_diff_stat:
+  README.md | 1 +
+  scripts/dashboard.py | 2 +-
+output_tail:
+line 1
+line 2
+""",
+                encoding="utf-8",
+            )
+            fields = parse_summary_file(summary_path)
+
+        self.assertEqual(fields["status"], "pr_created")
+        self.assertIn("README.md | 1 +", fields["git_diff_stat"])
+        self.assertIn("scripts/dashboard.py | 2 +-", fields["git_diff_stat"])
+        self.assertEqual(fields["output_tail"], "line 1\nline 2")
+
+    def test_classify_status_groups_known_states(self):
+        self.assertEqual(classify_status(""), "unknown")
+        self.assertEqual(classify_status("queued"), "queued")
+        self.assertEqual(classify_status("started"), "running")
+        self.assertEqual(classify_status("pr_created"), "successful")
+        self.assertEqual(classify_status("no_changes"), "noop")
+        self.assertEqual(classify_status("clone_failed"), "failed")
+        self.assertEqual(classify_status("archived"), "archived")
+
+    def test_collect_issue_outcomes_returns_sorted_outcomes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            runs_dir.mkdir()
+
+            # Erstelle zwei Run-Reports
+            for issue_num in [42, 25]:
+                run_dir = runs_dir / f"20260521-090807-demo-issue-{issue_num}"
+                run_dir.mkdir()
+                (run_dir / "summary.txt").write_text(
+                    f"""status: pr_created
+repo: demo
+issue_number: {issue_num}
+issue_title: Issue {issue_num}
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/{issue_num}
+""",
+                    encoding="utf-8",
+                )
+
+            outcomes = collect_issue_outcomes(runs_dir)
+
+        # Sollte nach Issue-Nummer sortiert sein
+        self.assertEqual(len(outcomes), 2)
+        self.assertEqual(outcomes[0].issue_number, "25")
+        self.assertEqual(outcomes[1].issue_number, "42")
+        self.assertEqual(outcomes[0].category, "successful")
+        self.assertEqual(outcomes[1].category, "successful")
+
+    def test_collect_issue_outcomes_skips_queued_and_running(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            runs_dir.mkdir()
+
+            # Erstelle einen queued Run (sollte ignoriert werden)
+            queued_dir = runs_dir / "20260521-090807-demo-issue-99"
+            queued_dir.mkdir()
+            (queued_dir / "summary.txt").write_text(
+                """status: queued
+repo: demo
+issue_number: 99
+worker_exit_code:
+""",
+                encoding="utf-8",
+            )
+
+            # Erstelle einen erfolgreichen Run
+            done_dir = runs_dir / "20260521-090807-demo-issue-25"
+            done_dir.mkdir()
+            (done_dir / "summary.txt").write_text(
+                """status: pr_created
+repo: demo
+issue_number: 25
+worker_exit_code: 0
+""",
+                encoding="utf-8",
+            )
+
+            outcomes = collect_issue_outcomes(runs_dir)
+
+        # Nur der erfolgreiche Run sollte enthalten sein
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0].issue_number, "25")
+
+    def test_detect_warning_markers_finds_conflict_in_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            run_dir.mkdir()
+            (run_dir / "summary.txt").write_text(
+                """status: pr_created
+output_tail:
+enthaelt Git-Konfliktmarker
+""",
+                encoding="utf-8",
+            )
+            markers = detect_warning_markers(run_dir)
+
+        self.assertIn("conflict", markers)
+
+    def test_detect_warning_markers_finds_syntax_error_in_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            run_dir.mkdir()
+            (run_dir / "summary.txt").write_text(
+                """status: worker_finished
+output_tail:
+Python-Syntaxpruefung fehlgeschlagen
+""",
+                encoding="utf-8",
+            )
+            markers = detect_warning_markers(run_dir)
+
+        self.assertIn("syntax", markers)
 
     def test_format_duration_uses_compact_units(self):
         self.assertEqual(format_duration(4.4), "4s")
