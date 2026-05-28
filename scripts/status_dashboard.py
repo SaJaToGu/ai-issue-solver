@@ -51,21 +51,29 @@ CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# =============================================================================
+# Status-Konstanten und Klassifizierung
+# =============================================================================
+
 STATUS_LABELS = {
     "queued": "Queued",
     "running": "Running",
     "unhealthy": "Unhealthy",
     "failed": "Failed",
     "recovered": "Recovered",
+    "superseded": "Superseded",
     "successful": "Successful",
     "noop": "No-op",
     "archived": "Archived",
     "unknown": "Unknown",
 }
 
-STATUS_ORDER = ("queued", "running", "unhealthy", "failed", "recovered", "successful", "noop", "archived", "unknown")
+STATUS_ORDER = ("queued", "running", "unhealthy", "failed", "recovered", "superseded", "successful", "noop", "archived", "unknown")
+
+# Solver-Status-Werte: Gruppen für die Klassifizierung
 SUCCESS_STATUSES = {
     "pr_created",
+    "pr_created_with_warning",
     "pr_created_from_existing_branch",
     "cleanup_successful",
 }
@@ -98,6 +106,59 @@ CLEANUP_STATUS_VALUES = {
     "noop": "cleanup_noop",
     "archived": "archived",
 }
+
+
+# =============================================================================
+# Run-Prädikate für Klassifizierung und Lifecycle
+# =============================================================================
+
+def has_preserved_worktree(run: DashboardRun) -> bool:
+    """Prüft ob der Run ein erhaltenes Working Directory hat (Recovery möglich)."""
+    return bool(run.preserved_worktree)
+
+
+def has_issue_number(run: DashboardRun) -> bool:
+    """Prüft ob der Run eine verknüpfte Issue-Nummer hat."""
+    return bool(run.issue_number)
+
+
+def has_branch(run: DashboardRun) -> bool:
+    """Prüft ob der Run einen Branch hat."""
+    return bool(run.branch)
+
+
+def is_recoverable_failed(run: DashboardRun) -> bool:
+    """
+    Prüft ob ein fehlgeschlagener Run potenziell wiederhergestellt werden kann.
+
+    Ein Run gilt als wiederherstellbar wenn:
+    - Er den Status "failed" hat
+    - Ein preserved_worktree existiert
+    - Ein Branch vorhanden ist
+    - Eine Issue-Nummer verknüpft ist
+    """
+    return bool(
+        run.category == "failed"
+        and has_preserved_worktree(run)
+        and has_branch(run)
+        and has_issue_number(run)
+    )
+
+
+def is_failed_with_closed_issue_candidate(run: DashboardRun) -> bool:
+    """
+    Prüft ob ein fehlgeschlagener Run potenziell als "superseded" markiert werden kann.
+
+    Ein Run gilt als Kandidat für Superseded wenn:
+    - Er den Status "failed" hat
+    - Eine Issue-Nummer verknüpft ist
+    - KEIN preserved_worktree existiert (also kein Recovery möglich)
+    """
+    return bool(
+        run.category == "failed"
+        and has_issue_number(run)
+        and not has_preserved_worktree(run)
+    )
 
 
 @dataclass(frozen=True)
@@ -381,13 +442,32 @@ def recovery_hint_for_unhealthy(run_dir: Path) -> str:
     )
 
 
+# =============================================================================
+# Status-Klassifizierungsfunktionen
+# =============================================================================
+
 def classify_status(status: str, worker_exit_code: str = "") -> str:
+    """
+    Klassifiziert einen Solver-Status in eine Dashboard-Kategorie.
+
+    Args:
+        status: Der Roh-Status aus dem Run-Report (z.B. "pr_created", "started")
+        worker_exit_code: Der Exit-Code des Workers (für Fallback-Klassifizierung)
+
+    Returns:
+        Die Dashboard-Kategorie: queued, running, unhealthy, failed, recovered,
+        superseded, successful, noop, archived, oder unknown
+    """
     if not status:
         return "unknown"
+
+    # Direkte Zuordnung für spezifische Zustände
     if status == "queued":
         return "queued"
     if status == "started":
         return "running"
+
+    # Zuordnung über Status-Gruppen
     if status in ARCHIVED_STATUSES:
         return "archived"
     if status in SUCCESS_STATUSES:
@@ -396,20 +476,128 @@ def classify_status(status: str, worker_exit_code: str = "") -> str:
         return "noop"
     if status in FAILED_STATUSES or status.endswith("_failed"):
         return "failed"
+
+    # Fallback: Nicht-Null Exit-Code = failed
     if worker_exit_code and worker_exit_code != "0":
         return "failed"
+
+    # Default für unbekannte erfolgreiche Zustände
     return "noop"
+
+
+# =============================================================================
+# Gesundheitsprüfung für Runs
+# =============================================================================
+
+@dataclass(frozen=True)
+class HealthCheckResult:
+    """Ergebnis der Gesundheitsprüfung für einen Run."""
+    category: str
+    health_status: str
+    health_reason: str
+    recovery_hint: str
+
+
+def check_run_health(
+    category: str,
+    output_tail: str,
+    last_progress_at: datetime | None,
+    timeout: timedelta,
+    now: datetime,
+    run_dir: Path,
+) -> HealthCheckResult:
+    """
+    Führt die Gesundheitsprüfung für einen Running-Run durch.
+
+    Prüft ob ein Running-Run als "unhealthy" eingestuft werden muss aufgrund von:
+    - Codex-Rate-Limit ohne Reset-Zeit
+    - Fehlender Aktivitätszeit
+    - Timeout seit letzter Aktivität
+
+    Args:
+        category: Die aktuelle Kategorie des Runs
+        output_tail: Der Output-Tail für Rate-Limit-Prüfung
+        last_progress_at: Zeitpunkt der letzten Aktivität
+        timeout: Gesundheits-Timeout
+        now: Aktueller Zeitpunkt
+        run_dir: Das Verzeichnis des Runs (für Recovery-Hinweise)
+
+    Returns:
+        HealthCheckResult mit möglicherweise angepasster Kategorie und Gesundheitsinfo
+    """
+    # Prüfe Codex-Rate-Limit
+    rate_limit_until = codex_rate_limit_wait_until(output_tail)
+    in_known_wait = bool(rate_limit_until and rate_limit_until > now)
+
+    if category == "running" and CODEX_RATE_LIMIT_MESSAGE_RE.search(output_tail):
+        if not in_known_wait:
+            # Rate-Limit ohne zukünftige Reset-Zeit = unhealthy
+            return HealthCheckResult(
+                category="unhealthy",
+                health_status="unhealthy",
+                health_reason="Codex-Rate-Limit ohne zukuenftige Reset-Zeit",
+                recovery_hint=recovery_hint_for_unhealthy(run_dir),
+            )
+        else:
+            # Rate-Limit mit bekannter Wartezeit = running mit Hinweis
+            return HealthCheckResult(
+                category="running",
+                health_status="ok",
+                health_reason=f"Codex-Rate-Limit-Wartezeit bis {format_datetime(rate_limit_until)}",
+                recovery_hint="",
+            )
+
+    if category == "running" and not in_known_wait:
+        if last_progress_at is None:
+            # Keine Aktivitätszeit gefunden = unhealthy
+            return HealthCheckResult(
+                category="unhealthy",
+                health_status="unhealthy",
+                health_reason="keine Aktivitaetszeit im Run-Report gefunden",
+                recovery_hint=recovery_hint_for_unhealthy(run_dir),
+            )
+        elif now - last_progress_at > timeout:
+            # Timeout seit letzter Aktivität = unhealthy
+            return HealthCheckResult(
+                category="unhealthy",
+                health_status="unhealthy",
+                health_reason=(
+                    "letzte sinnvolle Aktivitaet "
+                    f"{format_datetime(last_progress_at)}; Timeout {int(timeout.total_seconds() / 60)} min"
+                ),
+                recovery_hint=recovery_hint_for_unhealthy(run_dir),
+            )
+
+    # Keine Gesundheitsprobleme erkannt
+    return HealthCheckResult(
+        category=category,
+        health_status="ok",
+        health_reason="",
+        recovery_hint="",
+    )
 
 
 def read_runs(runs_dir: Path,
               health_timeout_minutes: int = DEFAULT_HEALTH_TIMEOUT_MINUTES,
               now_fn=datetime.now) -> list[DashboardRun]:
+    """
+    Liest alle Run-Reports aus dem angegebenen Verzeichnis.
+
+    Args:
+        runs_dir: Das Verzeichnis mit den Run-Reports
+        health_timeout_minutes: Timeout in Minuten für Running-Runs
+        now_fn: Funktion zur Bestimmung der aktuellen Zeit (für Tests)
+
+    Returns:
+        Liste von DashboardRun-Objekten
+    """
     if not runs_dir.exists():
         return []
 
     runs = []
     now = now_fn()
     timeout = timedelta(minutes=health_timeout_minutes)
+
     for run_dir in sorted((path for path in runs_dir.iterdir() if path.is_dir()), reverse=True):
         fields = parse_summary(run_dir / "summary.txt")
         health = read_health_file(run_dir)
@@ -432,38 +620,19 @@ def read_runs(runs_dir: Path,
         last_report_update_at = explicit_report_update_at
         if last_report_update_at is None and explicit_activity_at is None:
             last_report_update_at = latest_datetime(health_mtime, summary_mtime)
+
+        # Klassifiziere den Status
         category = classify_status(status, exit_code)
-        health_status = "ok"
-        health_reason = ""
-        recovery_hint = ""
-        rate_limit_until = codex_rate_limit_wait_until(output_tail)
-        in_known_wait = bool(rate_limit_until and rate_limit_until > now)
+
+        # Führe Gesundheitsprüfung durch
         last_progress_at = latest_datetime(last_activity_at, last_report_update_at)
-        if (
-            category == "running"
-            and CODEX_RATE_LIMIT_MESSAGE_RE.search(output_tail)
-            and not in_known_wait
-        ):
-            category = "unhealthy"
-            health_status = "unhealthy"
-            health_reason = "Codex-Rate-Limit ohne zukuenftige Reset-Zeit"
-            recovery_hint = recovery_hint_for_unhealthy(run_dir)
-        elif category == "running" and not in_known_wait:
-            if last_progress_at is None:
-                category = "unhealthy"
-                health_status = "unhealthy"
-                health_reason = "keine Aktivitaetszeit im Run-Report gefunden"
-                recovery_hint = recovery_hint_for_unhealthy(run_dir)
-            elif now - last_progress_at > timeout:
-                category = "unhealthy"
-                health_status = "unhealthy"
-                health_reason = (
-                    "letzte sinnvolle Aktivitaet "
-                    f"{format_datetime(last_progress_at)}; Timeout {health_timeout_minutes} min"
-                )
-                recovery_hint = recovery_hint_for_unhealthy(run_dir)
-        elif category == "running" and in_known_wait:
-            health_reason = f"Codex-Rate-Limit-Wartezeit bis {format_datetime(rate_limit_until)}"
+        health_result = check_run_health(
+            category, output_tail, last_progress_at, timeout, now, run_dir
+        )
+        category = health_result.category
+        health_status = health_result.health_status
+        health_reason = health_result.health_reason
+        recovery_hint = health_result.recovery_hint
         model = fields.get("model", "")
         fallback_from = fields.get("fallback_from", "")
         actual_model = fields.get("actual_model", "")
@@ -672,11 +841,37 @@ def github_links(run: DashboardRun, owner: str | None) -> dict[str, str]:
     return links
 
 
+# =============================================================================
+# Lifecycle-Helperfunktionen
+# =============================================================================
+
+def is_successful_pr_created(run: DashboardRun) -> bool:
+    """Prüft ob ein Run erfolgreich mit PR-Erstellung abgeschlossen wurde."""
+    return run.category == "successful" and run.status.startswith("pr_created")
+
+
+def is_cleanup_successful(run: DashboardRun) -> bool:
+    """Prüft ob ein Run ein erfolgreicher Cleanup-Run ist."""
+    return run.category == "successful" and run.status == "cleanup_successful"
+
+
 def fallback_lifecycle_for_run(run: DashboardRun) -> DashboardRun:
+    """
+    Erstellt einen Fallback-Lifecycle für Runs ohne GitHub-Daten.
+
+    Args:
+        run: Der DashboardRun
+
+    Returns:
+        Der Run mit Lifecycle-Informationen oder unverändert
+    """
     if run.category != "successful":
         return run
-    if run.status.startswith("pr_created"):
+
+    if is_successful_pr_created(run):
         note = "GitHub-Status nicht geladen; pruefe PR-Link."
+        if run.status == "pr_created_with_warning":
+            note = "GitHub-Status nicht geladen; PR erstellt aber mit Warnung (z.B. Turn-Limit erreicht). Pruefe PR-Link."
         return replace(
             run,
             lifecycle_label="PR created",
@@ -684,7 +879,8 @@ def fallback_lifecycle_for_run(run: DashboardRun) -> DashboardRun:
             lifecycle_needs_attention=True,
             lifecycle_note=note,
         )
-    if run.status == "cleanup_successful":
+
+    if is_cleanup_successful(run):
         return replace(
             run,
             lifecycle_label="Cleanup done",
@@ -692,10 +888,12 @@ def fallback_lifecycle_for_run(run: DashboardRun) -> DashboardRun:
             lifecycle_needs_attention=False,
             lifecycle_note="Lokaler Cleanup-Run ohne PR-Lifecycle.",
         )
+
     return run
 
 
 def with_fallback_lifecycle(runs: list[DashboardRun]) -> list[DashboardRun]:
+    """Wendet Fallback-Lifecycle auf alle Runs an."""
     return [fallback_lifecycle_for_run(run) for run in runs]
 
 
@@ -710,61 +908,98 @@ def pr_number_from_data(pr: dict | None) -> str:
     return str(pr.get("number") or pr_number_from_url(str(pr.get("html_url") or "")))
 
 
+# Kompatibilitäts-Aliase für bestehende Aufrufe (deprecated, aber für Backwards-Kompatibilität)
 def is_recoverable_failed_candidate(run: DashboardRun) -> bool:
-    return bool(
-        run.category == "failed"
-        and run.preserved_worktree
-        and run.branch
-        and run.issue_number
-    )
+    """
+    DEPRECATED: Verwende stattdessen is_recoverable_failed().
+
+    Prüft ob ein fehlgeschlagener Run ein Recovery-Kandidat ist.
+    """
+    return is_recoverable_failed(run)
+
+
+def is_failed_with_closed_issue(run: DashboardRun) -> bool:
+    """
+    DEPRECATED: Verwende stattdessen is_failed_with_closed_issue_candidate().
+
+    Check if a failed run has a closed issue and should be marked as superseded.
+    """
+    return is_failed_with_closed_issue_candidate(run)
 
 
 def lifecycle_from_github(run: DashboardRun, pr: dict | None,
                           issue: dict | None, in_main: bool) -> DashboardRun:
     issue_closed = bool(issue and issue.get("state") == "closed")
     if in_main:
+        if issue_closed:
+            label = "Issue closed"
+            state = "issue-closed"
+            note = "Code ist in main und Issue ist geschlossen."
+        else:
+            label = "In main (Issue offen)"
+            state = "in-main-issue-open"
+            note = "Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main."
+        if run.status == "pr_created_with_warning":
+            note = (
+                "Code ist in main und Issue ist geschlossen (PR mit Warnung, z.B. Turn-Limit erreicht)."
+                if issue_closed
+                else "Code ist in main; Issue ist noch offen (PR mit Warnung, z.B. Turn-Limit erreicht)."
+                if issue else "Merge-Commit ist in main (PR mit Warnung, z.B. Turn-Limit erreicht)."
+            )
         return replace(
             run,
-            lifecycle_label="Issue closed" if issue_closed else "In main",
-            lifecycle_state="issue-closed" if issue_closed else "in-main",
+            lifecycle_label=label,
+            lifecycle_state=state,
             lifecycle_needs_attention=not issue_closed,
-            lifecycle_note=(
-                "Code ist in main und Issue ist geschlossen."
-                if issue_closed
-                else "Code ist in main; Issue ist noch offen." if issue else "Merge-Commit ist in main."
-            ),
+            lifecycle_note=note,
         )
 
     if pr and pr.get("merged_at"):
         base = ((pr.get("base") or {}).get("ref")) or run.base_branch or "develop"
+        if issue_closed:
+            note = "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht."
+            label = f"Merged to {base}"
+            state = "merged"
+        else:
+            note = "PR gemergt, aber Issue ist noch offen."
+            label = f"Merged to {base} (Issue offen)"
+            state = "merged-issue-open"
+        if run.status == "pr_created_with_warning":
+            note = (
+                "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht (PR mit Warnung, z.B. Turn-Limit erreicht)."
+                if issue_closed
+                else "PR gemergt, aber Issue ist noch offen (PR mit Warnung, z.B. Turn-Limit erreicht)."
+            )
         return replace(
             run,
-            lifecycle_label=f"Merged to {base}",
-            lifecycle_state="merged",
+            lifecycle_label=label,
+            lifecycle_state=state,
             lifecycle_needs_attention=True,
-            lifecycle_note=(
-                "Issue ist geschlossen, aber main enthaelt den Merge-Commit noch nicht."
-                if issue_closed
-                else "Noch nicht in main erkannt."
-            ),
+            lifecycle_note=note,
         )
 
     if pr and pr.get("state") == "open":
+        note = "Review oder Merge steht noch aus."
+        if run.status == "pr_created_with_warning":
+            note = "PR offen, aber mit Warnung (z.B. Turn-Limit erreicht); Review oder Merge steht noch aus."
         return replace(
             run,
             lifecycle_label="PR open",
             lifecycle_state="pr-open",
             lifecycle_needs_attention=True,
-            lifecycle_note="Review oder Merge steht noch aus.",
+            lifecycle_note=note,
         )
 
     if pr and pr.get("state") == "closed":
+        note = "PR wurde ohne Merge geschlossen."
+        if run.status == "pr_created_with_warning":
+            note = "PR ohne Merge geschlossen, aber mit Warnung (z.B. Turn-Limit erreicht)."
         return replace(
             run,
             lifecycle_label="PR closed",
             lifecycle_state="pr-closed",
             lifecycle_needs_attention=True,
-            lifecycle_note="PR wurde ohne Merge geschlossen.",
+            lifecycle_note=note,
         )
 
     return fallback_lifecycle_for_run(run)
@@ -778,15 +1013,22 @@ def recovered_lifecycle_from_github(run: DashboardRun, pr: dict,
     base = ((pr.get("base") or {}).get("ref")) or run.base_branch or "develop"
 
     if in_main:
-        label = "Issue closed" if issue_closed else "In main"
-        state = "issue-closed" if issue_closed else "in-main"
+        label = "Issue closed" if issue_closed else "In main (Issue offen)"
+        state = "issue-closed" if issue_closed else "in-main-issue-open"
         needs_attention = not issue_closed
     else:
-        label = f"Recovered to {base}"
-        state = "recovered"
-        needs_attention = not issue_closed
+        if issue_closed:
+            label = f"Recovered to {base}"
+            state = "recovered"
+            needs_attention = False
+        else:
+            label = f"Recovered to {base} (Issue offen)"
+            state = "recovered-issue-open"
+            needs_attention = True
 
     note = f"Original run failed; recovered via {pr_label}"
+    if not issue_closed and not in_main:
+        note += "; Issue ist noch offen."
     return replace(
         run,
         category="recovered",
@@ -796,6 +1038,22 @@ def recovered_lifecycle_from_github(run: DashboardRun, pr: dict,
         lifecycle_needs_attention=needs_attention,
         lifecycle_note=note,
     )
+
+
+def superseded_lifecycle_from_github(run: DashboardRun, issue: dict | None) -> DashboardRun:
+    """Mark a failed run as superseded when the related issue is closed."""
+    issue_closed = bool(issue and issue.get("state") == "closed")
+
+    if issue_closed:
+        return replace(
+            run,
+            category="superseded",
+            lifecycle_label="Issue closed",
+            lifecycle_state="issue-closed",
+            lifecycle_needs_attention=False,
+            lifecycle_note="Originaler fehlgeschlagener Run; Issue wurde geschlossen oder durch andere Arbeit gelost.",
+        )
+    return run
 
 
 def select_merged_pull_request(pulls: list[dict]) -> dict | None:
@@ -870,42 +1128,85 @@ def run_to_lifecycle_cache(run: DashboardRun) -> dict:
 
 def enrich_single_run_from_github(run: DashboardRun, owner: str | None,
                                   client: DashboardGitHubClient) -> DashboardRun:
-    if run.category != "successful" and not is_recoverable_failed_candidate(run):
+    """
+    Reichert einen einzelnen Run mit GitHub-Lifecycle-Daten an.
+
+    Args:
+        run: Der zu anreichende Run
+        owner: Der GitHub Owner
+        client: Der GitHub API Client
+
+    Returns:
+        Der angereicherte Run (oder unverändert falls nicht anreichbar)
+    """
+    # Prüfe ob dieser Run für Anreicherung infrage kommt
+    if run.category != "successful" and not is_recoverable_failed(run) and not is_failed_with_closed_issue_candidate(run):
         return run
 
     repo_owner = repo_owner_for_url(run.repo, owner)
     repo_name = repo_name_for_url(run.repo)
     if not repo_owner or not repo_name:
         return fallback_lifecycle_for_run(run)
+
     repo_for_api = run.repo if "/" in run.repo else repo_name
 
+    # --- Erfolgreiche Runs: PR- und Issue-Status abfragen ---
     if run.category == "successful":
-        pr = None
-        pr_number = pr_number_from_url(run.pr_url)
-        if pr_number:
-            pr = client.get_pull_request(repo_for_api, pr_number)
-        elif run.branch:
-            prs = client.get_pull_requests_for_branch(repo_for_api, run.branch)
-            pr = prs[0] if prs else None
-
-        issue = client.get_issue(repo_for_api, run.issue_number) if run.issue_number else None
+        pr = _fetch_pull_request_for_run(run, repo_for_api, client)
+        issue = client.get_issue(repo_for_api, run.issue_number) if has_issue_number(run) else None
         merge_sha = str((pr or {}).get("merge_commit_sha") or "")
         in_main = bool(merge_sha and client.branch_contains_commit(repo_for_api, "main", merge_sha))
         return lifecycle_from_github(run, pr, issue, in_main)
 
-    # Recovery-Erkennung bleibt bewusst flach: Branch-Suche zuerst, danach
-    # eine einfache PR-Suche zur Issue-Nummer statt Timeline-/Review-Replikation.
-    pulls = client.get_pull_requests_for_branch(repo_for_api, run.branch)
-    pr = select_merged_pull_request(pulls)
-    if not pr and run.issue_number and hasattr(client, "get_pull_requests_for_issue"):
-        pr = select_merged_pull_request(client.get_pull_requests_for_issue(repo_for_api, run.issue_number))
-    if not pr:
-        return run
+    # --- Wiederherstellbare fehlgeschlagene Runs: Recovery erkennen ---
+    if is_recoverable_failed(run):
+        # Recovery-Erkennung bleibt bewusst flach: Branch-Suche zuerst, danach
+        # eine einfache PR-Suche zur Issue-Nummer statt Timeline-/Review-Replikation.
+        pulls = client.get_pull_requests_for_branch(repo_for_api, run.branch)
+        pr = select_merged_pull_request(pulls)
+        if not pr and has_issue_number(run) and hasattr(client, "get_pull_requests_for_issue"):
+            pr = select_merged_pull_request(
+                client.get_pull_requests_for_issue(repo_for_api, run.issue_number)
+            )
+        if not pr:
+            return run
 
-    issue = client.get_issue(repo_for_api, run.issue_number) if run.issue_number else None
-    merge_sha = str(pr.get("merge_commit_sha") or "")
-    in_main = bool(merge_sha and client.branch_contains_commit(repo_for_api, "main", merge_sha))
-    return recovered_lifecycle_from_github(run, pr, issue, in_main)
+        issue = client.get_issue(repo_for_api, run.issue_number) if has_issue_number(run) else None
+        merge_sha = str(pr.get("merge_commit_sha") or "")
+        in_main = bool(merge_sha and client.branch_contains_commit(repo_for_api, "main", merge_sha))
+        return recovered_lifecycle_from_github(run, pr, issue, in_main)
+
+    # --- Fehlgeschlagene Runs mit geschlossener Issue: Superseded markieren ---
+    if is_failed_with_closed_issue_candidate(run):
+        issue = client.get_issue(repo_for_api, run.issue_number) if has_issue_number(run) else None
+        return superseded_lifecycle_from_github(run, issue)
+
+    return run
+
+
+def _fetch_pull_request_for_run(run: DashboardRun, repo: str,
+                                  client: DashboardGitHubClient) -> dict | None:
+    """
+    Holt die Pull Request Daten für einen Run.
+
+    Sucht zuerst nach PR-Nummer in der URL, dann nach Branch.
+
+    Args:
+        run: Der DashboardRun
+        repo: Das Repository für die API
+        client: Der GitHub API Client
+
+    Returns:
+        Die PR-Daten oder None
+    """
+    pr = None
+    pr_number = pr_number_from_url(run.pr_url)
+    if pr_number:
+        pr = client.get_pull_request(repo, pr_number)
+    elif has_branch(run):
+        prs = client.get_pull_requests_for_branch(repo, run.branch)
+        pr = prs[0] if prs else None
+    return pr
 
 
 def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: str | None,
@@ -913,20 +1214,41 @@ def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: 
                             cache_ttl_seconds: int = DEFAULT_GITHUB_CACHE_TTL_SECONDS,
                             client: DashboardGitHubClient | None = None,
                             now_fn=datetime.now) -> GitHubEnrichmentResult:
+    """
+    Reichert Runs mit GitHub-Lifecycle-Daten an (mit Cache-Unterstützung).
+
+    Args:
+        runs: Liste der DashboardRuns
+        owner: GitHub Owner
+        token: GitHub API Token
+        cache_path: Pfad zur Cache-Datei
+        cache_ttl_seconds: Cache TTL in Sekunden
+        client: Optionaler GitHub Client
+        now_fn: Funktion für aktuelle Zeit (für Tests)
+
+    Returns:
+        GitHubEnrichmentResult mit angereicherten Runs
+    """
     fallback_runs = with_fallback_lifecycle(runs)
+
+    # Bestimme welche Runs für Anreicherung infrage kommen
     eligible = [
         run for run in runs
-        if run.category == "successful" or is_recoverable_failed_candidate(run)
+        if run.category == "successful"
+        or is_recoverable_failed(run)
+        or is_failed_with_closed_issue_candidate(run)
     ]
+
     if not eligible:
         return GitHubEnrichmentResult(fallback_runs, used_github=False, used_cache=False)
 
     cached_entries = load_github_cache(cache_path, cache_ttl_seconds, now_fn=now_fn)
     if cached_entries is not None:
+        # Cache-Treffer: Lifecycle aus Cache laden
         enriched = [
             run_from_lifecycle_cache(run, cached_entries[lifecycle_cache_key(run, owner)])
             if lifecycle_cache_key(run, owner) in cached_entries
-            else fallback_lifecycle_for_run(run)
+            else fallback_lifecycle_for_run(run) if run.category == "successful" else run
             for run in runs
         ]
         return GitHubEnrichmentResult(enriched, used_github=False, used_cache=True)
@@ -949,7 +1271,10 @@ def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: 
         for run in runs:
             enriched = enrich_single_run_from_github(run, owner, client)
             enriched_runs.append(enriched)
-            if run.category == "successful" or is_recoverable_failed_candidate(run):
+            # Cache nur für Runs die Anreicherung benötigen
+            if (run.category == "successful"
+                or is_recoverable_failed(run)
+                or is_failed_with_closed_issue_candidate(run)):
                 entries[lifecycle_cache_key(run, owner)] = run_to_lifecycle_cache(enriched)
     except Exception as exc:  # Dashboard-Generierung darf nicht an GitHub scheitern.
         return GitHubEnrichmentResult(
@@ -1264,6 +1589,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       --success: #18794e;
       --failed: #c92a2a;
       --recovered: #0f766e;
+      --superseded: #6b7280;
       --noop: #6b7280;
       --archived: #7c4a03;
       --unknown: #8a63d2;
@@ -1318,6 +1644,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .metric-successful {{ border-color: var(--success); }}
     .metric-failed {{ border-color: var(--failed); }}
     .metric-recovered {{ border-color: var(--recovered); }}
+    .metric-superseded {{ border-color: var(--superseded); }}
     .metric-noop {{ border-color: var(--noop); }}
     .metric-archived {{ border-color: var(--archived); }}
     .metric-unknown {{ border-color: var(--unknown); }}
@@ -1350,6 +1677,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     .badge-successful {{ background: var(--success); }}
     .badge-failed {{ background: var(--failed); }}
     .badge-recovered {{ background: var(--recovered); }}
+    .badge-superseded {{ background: var(--superseded); }}
     .badge-noop {{ background: var(--noop); }}
     .badge-archived {{ background: var(--archived); }}
     .badge-unknown {{ background: var(--unknown); }}
@@ -1381,8 +1709,11 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     }}
     .lifecycle small {{ color: var(--muted); font-weight: 500; }}
     .lifecycle-pr-open, .lifecycle-merged, .lifecycle-pr-closed, .lifecycle-unknown {{ background: #fff4d6; color: #6f4500; }}
+    .lifecycle-merged-issue-open {{ background: #fef3c7; color: #92400e; }}
     .lifecycle-recovered {{ background: #ccfbf1; color: #115e59; }}
+    .lifecycle-recovered-issue-open {{ background: #fde68a; color: #92400e; }}
     .lifecycle-in-main {{ background: #dbeafe; color: #174ea6; }}
+    .lifecycle-in-main-issue-open {{ background: #bfdbfe; color: #1e40af; }}
     .lifecycle-issue-closed, .lifecycle-done {{ background: #dcfce7; color: #166534; }}
     .issue-number {{ font-weight: 700; white-space: nowrap; }}
     .issue-title {{ max-width: 320px; margin-top: 2px; color: var(--text); overflow-wrap: anywhere; }}
