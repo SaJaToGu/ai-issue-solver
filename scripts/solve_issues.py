@@ -754,6 +754,41 @@ def build_opencode_command(prompt: str, repo_path: str,
     return cmd
 
 
+def get_worker_display_name(model: str) -> str:
+    """Gibt den Anzeigenamen für ein Worker-Modell zurück."""
+    return MODEL_CONFIGS[model]["display_name"]
+
+
+def build_worker_command(model: str, model_name: str, prompt: str, repo_path: str,
+                           file_targets: list[str] | None = None) -> list:
+    """Baut den KI-Worker-Befehl basierend auf dem Modell.
+
+    Zentralisiert die Command-Konstruktion für alle unterstützten Worker.
+    Für aider kann optional eine Liste von Dateizielen übergeben werden.
+    Für model_name wird None an die Builder weitergegeben, falls nicht gesetzt.
+
+    Args:
+        model: Das zu verwendende Modell (codex, claude, openai, mistral, ollama, mistral-vibe, opencode)
+        model_name: Spezifischer Modellname oder leerer String
+        prompt: Der Prompt für den Worker
+        repo_path: Pfad zum Repository
+        file_targets: Optionale Liste von Dateizielen (nur für aider relevant)
+
+    Returns:
+        Die Befehlszeile als Liste von String-Argumenten
+    """
+    effective_model_name = model_name if model_name else None
+
+    if model == "codex":
+        return build_codex_command(prompt, repo_path, effective_model_name)
+    elif model == "mistral-vibe":
+        return build_vibe_command(prompt, repo_path)
+    elif model == "opencode":
+        return build_opencode_command(prompt, repo_path, effective_model_name)
+    else:
+        return build_aider_command(model, model_name, prompt, repo_path, file_targets)
+
+
 def run_worker_command(cmd: list, repo_dir: str, env: dict,
                        run_report: RunReport | None = None) -> WorkerRunResult:
     """Fuehrt den KI-Worker aus, zeigt verdichteten Output und haelt Rohdaten fest."""
@@ -1836,18 +1871,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         env = build_worker_env(model, config["config"])
 
         # KI-Worker ausführen
-        if model == "codex":
-            print(f"      🤖 Starte Codex ...", flush=True)
-            cmd = build_codex_command(prompt, repo_dir, model_name or None)
-        elif model == "mistral-vibe":
-            print(f"      🤖 Starte Mistral Vibe ...", flush=True)
-            cmd = build_vibe_command(prompt, repo_dir)
-        elif model == "opencode":
-            print(f"      🤖 Starte OpenCode ...", flush=True)
-            cmd = build_opencode_command(prompt, repo_dir, model_name or None)
-        else:
-            print(f"      🤖 Starte aider ...", flush=True)
-            cmd = build_aider_command(model, model_name, prompt, repo_dir)
+        display_name = get_worker_display_name(model)
+        print(f"      🤖 Starte {display_name} ...", flush=True)
+        cmd = build_worker_command(model, model_name, prompt, repo_dir)
 
         rate_limit_retries = 0
         rate_limit_deferred_note = None
