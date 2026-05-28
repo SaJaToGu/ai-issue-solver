@@ -115,6 +115,9 @@ MODEL_CONFIGS = {
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
 RUN_REPORTS_ROOT = Path("reports") / "runs"
+VIBE_LOG_PATH = Path(".vibe") / "logs" / "vibe.log"
+VIBE_LOG_SNIPPET_LINES = 15
+VIBE_LOG_SNIPPET_CHARS = 2000
 PRESERVED_WORKTREES_ROOT = Path("reports") / "preserved-worktrees"
 PRESERVED_WORKTREE_RETENTION_DAYS = 14
 GIT_SUMMARY_MAX_STATUS_LINES = 20
@@ -160,6 +163,10 @@ CODEX_RATE_LIMIT_RESET_RE = re.compile(
 )
 CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
     r"(?:reached the codex message limit|rate limit will be reset)",
+    re.IGNORECASE,
+)
+VIBE_TURN_LIMIT_RE = re.compile(
+    r"<vibe_stop_event>Turn limit of \d+ reached</vibe_stop_event>",
     re.IGNORECASE,
 )
 WORKER_LIVE_OUTPUT_RE = re.compile(
@@ -754,6 +761,41 @@ def build_opencode_command(prompt: str, repo_path: str,
     return cmd
 
 
+def get_worker_display_name(model: str) -> str:
+    """Gibt den Anzeigenamen für ein Worker-Modell zurück."""
+    return MODEL_CONFIGS[model]["display_name"]
+
+
+def build_worker_command(model: str, model_name: str, prompt: str, repo_path: str,
+                           file_targets: list[str] | None = None) -> list:
+    """Baut den KI-Worker-Befehl basierend auf dem Modell.
+
+    Zentralisiert die Command-Konstruktion für alle unterstützten Worker.
+    Für aider kann optional eine Liste von Dateizielen übergeben werden.
+    Für model_name wird None an die Builder weitergegeben, falls nicht gesetzt.
+
+    Args:
+        model: Das zu verwendende Modell (codex, claude, openai, mistral, ollama, mistral-vibe, opencode)
+        model_name: Spezifischer Modellname oder leerer String
+        prompt: Der Prompt für den Worker
+        repo_path: Pfad zum Repository
+        file_targets: Optionale Liste von Dateizielen (nur für aider relevant)
+
+    Returns:
+        Die Befehlszeile als Liste von String-Argumenten
+    """
+    effective_model_name = model_name if model_name else None
+
+    if model == "codex":
+        return build_codex_command(prompt, repo_path, effective_model_name)
+    elif model == "mistral-vibe":
+        return build_vibe_command(prompt, repo_path)
+    elif model == "opencode":
+        return build_opencode_command(prompt, repo_path, effective_model_name)
+    else:
+        return build_aider_command(model, model_name, prompt, repo_path, file_targets)
+
+
 def run_worker_command(cmd: list, repo_dir: str, env: dict,
                        run_report: RunReport | None = None) -> WorkerRunResult:
     """Fuehrt den KI-Worker aus, zeigt verdichteten Output und haelt Rohdaten fest."""
@@ -810,6 +852,49 @@ def should_surface_worker_line(line: str) -> bool:
 def print_worker_suppression_summary(count: int) -> None:
     if count:
         print(f"        | ... {count} Detailzeilen ausgeblendet; Rohoutput bleibt in der Diagnose erhalten")
+
+
+def read_vibe_log_snippet(repo_dir: str) -> str:
+    """Liest ein kompakter Snippet aus der Vibe-Log-Datei, falls vorhanden.
+    
+    Sucht nach .vibe/logs/vibe.log im Arbeitsverzeichnis und extrahiert die
+    letzten relevanten Zeilen. Gibt einen leeren String zurueck, wenn die
+    Datei nicht existiert oder nicht lesbar ist.
+    """
+    vibe_log = Path(repo_dir) / VIBE_LOG_PATH
+    if not vibe_log.exists():
+        return ""
+    
+    try:
+        content = vibe_log.read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    
+    if not content.strip():
+        return ""
+    
+    lines = content.strip().splitlines()
+    # Filtere relevante Zeilen (aehnlich wie bei Worker-Output)
+    relevant_lines = [line for line in lines if line.strip() and should_surface_worker_line(line)]
+    
+    if not relevant_lines:
+        # Falls keine relevanten Zeilen gefunden, nimm die letzten Zeilen
+        relevant_lines = lines[-VIBE_LOG_SNIPPET_LINES:] if len(lines) > VIBE_LOG_SNIPPET_LINES else lines
+    else:
+        # Nimm die letzten relevanten Zeilen
+        relevant_lines = relevant_lines[-VIBE_LOG_SNIPPET_LINES:]
+    
+    snippet = "\n".join(relevant_lines)
+    
+    # Begrenze auf maximale Laenge
+    if len(snippet) > VIBE_LOG_SNIPPET_CHARS:
+        snippet = snippet[-VIBE_LOG_SNIPPET_CHARS:]
+        # Versuche, an einer Zeilengrenze zu schneiden
+        last_newline = snippet.rfind("\n")
+        if last_newline > 0:
+            snippet = snippet[last_newline + 1:]
+    
+    return snippet
 
 
 def git_status_porcelain(repo_dir: str) -> str:
@@ -1112,7 +1197,8 @@ def write_run_report(report: RunReport, status: str,
                      note: str | None = None,
                      preserved_worktree_path: Path | str | None = None,
                      base_branch: str | None = None,
-                     git_change_summary: list[str] | None = None) -> Path | None:
+                     git_change_summary: list[str] | None = None,
+                     vibe_log_snippet: str | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -1120,6 +1206,7 @@ def write_run_report(report: RunReport, status: str,
     pr_value = pr_url or ""
     preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
     cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
+    vibe_snippet = vibe_log_snippet or ""
 
     try:
         if worker_result is not None:
@@ -1144,6 +1231,7 @@ def write_run_report(report: RunReport, status: str,
             "preserved_worktree": preserved_value,
             "cleanup_command": cleanup_command,
             "git_change_summary": git_change_summary or [],
+            "vibe_log_snippet": vibe_snippet,
         }
         (report.path / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -1179,6 +1267,8 @@ def write_run_report(report: RunReport, status: str,
             summary_lines.extend(["", "git_diff_stat:", *git_change_summary])
         if output_tail:
             summary_lines.extend(["", "output_tail:", output_tail])
+        if vibe_snippet:
+            summary_lines.extend(["", "vibe_log_snippet:", vibe_snippet])
 
         (report.path / "summary.txt").write_text(
             "\n".join(summary_lines) + "\n",
@@ -1747,6 +1837,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 recovery_plan.action,
                 pr_url=recovery_plan.pull_request.html_url if recovery_plan.pull_request else None,
                 note=recovery_plan.message,
+                vibe_log_snippet=None,
             )
         return True
 
@@ -1761,7 +1852,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             print_err("Klonen fehlgeschlagen")
             print(f"      Prüfe, ob der Branch '{base_branch}' in {repo} existiert.")
             if run_report:
-                write_run_report(run_report, "clone_failed", note=f"base_branch: {base_branch}")
+                write_run_report(run_report, "clone_failed", note=f"base_branch: {base_branch}", vibe_log_snippet=None)
             return False
         print("✅")
 
@@ -1836,18 +1927,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         env = build_worker_env(model, config["config"])
 
         # KI-Worker ausführen
-        if model == "codex":
-            print(f"      🤖 Starte Codex ...", flush=True)
-            cmd = build_codex_command(prompt, repo_dir, model_name or None)
-        elif model == "mistral-vibe":
-            print(f"      🤖 Starte Mistral Vibe ...", flush=True)
-            cmd = build_vibe_command(prompt, repo_dir)
-        elif model == "opencode":
-            print(f"      🤖 Starte OpenCode ...", flush=True)
-            cmd = build_opencode_command(prompt, repo_dir, model_name or None)
-        else:
-            print(f"      🤖 Starte aider ...", flush=True)
-            cmd = build_aider_command(model, model_name, prompt, repo_dir)
+        display_name = get_worker_display_name(model)
+        print(f"      🤖 Starte {display_name} ...", flush=True)
+        cmd = build_worker_command(model, model_name, prompt, repo_dir)
 
         rate_limit_retries = 0
         rate_limit_deferred_note = None
@@ -1898,6 +1980,14 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             print(f"      {line}")
         assessment = assess_worker_result(result, git_status)
         print_worker_assessment(result, assessment)
+        
+        # Vibe-Log-Snippet lesen (nur fuer Mistral Vibe Modelle)
+        vibe_log_snippet = ""
+        if model == "mistral-vibe":
+            vibe_log_snippet = read_vibe_log_snippet(repo_dir)
+            if vibe_log_snippet:
+                print(f"      📝 Vibe-Log-Snippet gesammelt ({len(vibe_log_snippet)} Zeichen)")
+        
         if rate_limit_deferred_note:
             status = "rate_limit_deferred"
             if run_report and should_preserve_worktree(
@@ -1925,6 +2015,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     preserved_worktree_path=preserved_worktree,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                 )
             return False
         if not assessment.should_continue:
@@ -1953,6 +2044,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     preserved_worktree_path=preserved_worktree,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                 )
             return False
 
@@ -1987,6 +2079,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     preserved_worktree_path=preserved_worktree,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                 )
             return False
 
@@ -2023,6 +2116,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     preserved_worktree_path=preserved_worktree,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                 )
             return False
         print("✅")
@@ -2039,7 +2133,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             close_issues=close_issues,
             dry_run=dry_run,
         )
-        status = "pr_created" if pr else "pr_failed"
+        # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
+        is_vibe_turn_limit = (
+            model == "mistral-vibe"
+            and pr
+            and VIBE_TURN_LIMIT_RE.search(diagnostic_result.output)
+        )
+        status = "pr_created_with_warning" if is_vibe_turn_limit else ("pr_created" if pr else "pr_failed")
         if not pr and run_report and should_preserve_worktree(
             status,
             repo_dir,
@@ -2065,6 +2165,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 preserved_worktree_path=preserved_worktree,
                 base_branch=base_branch,
                 git_change_summary=git_change_summary,
+                vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
             )
         return bool(pr)
     finally:

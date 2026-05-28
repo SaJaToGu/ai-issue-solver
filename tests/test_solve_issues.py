@@ -23,6 +23,7 @@ from solve_issues import (  # noqa: E402
     build_aider_command,
     build_opencode_command,
     build_vibe_command,
+    build_worker_command,
     build_worker_env,
     cleanup_preserved_worktrees,
     create_run_report,
@@ -32,6 +33,7 @@ from solve_issues import (  # noqa: E402
     format_git_change_summary,
     format_worker_output_tail,
     find_opencode_executable,
+    get_worker_display_name,
     git_status_porcelain,
     infer_aider_targets,
     parse_codex_reset_datetime,
@@ -497,6 +499,29 @@ class WorkerValidationTests(unittest.TestCase):
         self.assertEqual(validation.errors, ())
 
 
+class VibeTurnLimitTests(unittest.TestCase):
+    def test_detects_vibe_turn_limit_event(self):
+        from solve_issues import VIBE_TURN_LIMIT_RE
+
+        output = "Worker finished with <vibe_stop_event>Turn limit of 30 reached</vibe_stop_event>"
+
+        self.assertTrue(VIBE_TURN_LIMIT_RE.search(output))
+
+    def test_detects_vibe_turn_limit_with_different_number(self):
+        from solve_issues import VIBE_TURN_LIMIT_RE
+
+        output = "Worker finished with <vibe_stop_event>Turn limit of 50 reached</vibe_stop_event>"
+
+        self.assertTrue(VIBE_TURN_LIMIT_RE.search(output))
+
+    def test_ignores_regular_output_without_turn_limit(self):
+        from solve_issues import VIBE_TURN_LIMIT_RE
+
+        output = "Worker finished normally with some changes"
+
+        self.assertIsNone(VIBE_TURN_LIMIT_RE.search(output))
+
+
 class CodexRateLimitTests(unittest.TestCase):
     def test_detects_codex_rate_limit_and_parses_reset_time(self):
         output = (
@@ -697,6 +722,89 @@ class AiderCommandTests(unittest.TestCase):
         with patch("solve_issues.find_opencode_executable", return_value=None):
             with self.assertRaises(FileNotFoundError):
                 build_opencode_command("Fix issue", "/tmp/repo")
+
+
+class WorkerCommandConstructionTests(unittest.TestCase):
+    """Tests für die zentralisierte Worker-Command-Konstruktion (Issue #109)."""
+
+    def test_get_worker_display_name_returns_config_display_name(self):
+        self.assertEqual(get_worker_display_name("codex"), "Codex CLI")
+        self.assertEqual(get_worker_display_name("claude"), "Anthropic Claude (claude-sonnet-4-20250514)")
+        self.assertEqual(get_worker_display_name("openai"), "OpenAI GPT-4o")
+        self.assertEqual(get_worker_display_name("mistral"), "Mistral AI Magistral (magistral-medium-2509)")
+        self.assertEqual(get_worker_display_name("ollama"), "Ollama (lokal)")
+        self.assertEqual(get_worker_display_name("mistral-vibe"), "Mistral Vibe CLI")
+        self.assertEqual(get_worker_display_name("opencode"), "OpenCode CLI")
+
+    def test_build_worker_command_delegates_to_codex_builder(self):
+        with patch("solve_issues.build_codex_command", return_value=["codex", "exec", "--cd", "/repo", "prompt"]):
+            with patch("solve_issues.find_codex_executable", return_value="/usr/bin/codex"):
+                cmd = build_worker_command("codex", "", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["codex", "exec", "--cd", "/repo", "prompt"])
+
+    def test_build_worker_command_delegates_to_vibe_builder(self):
+        with patch("solve_issues.build_vibe_command", return_value=["vibe", "--workdir", "/repo", "-p", "prompt"]):
+            with patch("solve_issues.find_vibe_executable", return_value="/usr/bin/vibe"):
+                cmd = build_worker_command("mistral-vibe", "", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["vibe", "--workdir", "/repo", "-p", "prompt"])
+
+    def test_build_worker_command_delegates_to_opencode_builder(self):
+        with patch("solve_issues.build_opencode_command", return_value=["opencode", "run", "--dir", "/repo", "prompt"]):
+            with patch("solve_issues.find_opencode_executable", return_value="/usr/bin/opencode"):
+                cmd = build_worker_command("opencode", "model-name", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["opencode", "run", "--dir", "/repo", "prompt"])
+
+    def test_build_worker_command_delegates_to_aider_builder_for_claude(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--model", "claude-sonnet-4-20250514", "prompt"]) as mock_aider:
+            cmd = build_worker_command("claude", "", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["aider", "--model", "claude-sonnet-4-20250514", "prompt"])
+        mock_aider.assert_called_once_with("claude", "", "prompt", "/repo", None)
+
+    def test_build_worker_command_delegates_to_aider_builder_for_openai(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--model", "gpt-4o", "prompt"]) as mock_aider:
+            cmd = build_worker_command("openai", "", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["aider", "--model", "gpt-4o", "prompt"])
+        mock_aider.assert_called_once_with("openai", "", "prompt", "/repo", None)
+
+    def test_build_worker_command_delegates_to_aider_builder_for_mistral(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--model", "mistral/model", "prompt"]) as mock_aider:
+            cmd = build_worker_command("mistral", "custom-model", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["aider", "--model", "mistral/model", "prompt"])
+        mock_aider.assert_called_once_with("mistral", "custom-model", "prompt", "/repo", None)
+
+    def test_build_worker_command_delegates_to_aider_builder_for_ollama(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--model", "ollama/model", "prompt"]) as mock_aider:
+            cmd = build_worker_command("ollama", "llama3.2:3b", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["aider", "--model", "ollama/model", "prompt"])
+        mock_aider.assert_called_once_with("ollama", "llama3.2:3b", "prompt", "/repo", None)
+
+    def test_build_worker_command_passes_model_name_none_for_empty_string(self):
+        with patch("solve_issues.build_codex_command", return_value=["codex", "exec", "prompt"]) as mock_codex:
+            with patch("solve_issues.find_codex_executable", return_value="/usr/bin/codex"):
+                build_worker_command("codex", "", "prompt", "/repo")
+
+        # Leerer String soll als None weitergegeben werden
+        mock_codex.assert_called_once_with("prompt", "/repo", None)
+
+    def test_build_worker_command_passes_model_name_for_non_empty(self):
+        with patch("solve_issues.build_opencode_command", return_value=["opencode", "run", "--model", "custom", "prompt"]) as mock_opencode:
+            with patch("solve_issues.find_opencode_executable", return_value="/usr/bin/opencode"):
+                build_worker_command("opencode", "custom-model", "prompt", "/repo")
+
+        mock_opencode.assert_called_once_with("prompt", "/repo", "custom-model")
+
+    def test_build_worker_command_passes_file_targets_to_aider(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "prompt", "file.py"]) as mock_aider:
+            build_worker_command("claude", "", "prompt", "/repo", file_targets=["file.py"])
+
+        mock_aider.assert_called_once_with("claude", "", "prompt", "/repo", ["file.py"])
 
 
 class WorkerOutputTests(unittest.TestCase):
