@@ -398,8 +398,9 @@ preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-56
         self.assertTrue(result.used_github)
         self.assertEqual(result.runs[0].status, "rate_limit_deferred")
         self.assertEqual(result.runs[0].category, "recovered")
-        self.assertEqual(result.runs[0].lifecycle_label, "Recovered to develop")
-        self.assertIn("Original run failed; recovered via PR #61", result.runs[0].lifecycle_note)
+        self.assertEqual(result.runs[0].lifecycle_label, "Recovered to develop (Issue offen)")
+        self.assertEqual(result.runs[0].lifecycle_state, "recovered-issue-open")
+        self.assertIn("Original run failed; recovered via PR #61; Issue ist noch offen.", result.runs[0].lifecycle_note)
         self.assertIn("Recovered", html)
         self.assertIn("rate_limit_deferred", html)
         self.assertIn("Original run failed; recovered via PR #61", html)
@@ -411,7 +412,7 @@ preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-56
             self.write_summary(
                 runs_dir / "20260521-090807-demo-issue-62",
                 """status: push_failed
-repo: demo
+repo: test-owner/demo
 issue_number: 62
 branch: ai/fix-issue-62
 worker_exit_code: 0
@@ -443,6 +444,7 @@ preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-62
 
         self.assertEqual(result.runs[0].category, "recovered")
         self.assertEqual(result.runs[0].lifecycle_label, "Issue closed")
+        self.assertEqual(result.runs[0].lifecycle_state, "issue-closed")
         self.assertFalse(result.runs[0].lifecycle_needs_attention)
 
     def test_github_enrichment_keeps_recoverable_failed_run_failed_when_api_fails(self):
@@ -501,7 +503,7 @@ pr_url: https://github.com/test-owner/demo/pull/40
             self.write_summary(
                 runs_dir / "20260521-090807-demo-issue-41",
                 """status: pr_created
-repo: demo
+repo: test-owner/demo
 issue_number: 41
 branch: ai/fix-issue-41
 worker_exit_code: 0
@@ -538,7 +540,7 @@ pr_url: https://github.com/test-owner/demo/pull/41
             self.write_summary(
                 runs_dir / "20260521-090807-demo-issue-42",
                 """status: pr_created
-repo: demo
+repo: test-owner/demo
 issue_number: 42
 branch: ai/fix-issue-42
 worker_exit_code: 0
@@ -566,7 +568,49 @@ pr_url: https://github.com/test-owner/demo/pull/42
                 client=client,
             )
 
+        self.assertEqual(result.runs[0].lifecycle_label, "Merged to develop (Issue offen)")
+        self.assertEqual(result.runs[0].lifecycle_state, "merged-issue-open")
+        self.assertEqual(result.runs[0].lifecycle_note, "PR gemergt, aber Issue ist noch offen.")
+        self.assertTrue(result.runs[0].lifecycle_needs_attention)
+
+    def test_github_enrichment_marks_merged_with_closed_issue(self):
+        """Test that merged PRs with closed issues are marked as merged without issue-open flag."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-42",
+                """status: pr_created
+repo: test-owner/demo
+issue_number: 42
+branch: ai/fix-issue-42
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/42
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                pull_requests={
+                    "42": {
+                        "state": "closed",
+                        "merged_at": "2026-05-21T10:00:00Z",
+                        "merge_commit_sha": "abc123",
+                        "base": {"ref": "develop"},
+                    }
+                },
+                issues={"42": {"state": "closed"}},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
         self.assertEqual(result.runs[0].lifecycle_label, "Merged to develop")
+        self.assertEqual(result.runs[0].lifecycle_state, "merged")
+        self.assertIn("Issue ist geschlossen", result.runs[0].lifecycle_note)
         self.assertTrue(result.runs[0].lifecycle_needs_attention)
 
     def test_github_enrichment_keeps_closed_issue_action_needed_until_main_contains_merge(self):
@@ -575,7 +619,7 @@ pr_url: https://github.com/test-owner/demo/pull/42
             self.write_summary(
                 runs_dir / "20260521-090807-demo-issue-48",
                 """status: pr_created
-repo: demo
+repo: test-owner/demo
 issue_number: 48
 branch: ai/fix-issue-48
 worker_exit_code: 0
@@ -604,6 +648,7 @@ pr_url: https://github.com/test-owner/demo/pull/48
             )
 
         self.assertEqual(result.runs[0].lifecycle_label, "Merged to develop")
+        self.assertEqual(result.runs[0].lifecycle_state, "merged")
         self.assertTrue(result.runs[0].lifecycle_needs_attention)
         self.assertIn("Issue ist geschlossen", result.runs[0].lifecycle_note)
 
@@ -613,7 +658,7 @@ pr_url: https://github.com/test-owner/demo/pull/48
             self.write_summary(
                 runs_dir / "20260521-090807-demo-issue-43",
                 """status: pr_created
-repo: demo
+repo: test-owner/demo
 issue_number: 43
 branch: ai/fix-issue-43
 worker_exit_code: 0
@@ -644,6 +689,7 @@ pr_url: https://github.com/test-owner/demo/pull/43
             html = render_dashboard(result.runs, "test-owner", Path(tmpdir) / "status.html")
 
         self.assertEqual(result.runs[0].lifecycle_label, "Issue closed")
+        self.assertEqual(result.runs[0].lifecycle_state, "issue-closed")
         self.assertFalse(result.runs[0].lifecycle_needs_attention)
         self.assertIn("Issue closed", html)
 
@@ -653,7 +699,7 @@ pr_url: https://github.com/test-owner/demo/pull/43
             self.write_summary(
                 runs_dir / "20260521-090807-demo-issue-46",
                 """status: pr_created
-repo: demo
+repo: test-owner/demo
 issue_number: 46
 branch: ai/fix-issue-46
 worker_exit_code: 0
@@ -682,8 +728,49 @@ pr_url: https://github.com/test-owner/demo/pull/46
                 client=client,
             )
 
-        self.assertEqual(result.runs[0].lifecycle_label, "In main")
+        self.assertEqual(result.runs[0].lifecycle_label, "In main (Issue offen)")
+        self.assertEqual(result.runs[0].lifecycle_state, "in-main-issue-open")
         self.assertTrue(result.runs[0].lifecycle_needs_attention)
+
+    def test_github_enrichment_marks_in_main_with_closed_issue(self):
+        """Test that in-main runs with closed issues are marked as issue-closed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-46",
+                """status: pr_created
+repo: test-owner/demo
+issue_number: 46
+branch: ai/fix-issue-46
+worker_exit_code: 0
+pr_url: https://github.com/test-owner/demo/pull/46
+""",
+            )
+            runs = read_runs(runs_dir)
+            client = FakeLifecycleClient(
+                pull_requests={
+                    "46": {
+                        "state": "closed",
+                        "merged_at": "2026-05-21T10:00:00Z",
+                        "merge_commit_sha": "feed46",
+                        "base": {"ref": "develop"},
+                    }
+                },
+                issues={"46": {"state": "closed"}},
+                main_contains={("main", "feed46")},
+            )
+
+            result = enrich_runs_with_github(
+                runs,
+                "test-owner",
+                "token",
+                cache_path=Path(tmpdir) / "cache.json",
+                client=client,
+            )
+
+        self.assertEqual(result.runs[0].lifecycle_label, "Issue closed")
+        self.assertEqual(result.runs[0].lifecycle_state, "issue-closed")
+        self.assertFalse(result.runs[0].lifecycle_needs_attention)
 
     def test_github_enrichment_uses_cache_without_api_calls(self):
         with tempfile.TemporaryDirectory() as tmpdir:
