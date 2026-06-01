@@ -475,16 +475,6 @@ class WorkerAssessmentTests(unittest.TestCase):
         self.assertFalse(assessment.has_changes)
         self.assertEqual(assessment.reason, "nonzero_without_changes")
 
-    def test_nonzero_with_generated_result_file_stops(self):
-        assessment = assess_worker_result(
-            WorkerRunResult(1, "export failed"),
-            "?? BedBoxDrawerRole.stl\n",
-        )
-
-        self.assertFalse(assessment.should_continue)
-        self.assertFalse(assessment.has_changes)
-        self.assertEqual(assessment.reason, "nonzero_without_changes")
-
     def test_nonzero_with_generic_side_effects_unrelated_to_issue_stops(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, ".gitignore").write_text(".aider*\n", encoding="utf-8")

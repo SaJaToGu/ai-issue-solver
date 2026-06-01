@@ -159,8 +159,6 @@ WORKER_SIDE_EFFECT_PATTERNS = {
     ".aider.tags.cache.v4/**",
     ".DS_Store",
     "**/.DS_Store",
-    "*.stl",
-    "*.STL",
 }
 NONZERO_GENERIC_SIDE_EFFECT_FILES = {
     ".gitignore",
