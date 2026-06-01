@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 - 2026-06-01
+
+- Prevented failed worker runs from opening pull requests when only tool side-effect files changed.
+- Ignored known worker artifacts such as `.aider*` files and `.DS_Store` during failed-run change assessment.
+- Kept target repository artifacts out of the side-effect filter so real project changes are still reviewed.
+
 ## 0.3.0 - 2026-05-28
 
 - Refactored worker command construction, dashboard lifecycle helpers, and batch retry/result bookkeeping without changing core behavior.
