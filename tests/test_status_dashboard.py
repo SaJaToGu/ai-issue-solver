@@ -12,13 +12,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from status_dashboard import (  # noqa: E402
     DashboardIssue,
     DashboardRun,
+    RepoSummary,
     classify_status,
     cleanup_stale_runs,
+    compute_repo_summaries,
     enrich_runs_with_github,
     github_repo_api_path,
     github_links,
     read_runs,
     render_dashboard,
+    render_repo_summary_section,
     write_dashboard,
 )
 
@@ -1260,6 +1263,390 @@ preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-73
         self.assertIn("Superseded", html)
         self.assertIn('<section class="metric metric-superseded">', html)
         self.assertIn(">1<", html)
+
+
+    def test_compute_repo_summaries_groups_by_repo(self):
+        """Test that compute_repo_summaries correctly groups runs by repository."""
+        runs = [
+            DashboardRun(
+                path=Path("/tmp/run1"),
+                name="run1",
+                created_at=datetime(2026, 5, 21, 9, 0, 0),
+                status="pr_created",
+                category="successful",
+                repo="repo-a",
+                issue_number="1",
+                issue_title="Test 1",
+                branch="ai/fix-1",
+                base_branch="",
+                model="",
+                worker_exit_code="0",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="",
+                health_reason="",
+                recovery_hint="",
+                pr_url="",
+                preserved_worktree="",
+                note="",
+                git_diff_stat="",
+                output_tail="",
+            ),
+            DashboardRun(
+                path=Path("/tmp/run2"),
+                name="run2",
+                created_at=datetime(2026, 5, 21, 10, 0, 0),
+                status="clone_failed",
+                category="failed",
+                repo="repo-a",
+                issue_number="2",
+                issue_title="Test 2",
+                branch="",
+                base_branch="",
+                model="",
+                worker_exit_code="1",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="",
+                health_reason="",
+                recovery_hint="",
+                pr_url="",
+                preserved_worktree="",
+                note="",
+                git_diff_stat="",
+                output_tail="",
+            ),
+            DashboardRun(
+                path=Path("/tmp/run3"),
+                name="run3",
+                created_at=datetime(2026, 5, 21, 11, 0, 0),
+                status="no_changes",
+                category="noop",
+                repo="repo-b",
+                issue_number="3",
+                issue_title="Test 3",
+                branch="",
+                base_branch="",
+                model="",
+                worker_exit_code="0",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="",
+                health_reason="",
+                recovery_hint="",
+                pr_url="",
+                preserved_worktree="",
+                note="",
+                git_diff_stat="",
+                output_tail="",
+            ),
+        ]
+
+        summaries = compute_repo_summaries(runs)
+
+        self.assertEqual(len(summaries), 2)
+        # Sortiert nach Name
+        self.assertEqual(summaries[0].name, "repo-a")
+        self.assertEqual(summaries[0].total, 2)
+        self.assertEqual(summaries[0].successful, 1)
+        self.assertEqual(summaries[0].failed, 1)
+        self.assertEqual(summaries[0].noop, 0)
+
+        self.assertEqual(summaries[1].name, "repo-b")
+        self.assertEqual(summaries[1].total, 1)
+        self.assertEqual(summaries[1].successful, 0)
+        self.assertEqual(summaries[1].failed, 0)
+        self.assertEqual(summaries[1].noop, 1)
+
+    def test_compute_repo_summaries_counts_needs_attention(self):
+        """Test that compute_repo_summaries counts lifecycle_needs_attention."""
+        runs = [
+            DashboardRun(
+                path=Path("/tmp/run1"),
+                name="run1",
+                created_at=datetime(2026, 5, 21, 9, 0, 0),
+                status="pr_created",
+                category="successful",
+                repo="repo-a",
+                issue_number="1",
+                issue_title="Test 1",
+                branch="",
+                base_branch="",
+                model="",
+                worker_exit_code="0",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="",
+                health_reason="",
+                recovery_hint="",
+                pr_url="",
+                preserved_worktree="",
+                note="",
+                git_diff_stat="",
+                output_tail="",
+                lifecycle_label="PR open",
+                lifecycle_state="pr-open",
+                lifecycle_needs_attention=True,
+                lifecycle_note="Needs attention",
+            ),
+            DashboardRun(
+                path=Path("/tmp/run2"),
+                name="run2",
+                created_at=datetime(2026, 5, 21, 10, 0, 0),
+                status="pr_created",
+                category="successful",
+                repo="repo-a",
+                issue_number="2",
+                issue_title="Test 2",
+                branch="",
+                base_branch="",
+                model="",
+                worker_exit_code="0",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="",
+                health_reason="",
+                recovery_hint="",
+                pr_url="",
+                preserved_worktree="",
+                note="",
+                git_diff_stat="",
+                output_tail="",
+                lifecycle_label="Issue closed",
+                lifecycle_state="issue-closed",
+                lifecycle_needs_attention=False,
+                lifecycle_note="Done",
+            ),
+        ]
+
+        summaries = compute_repo_summaries(runs)
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].name, "repo-a")
+        self.assertEqual(summaries[0].total, 2)
+        self.assertEqual(summaries[0].successful, 2)
+        self.assertEqual(summaries[0].needs_attention, 1)
+
+    def test_render_repo_summary_section_includes_table(self):
+        """Test that render_repo_summary_section includes the expected table structure."""
+        runs = [
+            DashboardRun(
+                path=Path("/tmp/run1"),
+                name="run1",
+                created_at=datetime(2026, 5, 21, 9, 0, 0),
+                status="pr_created",
+                category="successful",
+                repo="test-repo",
+                issue_number="1",
+                issue_title="Test",
+                branch="",
+                base_branch="",
+                model="",
+                worker_exit_code="0",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="",
+                health_reason="",
+                recovery_hint="",
+                pr_url="",
+                preserved_worktree="",
+                note="",
+                git_diff_stat="",
+                output_tail="",
+            ),
+        ]
+
+        html = render_repo_summary_section(runs)
+
+        self.assertIn("Repository-Übersicht", html)
+        self.assertIn("test-repo", html)
+        self.assertIn("Total", html)
+        self.assertIn("Erfolgreich", html)
+        self.assertIn("Fehlgeschlagen", html)
+        self.assertIn("No-op", html)
+        self.assertIn("Wiederhergestellt", html)
+
+    def test_render_dashboard_includes_repo_summary(self):
+        """Test that render_dashboard includes the repo summary section."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "status-dashboard.html"
+            runs = [
+                DashboardRun(
+                    path=Path("/tmp/run1"),
+                    name="run1",
+                    created_at=datetime(2026, 5, 21, 9, 0, 0),
+                    status="pr_created",
+                    category="successful",
+                    repo="repo-a",
+                    issue_number="1",
+                    issue_title="Test",
+                    branch="",
+                    base_branch="",
+                    model="",
+                    worker_exit_code="0",
+                    last_activity_at=None,
+                    last_report_update_at=None,
+                    health_status="",
+                    health_reason="",
+                    recovery_hint="",
+                    pr_url="",
+                    preserved_worktree="",
+                    note="",
+                    git_diff_stat="",
+                    output_tail="",
+                ),
+                DashboardRun(
+                    path=Path("/tmp/run2"),
+                    name="run2",
+                    created_at=datetime(2026, 5, 21, 10, 0, 0),
+                    status="no_changes",
+                    category="noop",
+                    repo="repo-b",
+                    issue_number="2",
+                    issue_title="Test 2",
+                    branch="",
+                    base_branch="",
+                    model="",
+                    worker_exit_code="0",
+                    last_activity_at=None,
+                    last_report_update_at=None,
+                    health_status="",
+                    health_reason="",
+                    recovery_hint="",
+                    pr_url="",
+                    preserved_worktree="",
+                    note="",
+                    git_diff_stat="",
+                    output_tail="",
+                ),
+            ]
+
+            html = render_dashboard(runs, "test-owner", output_path)
+
+        self.assertIn("Repository-Übersicht", html)
+        self.assertIn("repo-a", html)
+        self.assertIn("repo-b", html)
+
+    def test_render_repo_summary_shows_attention_badge(self):
+        """Test that repo summary shows attention badge for runs needing attention."""
+        runs = [
+            DashboardRun(
+                path=Path("/tmp/run1"),
+                name="run1",
+                created_at=datetime(2026, 5, 21, 9, 0, 0),
+                status="pr_created",
+                category="successful",
+                repo="needs-work",
+                issue_number="1",
+                issue_title="Test",
+                branch="",
+                base_branch="",
+                model="",
+                worker_exit_code="0",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="",
+                health_reason="",
+                recovery_hint="",
+                pr_url="",
+                preserved_worktree="",
+                note="",
+                git_diff_stat="",
+                output_tail="",
+                lifecycle_label="PR open",
+                lifecycle_state="pr-open",
+                lifecycle_needs_attention=True,
+                lifecycle_note="",
+            ),
+        ]
+
+        html = render_repo_summary_section(runs)
+
+        self.assertIn("attention-badge", html)
+        self.assertIn("Benötigt Aufmerksamkeit", html)
+
+    def test_compute_repo_summaries_handles_unknown_repo(self):
+        """Test that compute_repo_summaries handles runs with empty repo names."""
+        runs = [
+            DashboardRun(
+                path=Path("/tmp/run1"),
+                name="run1",
+                created_at=datetime(2026, 5, 21, 9, 0, 0),
+                status="pr_created",
+                category="successful",
+                repo="",
+                issue_number="1",
+                issue_title="Test",
+                branch="",
+                base_branch="",
+                model="",
+                worker_exit_code="0",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="",
+                health_reason="",
+                recovery_hint="",
+                pr_url="",
+                preserved_worktree="",
+                note="",
+                git_diff_stat="",
+                output_tail="",
+            ),
+        ]
+
+        summaries = compute_repo_summaries(runs)
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].name, "Unbekannt")
+        self.assertEqual(summaries[0].total, 1)
+
+    def test_compute_repo_summaries_handles_all_categories(self):
+        """Test that compute_repo_summaries correctly counts all categories."""
+        categories = ["queued", "running", "unhealthy", "failed", "recovered", "superseded", "successful", "noop", "archived", "unknown"]
+        runs = []
+        for i, cat in enumerate(categories):
+            runs.append(
+                DashboardRun(
+                    path=Path(f"/tmp/run{i}"),
+                    name=f"run{i}",
+                    created_at=datetime(2026, 5, 21, 9, 0, 0),
+                    status="started" if cat == "running" else "",
+                    category=cat,
+                    repo="full-repo",
+                    issue_number=str(i),
+                    issue_title="Test",
+                    branch="",
+                    base_branch="",
+                    model="",
+                    worker_exit_code="0",
+                    last_activity_at=None,
+                    last_report_update_at=None,
+                    health_status="",
+                    health_reason="",
+                    recovery_hint="",
+                    pr_url="",
+                    preserved_worktree="",
+                    note="",
+                    git_diff_stat="",
+                    output_tail="",
+                )
+            )
+
+        summaries = compute_repo_summaries(runs)
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].name, "full-repo")
+        self.assertEqual(summaries[0].total, len(categories))
+        self.assertEqual(summaries[0].queued, 1)
+        self.assertEqual(summaries[0].running, 1)
+        self.assertEqual(summaries[0].unhealthy, 1)
+        self.assertEqual(summaries[0].failed, 1)
+        self.assertEqual(summaries[0].recovered, 1)
+        self.assertEqual(summaries[0].superseded, 1)
+        self.assertEqual(summaries[0].successful, 1)
+        self.assertEqual(summaries[0].noop, 1)
+        self.assertEqual(summaries[0].archived, 1)
+        self.assertEqual(summaries[0].unknown, 1)
 
 
 if __name__ == "__main__":

@@ -219,6 +219,24 @@ class GitHubEnrichmentResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class RepoSummary:
+    """Zusammenfassung der Run-Statistiken für ein Repository."""
+    name: str
+    total: int
+    successful: int
+    failed: int
+    noop: int
+    recovered: int
+    superseded: int
+    queued: int
+    running: int
+    unhealthy: int
+    archived: int
+    unknown: int
+    needs_attention: int
+
+
 class DashboardGitHubClient:
     BASE = "https://api.github.com"
 
@@ -1297,6 +1315,70 @@ def format_datetime(value: datetime | None) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def compute_repo_summaries(runs: list[DashboardRun]) -> list[RepoSummary]:
+    """
+    Berechnet Zusammenfassungen der Run-Statistiken pro Repository.
+
+    Args:
+        runs: Liste aller DashboardRuns
+
+    Returns:
+        Liste von RepoSummary-Objekten, sortiert nach Repository-Namen
+    """
+    repo_stats: dict[str, dict[str, int]] = {}
+
+    for run in runs:
+        repo_name = run.repo or "Unbekannt"
+        if repo_name not in repo_stats:
+            repo_stats[repo_name] = {
+                "total": 0,
+                "successful": 0,
+                "failed": 0,
+                "noop": 0,
+                "recovered": 0,
+                "superseded": 0,
+                "queued": 0,
+                "running": 0,
+                "unhealthy": 0,
+                "archived": 0,
+                "unknown": 0,
+                "needs_attention": 0,
+            }
+
+        stats = repo_stats[repo_name]
+        stats["total"] += 1
+
+        # Zähle nach Kategorie
+        if run.category in stats:
+            stats[run.category] += 1
+
+        # Zähle Runs die Aufmerksamkeit benötigen (lifecycle_needs_attention)
+        if run.lifecycle_needs_attention:
+            stats["needs_attention"] += 1
+
+    # Konvertiere zu RepoSummary-Objekten und sortiere nach Namen
+    summaries = [
+        RepoSummary(
+            name=repo_name,
+            total=stats["total"],
+            successful=stats["successful"],
+            failed=stats["failed"],
+            noop=stats["noop"],
+            recovered=stats["recovered"],
+            superseded=stats["superseded"],
+            queued=stats["queued"],
+            running=stats["running"],
+            unhealthy=stats["unhealthy"],
+            archived=stats["archived"],
+            unknown=stats["unknown"],
+            needs_attention=stats["needs_attention"],
+        )
+        for repo_name, stats in repo_stats.items()
+    ]
+
+    return sorted(summaries, key=lambda s: s.name.lower())
+
+
 def render_link(url: str, label: str) -> str:
     return f'<a href="{escape(url, quote=True)}">{escape(label)}</a>'
 
@@ -1493,6 +1575,67 @@ def render_unstarted_issues_section(unstarted_issues: list[DashboardIssue]) -> s
 """
 
 
+def render_repo_summary_row(summary: RepoSummary) -> str:
+    """Render eine Zeile für die Repository-Zusammenfassung."""
+    needs_attention_badge = ""
+    if summary.needs_attention > 0:
+        needs_attention_badge = (
+            f'<span class="attention-badge" title="Benötigt Aufmerksamkeit">'
+            f"{summary.needs_attention}</span>"
+        )
+
+    return f"""
+    <tr>
+      <td><strong>{escape(summary.name)}</strong>{needs_attention_badge}</td>
+      <td>{summary.total}</td>
+      <td>{summary.successful}</td>
+      <td>{summary.failed}</td>
+      <td>{summary.noop}</td>
+      <td>{summary.recovered}</td>
+    </tr>
+"""
+
+
+def render_repo_summary_section(runs: list[DashboardRun]) -> str:
+    """
+    Render die Repository-Zusammenfassungssektion.
+
+    Args:
+        runs: Liste aller DashboardRuns
+
+    Returns:
+        HTML-String für die Repository-Zusammenfassung oder leer falls keine Runs
+    """
+    summaries = compute_repo_summaries(runs)
+    if not summaries:
+        return ""
+
+    rows = "\n".join(render_repo_summary_row(summary) for summary in summaries)
+
+    return f"""
+    <section class="section-block">
+      <h2>Repository-Übersicht</h2>
+      <div class="table-wrap repo-summary">
+        <table>
+          <thead>
+            <tr>
+              <th>Repository</th>
+              <th>Total</th>
+              <th>Erfolgreich</th>
+              <th>Fehlgeschlagen</th>
+              <th>No-op</th>
+              <th>Wiederhergestellt</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+"""
+
+
 def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: Path,
                      generated_at: datetime | None = None,
                      allow_shutdown: bool = False,
@@ -1524,6 +1667,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
         "</section>"
         for category in STATUS_ORDER
     )
+    repo_summary_section = render_repo_summary_section(runs)
     unstarted_section = render_unstarted_issues_section(unstarted_issues or [])
 
     refresh_meta = ""
@@ -1731,9 +1875,23 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       font-size: 12px;
     }}
     .empty {{ text-align: center; color: var(--muted); padding: 28px; }}
+    .repo-summary table {{ min-width: 0; }}
+    .repo-summary th, .repo-summary td {{ padding: 8px 12px; font-size: 13px; }}
+    .repo-summary th {{ background: #fbfcfd; }}
+    .attention-badge {{
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 6px;
+      background: var(--failed);
+      color: #fff;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }}
     @media (max-width: 720px) {{
       header, main {{ padding-left: 16px; padding-right: 16px; }}
       h1 {{ font-size: 22px; }}
+      .repo-summary th, .repo-summary td {{ padding: 6px 8px; font-size: 12px; }}
     }}
   </style>
 </head>
@@ -1753,6 +1911,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     <section class="metrics" aria-label="Status-Zusammenfassung">
       {cards}
     </section>
+    {repo_summary_section}
     {unstarted_section}
     <section class="table-wrap">
       <table>
