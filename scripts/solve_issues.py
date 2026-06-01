@@ -153,6 +153,19 @@ COMMON_REPO_FILES = {
     "setup.py",
     "tsconfig.json",
 }
+WORKER_SIDE_EFFECT_PATTERNS = {
+    ".aider*",
+    ".aider/**",
+    ".aider.tags.cache.v4/**",
+    ".DS_Store",
+    "**/.DS_Store",
+}
+NONZERO_GENERIC_SIDE_EFFECT_FILES = {
+    ".gitignore",
+    "LICENSE",
+    "LICENSE.md",
+    "LICENSE.txt",
+}
 PATH_CANDIDATE_RE = re.compile(
     r"(?<![\w:/.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.@+~-]+(?:\.[A-Za-z0-9_.+-]+)?"
 )
@@ -1327,6 +1340,53 @@ def changed_paths_from_status(git_status: str) -> list[Path]:
     return paths
 
 
+def issue_mentions_generic_path(path: Path, issue_text: str) -> bool:
+    normalized = issue_text.lower()
+    name = path.name.lower()
+    if name == ".gitignore":
+        return "gitignore" in normalized or ".gitignore" in normalized
+    if name.startswith("license"):
+        return "license" in normalized or "lizenz" in normalized
+    return False
+
+
+def is_worker_side_effect_path(path: Path) -> bool:
+    path_text = path.as_posix()
+    return any(path.match(pattern) or path_text == pattern for pattern in WORKER_SIDE_EFFECT_PATTERNS)
+
+
+def is_empty_file(repo_dir: str, path: Path) -> bool:
+    try:
+        return (Path(repo_dir) / path).is_file() and (Path(repo_dir) / path).stat().st_size == 0
+    except OSError:
+        return False
+
+
+def is_nonzero_side_effect_path(path: Path, repo_dir: str | None = None,
+                                issue_text: str = "") -> bool:
+    if is_worker_side_effect_path(path):
+        return True
+    if path.as_posix() in NONZERO_GENERIC_SIDE_EFFECT_FILES:
+        if issue_mentions_generic_path(path, issue_text):
+            return False
+        return True
+    if repo_dir and path.name in NONZERO_GENERIC_SIDE_EFFECT_FILES and is_empty_file(repo_dir, path):
+        return not issue_mentions_generic_path(path, issue_text)
+    return False
+
+
+def meaningful_changed_paths_for_worker(git_status: str, repo_dir: str | None = None,
+                                        issue_text: str = "",
+                                        worker_returncode: int = 0) -> list[Path]:
+    paths = changed_paths_from_status(git_status)
+    if worker_returncode == 0:
+        return paths
+    return [
+        path for path in paths
+        if not is_nonzero_side_effect_path(path, repo_dir=repo_dir, issue_text=issue_text)
+    ]
+
+
 def conflict_marker_line(path: Path) -> int | None:
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -1371,13 +1431,23 @@ def validate_worker_changes(repo_dir: str, git_status: str | None = None) -> Wor
     return WorkerValidation(ok=not errors, errors=tuple(errors))
 
 
-def assess_worker_result(result: WorkerRunResult, git_status: str) -> WorkerAssessment:
-    has_changes = bool(git_status.strip())
+def assess_worker_result(result: WorkerRunResult, git_status: str,
+                         repo_dir: str | None = None,
+                         issue_text: str = "") -> WorkerAssessment:
+    changed_paths = changed_paths_from_status(git_status)
+    meaningful_paths = meaningful_changed_paths_for_worker(
+        git_status,
+        repo_dir=repo_dir,
+        issue_text=issue_text,
+        worker_returncode=result.returncode,
+    )
+    has_changes = bool(changed_paths)
+    has_meaningful_changes = bool(meaningful_paths)
     if result.returncode == 0 and has_changes:
         return WorkerAssessment(True, True, "changed")
     if result.returncode == 0:
         return WorkerAssessment(False, False, "no_changes")
-    if has_changes:
+    if has_meaningful_changes:
         return WorkerAssessment(True, True, "nonzero_with_changes")
     return WorkerAssessment(False, False, "nonzero_without_changes")
 
@@ -1978,7 +2048,12 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         git_change_summary = format_git_change_summary(repo_dir, git_status)
         for line in git_change_summary:
             print(f"      {line}")
-        assessment = assess_worker_result(result, git_status)
+        assessment = assess_worker_result(
+            result,
+            git_status,
+            repo_dir=repo_dir,
+            issue_text=f"{title}\n\n{body or ''}",
+        )
         print_worker_assessment(result, assessment)
         
         # Vibe-Log-Snippet lesen (nur fuer Mistral Vibe Modelle)
