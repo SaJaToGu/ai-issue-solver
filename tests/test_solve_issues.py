@@ -465,6 +465,63 @@ class WorkerAssessmentTests(unittest.TestCase):
         self.assertFalse(assessment.has_changes)
         self.assertEqual(assessment.reason, "nonzero_without_changes")
 
+    def test_nonzero_with_only_aider_side_effects_stops(self):
+        assessment = assess_worker_result(
+            WorkerRunResult(1, "aider failed"),
+            "?? .aider.chat.history.md\n?? .aider.tags.cache.v4/cache.db\n",
+        )
+
+        self.assertFalse(assessment.should_continue)
+        self.assertFalse(assessment.has_changes)
+        self.assertEqual(assessment.reason, "nonzero_without_changes")
+
+    def test_nonzero_with_generated_result_file_stops(self):
+        assessment = assess_worker_result(
+            WorkerRunResult(1, "export failed"),
+            "?? BedBoxDrawerRole.stl\n",
+        )
+
+        self.assertFalse(assessment.should_continue)
+        self.assertFalse(assessment.has_changes)
+        self.assertEqual(assessment.reason, "nonzero_without_changes")
+
+    def test_nonzero_with_generic_side_effects_unrelated_to_issue_stops(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, ".gitignore").write_text(".aider*\n", encoding="utf-8")
+            Path(tmpdir, "LICENSE").write_text("", encoding="utf-8")
+
+            assessment = assess_worker_result(
+                WorkerRunResult(1, "worker failed before adding CI"),
+                "?? .gitignore\n?? LICENSE\n",
+                repo_dir=tmpdir,
+                issue_text="Keine CI/CD-Pipeline (GitHub Actions) vorhanden",
+            )
+
+        self.assertFalse(assessment.should_continue)
+        self.assertFalse(assessment.has_changes)
+        self.assertEqual(assessment.reason, "nonzero_without_changes")
+
+    def test_nonzero_with_issue_relevant_generic_file_continues_for_review(self):
+        assessment = assess_worker_result(
+            WorkerRunResult(1, "worker stopped after partial change"),
+            "?? LICENSE\n",
+            issue_text="Keine Lizenz-Datei vorhanden",
+        )
+
+        self.assertTrue(assessment.should_continue)
+        self.assertTrue(assessment.has_changes)
+        self.assertEqual(assessment.reason, "nonzero_with_changes")
+
+    def test_nonzero_with_side_effects_and_meaningful_change_continues(self):
+        assessment = assess_worker_result(
+            WorkerRunResult(1, "worker failed after useful edit"),
+            "?? .aider.chat.history.md\n M README.md\n",
+        )
+
+        self.assertTrue(assessment.should_continue)
+        self.assertTrue(assessment.has_changes)
+        self.assertEqual(assessment.reason, "nonzero_with_changes")
+
 
 
 class WorkerValidationTests(unittest.TestCase):
