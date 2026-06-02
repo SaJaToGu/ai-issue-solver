@@ -6,71 +6,74 @@
 > This file remains in English as it serves as a template for GitHub Issues and is
 > processed by AI workers. See [Language Policy](LANGUAGE_POLICY.md)
 
-This backlog captures the next small refactoring phase after the v0.2.0 release:
-reduce complexity in the largest workflow modules without changing behavior.
+This backlog captures the next technical ai-issue-solver provider phase.
+Private personal ideas belong in the separate private `guido-project-lab`
+repository and must not be added here.
 
-Create them as GitHub issues with:
+Create selected items as GitHub issues with:
 
 ```bash
 python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md
 python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-create
 ```
 
-Clean up completed items (after their GitHub issues are closed) with:
+Clean up completed items after their GitHub issues are closed with:
 
 ```bash
 python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md
 python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-remove
 ```
 
-## 1. Refactor solve_issues worker command construction
+## 1. Add OpenRouter as a central cloud model provider
 
-Labels: `quality`, `workflow`
+Labels: `setup`, `automation`, `workflow`
 
-Make the worker command construction in `scripts/solve_issues.py` easier to read
-and test without changing behavior.
+Priority: `high`
 
-Touches: `scripts/solve_issues.py`, `tests/test_solve_issues.py`
+Add first-class OpenRouter support as a central cloud model provider so the
+solver can reach multiple hosted models through one account and one key.
 
-Keep CLI behavior and existing model support unchanged. Prefer extracting or
-tightening small helper functions around worker command selection/building. Do
-not change GitHub branch, commit, push, or PR behavior. Do not add new features.
+Suggested scope:
+- add secret-safe configuration for `OPENROUTER_API_KEY`
+- document key setup and recommended model names
+- wire OpenRouter into the existing worker/model configuration with minimal
+  abstraction
+- keep existing providers working unchanged
+- include preflight output that clearly explains missing credentials
+- target solver PRs at `develop`
 
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 2. Refactor status dashboard run classification helpers
-
-Labels: `quality`, `workflow`
-
-Make `scripts/status_dashboard.py` run classification and lifecycle helper logic
-easier to maintain without changing dashboard behavior.
-
-Touches: `scripts/status_dashboard.py`, `tests/test_status_dashboard.py`
-
-Keep rendered dashboard behavior equivalent except for test-backed cleanup if
-needed. Prefer small helper extraction or clearer predicate naming around
-failed/recovered/superseded classification. Do not add new dashboard features. Do
-not alter unrelated HTML/CSS layout.
+Open questions:
+- Which default model should be recommended first?
+- Should OpenRouter use the existing aider path, a direct API path, or a provider
+  profile abstraction?
+- Should cost/budget notes be required before enabling batch runs?
 
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
-## 3. Refactor batch runner retry and result bookkeeping
+## 2. Harden OpenCode install and auth preflight
 
-Labels: `quality`, `workflow`, `automation`
+Labels: `setup`, `automation`, `workflow`
 
-Make `scripts/solve_issues_batch.py` retry, delayed-job, and result bookkeeping
-easier to follow without changing behavior.
+Priority: `high`
 
-Touches: `scripts/solve_issues_batch.py`, `tests/test_solve_issues_batch.py`
+Make the existing `opencode` worker adapter practical for daily use by improving
+installation, authentication, and diagnostic behavior.
 
-Preserve rate-limit requeue behavior, fallback behavior, and worker health
-behavior. Prefer small helper extraction around result recording or retry
-counters. Do not change `solve_issues.py` command semantics. Do not add new
-features.
+Suggested scope:
+- add a clear install/auth preflight for `opencode`
+- document install and login steps
+- add a diagnostic command or dry-run path that confirms OpenCode is available
+  before worker execution
+- add model-name examples for OpenCode usage
+- ensure worker failures produce useful run reports
+- target solver PRs at `develop`
+
+Open questions:
+- Which OpenCode provider/login path should be the primary one?
+- Should OpenCode become the recommended fallback for nested Codex failures?
+- Do we want OpenCode runs marked differently in the dashboard?
 
 Checks:
 - `git diff --check`
