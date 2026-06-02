@@ -1,0 +1,44 @@
+
+# 2026-06-02 19:35:21.041629
++Löse das folgende GitHub Issue in diesem Repository.
++
++=== ISSUE #139: Harden OpenCode install and auth preflight ===
++
++Priority: `high`
++
++Make the existing `opencode` worker adapter practical for daily use by improving
++installation, authentication, and diagnostic behavior.
++
++Suggested scope:
++- add a clear install/auth preflight for `opencode`
++- document install and login steps
++- add a diagnostic command or dry-run path that confirms OpenCode is available
++  before worker execution
++- add model-name examples for OpenCode usage
++- ensure worker failures produce useful run reports
++- target solver PRs at `develop`
++
++Open questions:
++- Which OpenCode provider/login path should be the primary one?
++- Should OpenCode become the recommended fallback for nested Codex failures?
++- Do we want OpenCode runs marked differently in the dashboard?
++
++Checks:
++- `git diff --check`
++- `python -m unittest discover -s tests`
++
++---
++Created from `docs/NEXT_BACKLOG.md`.
++
++=== AUFGABE ===
++Analysiere das Problem und implementiere eine saubere, vollständige Lösung.
++Halte dich an die bestehende Code-Struktur und Konventionen des Projekts.
++Kommentiere deine Änderungen auf Deutsch wenn sinnvoll.
++Erstelle oder verbessere Dateien direkt (README, LICENSE, .gitignore, etc.).
++Erstelle keinen Commit, pushe nichts und öffne keinen Pull Request. Das übernimmt das Wrapper-Script nach deiner Änderung.
++
++Wenn du Dateien erstellst, achte auf:
++- Vollständigkeit (keine Platzhalter wie "TODO" oder "...")
++- Korrekte Syntax für die jeweilige Sprache/Format
++- Sinnvolle Inhalte die zum Projekt passen
++

@@ -170,3 +170,9 @@ def print_warn(text: str):
 
 def print_err(text: str):
     print(f"    ❌ {text}")
+def check_opencode_auth():
+    """Überprüfen Sie die Authentifizierung für OpenCode."""
+    # Hier sollte die Logik zur Überprüfung der Authentifizierung implementiert werden
+    # Zum Beispiel: Überprüfen, ob der API-Schlüssel gesetzt ist
+    if not os.getenv("OPENCODE_API_KEY"):
+        raise ValueError("OpenCode API-Schlüssel ist nicht gesetzt. Bitte setzen Sie OPENCODE_API_KEY.")
