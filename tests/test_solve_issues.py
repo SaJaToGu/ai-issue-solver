@@ -740,6 +740,44 @@ class AiderCommandTests(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", env)
         self.assertEqual(env["KEEP"], "1")
 
+    def test_openrouter_worker_env_requires_api_key(self):
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit) as raised:
+            build_worker_env("openrouter", {"OPENROUTER_API_KEY": "sk-or-DEIN_KEY_HIER"}, base_env={})
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("OPENROUTER_API_KEY fehlt", printed.getvalue())
+
+    def test_openrouter_worker_env_exports_api_key(self):
+        env = build_worker_env(
+            "openrouter",
+            {"OPENROUTER_API_KEY": "real-openrouter-key"},
+            base_env={"KEEP": "1"},
+        )
+
+        self.assertEqual(env["OPENROUTER_API_KEY"], "real-openrouter-key")
+        self.assertEqual(env["KEEP"], "1")
+
+    def test_openrouter_worker_env_removes_other_provider_keys(self):
+        env = build_worker_env(
+            "openrouter",
+            {"OPENROUTER_API_KEY": "real-openrouter-key"},
+            base_env={
+                "ANTHROPIC_API_KEY": "anthropic-key",
+                "MISTRAL_API_KEY": "mistral-key",
+                "OPENAI_API_KEY": "openai-key",
+                "GITHUB_TOKEN": "github-token",
+            },
+        )
+
+        self.assertEqual(env["OPENROUTER_API_KEY"], "real-openrouter-key")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("MISTRAL_API_KEY", env)
+        self.assertNotIn("OPENAI_API_KEY", env)
+        # GITHUB_TOKEN sollte bleiben für Git-Operationen
+        self.assertEqual(env["GITHUB_TOKEN"], "github-token")
+
     def test_find_opencode_executable_uses_repo_venv(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             opencode = Path(tmpdir) / ".venv" / "bin" / "opencode"
@@ -782,6 +820,7 @@ class WorkerCommandConstructionTests(unittest.TestCase):
         self.assertEqual(get_worker_display_name("ollama"), "Ollama (lokal)")
         self.assertEqual(get_worker_display_name("mistral-vibe"), "Mistral Vibe CLI")
         self.assertEqual(get_worker_display_name("opencode"), "OpenCode CLI")
+        self.assertEqual(get_worker_display_name("openrouter"), "OpenRouter (aider)")
 
     def test_build_worker_command_delegates_to_codex_builder(self):
         with patch("solve_issues.build_codex_command", return_value=["codex", "exec", "--cd", "/repo", "prompt"]):
@@ -852,6 +891,20 @@ class WorkerCommandConstructionTests(unittest.TestCase):
             build_worker_command("claude", "", "prompt", "/repo", file_targets=["file.py"])
 
         mock_aider.assert_called_once_with("claude", "", "prompt", "/repo", ["file.py"])
+
+    def test_build_worker_command_delegates_to_aider_builder_for_openrouter(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--openrouter", "--model", "openai/gpt-4o-mini", "prompt"]) as mock_aider:
+            cmd = build_worker_command("openrouter", "", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["aider", "--openrouter", "--model", "openai/gpt-4o-mini", "prompt"])
+        mock_aider.assert_called_once_with("openrouter", "", "prompt", "/repo", None)
+
+    def test_build_worker_command_delegates_to_aider_builder_for_openrouter_with_custom_model(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--openrouter", "--model", "anthropic/claude-3-haiku", "prompt"]) as mock_aider:
+            cmd = build_worker_command("openrouter", "anthropic/claude-3-haiku", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["aider", "--openrouter", "--model", "anthropic/claude-3-haiku", "prompt"])
+        mock_aider.assert_called_once_with("openrouter", "anthropic/claude-3-haiku", "prompt", "/repo", None)
 
 
 class WorkerOutputTests(unittest.TestCase):
