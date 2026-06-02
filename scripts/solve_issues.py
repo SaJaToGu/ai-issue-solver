@@ -110,6 +110,16 @@ MODEL_CONFIGS = {
         "env_key": None,
         "env_var": None,
     },
+    "openrouter": {
+        "display_name": "OpenRouter (aider)",
+        "aider_flags": [
+            "--openrouter",
+            "--model", "{model_name}",
+        ],
+        "env_key": "OPENROUTER_API_KEY",
+        "env_var": "OPENROUTER_API_KEY",
+        "default_model_name": "openai/gpt-4o-mini",
+    },
 }
 
 WORKER_OUTPUT_TAIL_LINES = 25
@@ -720,6 +730,13 @@ def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None =
     if model == "opencode":
         env.pop("GITHUB_TOKEN", None)
         env.pop("GH_TOKEN", None)
+
+    if model == "openrouter":
+        # OpenRouter benoetigt explizit OPENROUTER_API_KEY in der Umgebung
+        # und wir entfernen andere Provider-Keys zur Sicherheit
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("MISTRAL_API_KEY", None)
+        env.pop("OPENAI_API_KEY", None)
 
     return env
 
@@ -2259,7 +2276,7 @@ def main():
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
         "--model", choices=list(MODEL_CONFIGS.keys()),
-        help="KI-Modell: codex, mistral-vibe, opencode, claude, openai, mistral oder ollama"
+        help="KI-Modell: codex, mistral-vibe, opencode, openrouter, claude, openai, mistral oder ollama"
     )
     parser.add_argument(
         "--model-name",
@@ -2346,7 +2363,13 @@ def main():
         print("   → Installieren nach OpenCode-Doku und `opencode` in PATH verfügbar machen")
         sys.exit(1)
 
-    if args.model not in ("codex", "mistral-vibe", "opencode") and not check_aider_installed() and not args.dry_run:
+    if args.model == "openrouter" and not check_aider_installed() and not args.dry_run:
+        print_err("aider ist nicht installiert, wird aber für OpenRouter benötigt!")
+        print("   → Installieren mit: pip install aider-chat")
+        print("   → Mehr Infos: docs/SETUP_AIDER.md")
+        sys.exit(1)
+
+    if args.model not in ("codex", "mistral-vibe", "opencode", "openrouter") and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert!")
         print("   → Installieren mit: pip install aider-chat")
         print("   → Mehr Infos: docs/SETUP_AIDER.md")

@@ -126,12 +126,13 @@ geben sichere Hinweise aus, ohne Secret-Werte im Terminal anzuzeigen.
 ### 4. KI-Modell wählen
 
 ```bash
-python scripts/solve_issues.py --model codex     # Codex CLI
-python scripts/solve_issues.py --model opencode  # OpenCode CLI
-python scripts/solve_issues.py --model mistral-vibe  # Mistral Vibe CLI
-python scripts/solve_issues.py --model claude    # Anthropic Claude
-python scripts/solve_issues.py --model openai    # OpenAI GPT-4
-python scripts/solve_issues.py --model ollama    # Lokales Modell
+python scripts/solve_issues.py --model codex       # Codex CLI
+python scripts/solve_issues.py --model opencode    # OpenCode CLI
+python scripts/solve_issues.py --model openrouter  # OpenRouter (aider)
+python scripts/solve_issues.py --model mistral-vibe # Mistral Vibe CLI
+python scripts/solve_issues.py --model claude      # Anthropic Claude
+python scripts/solve_issues.py --model openai      # OpenAI GPT-4
+python scripts/solve_issues.py --model ollama      # Lokales Modell
 ```
 
 ---
@@ -621,6 +622,36 @@ Ein **Personal Access Token (PAT)** ist dein persönlicher API-Schlüssel für G
 ### OpenAI
 1. API-Key holen: https://platform.openai.com/api-keys
 2. In `.env` eintragen: `OPENAI_API_KEY=sk-...`
+
+### OpenRouter
+OpenRouter ermöglicht den Zugriff auf multiple KI-Modelle über eine API und einen
+Key. Der Solver nutzt OpenRouter über `aider` mit dem `--openrouter`-Flag.
+
+1. API-Key holen: https://openrouter.ai/keys
+2. In `.env` eintragen: `OPENROUTER_API_KEY=sk-or-...`
+3. Optional: `aider` installieren falls noch nicht vorhanden: `pip install aider-chat`
+
+Starten mit:
+```bash
+python scripts/solve_issues.py --model openrouter --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model openrouter --model-name openai/gpt-4o-mini --repo ai-issue-solver
+python scripts/solve_issues.py --model openrouter --model-name anthropic/claude-3-haiku --repo ai-issue-solver
+```
+
+**Empfohlene Modelle:**
+- `openai/gpt-4o-mini` — Gute Balance aus Kosten und Qualität, standardmäßig im Solver
+- `openai/gpt-4o` — Höhere Qualität, höhere Kosten
+- `anthropic/claude-3-haiku` — Schnell und kostengünstig
+- `anthropic/claude-3-sonnet` — Gute Qualität für Code-Aufgaben
+- `mistralai/mistral-7b-instruct` — Gutes Open-Source-Modell
+- `google/gemini-flash-1.5` — Schnelle Google-Alternative
+
+**Hinweise:**
+- OpenRouter benötigt `aider` — installiere es mit `pip install -r requirements-aider.txt`
+- Die API-Kosten hängen vom gewählten Modell ab, nicht von OpenRouter selbst
+- OpenRouter bietet eine kostenlose Test-Stufe mit begrenztem Guthaben
+- Modellnamen sind im Format `{provider}/{model-name}` anzugeben
+- Die vollständige Modell-Liste: https://openrouter.ai/models
 
 ### OpenCode
 OpenCode kann als terminal-nativer Worker verschiedene Provider bündeln. Der

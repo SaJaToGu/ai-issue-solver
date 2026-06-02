@@ -20,6 +20,7 @@ SECRET_KEYS = {
     "ANTHROPIC_API_KEY",
     "MISTRAL_API_KEY",
     "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
 }
 
 
@@ -47,8 +48,8 @@ def load_env(env_file: str = None) -> dict:
 
     # Umgebungsvariablen haben Vorrang
     for key in ["GITHUB_TOKEN", "GITHUB_USER", "ANTHROPIC_API_KEY",
-                "MISTRAL_API_KEY", "OPENAI_API_KEY", "OLLAMA_HOST",
-                "OLLAMA_MODEL"]:
+                "MISTRAL_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+                "OLLAMA_HOST", "OLLAMA_MODEL"]:
         if key in os.environ:
             config[key] = os.environ[key]
 
