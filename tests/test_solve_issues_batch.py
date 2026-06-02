@@ -23,6 +23,7 @@ from solve_issues_batch import (  # noqa: E402
     run_issue_job_with_optional_fallback,
     run_issue_job,
     run_issue_jobs,
+    get_result_badge,
 )
 
 
@@ -450,6 +451,40 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].delayed)
         self.assertEqual(results[0].job, IssueJob("demo", 1))
+
+    def test_run_issue_jobs_classifies_no_changes_as_warning(self):
+        jobs = [IssueJob("demo", 1)]
+
+        def run(job):
+            return IssueJobResult(
+                job,
+                0,
+                "no_changes",
+                0.0,
+            )
+
+        results = run_issue_jobs(jobs, workers=1, run_job_fn=run)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(get_result_badge(results[0]), "[WARNING]")
+        self.assertFalse(results[0].ok)
+
+    def test_run_issue_jobs_classifies_nonzero_without_changes_as_warning(self):
+        jobs = [IssueJob("demo", 1)]
+
+        def run(job):
+            return IssueJobResult(
+                job,
+                1,
+                "nonzero_without_changes",
+                0.0,
+            )
+
+        results = run_issue_jobs(jobs, workers=1, run_job_fn=run)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(get_result_badge(results[0]), "[WARNING]")
+        self.assertFalse(results[0].ok)
 
     def test_run_issue_jobs_sleeps_until_reset_when_only_delayed_jobs_remain(self):
         jobs = [IssueJob("demo", 1)]

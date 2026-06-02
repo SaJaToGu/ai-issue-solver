@@ -293,8 +293,10 @@ def classify_status(status: str, worker_exit_code: str = "") -> str:
     if status in {"pr_created", "pr_created_from_existing_branch", "cleanup_successful"}:
         return "successful"
     # No-op Staende
-    if status in {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr", "cleanup_noop"}:
+    if status in {"skip_existing_pr", "skip_merged_pr", "skip_closed_pr", "cleanup_noop"}:
         return "noop"
+    if status in {"no_changes", "nonzero_without_changes"}:
+        return "failed"
     # Fehlgeschlagene Staende
     if status in {
         "branch_create_failed", "checkout_failed", "clone_failed",

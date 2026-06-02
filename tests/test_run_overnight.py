@@ -260,7 +260,7 @@ line 2
         self.assertEqual(classify_status("queued"), "queued")
         self.assertEqual(classify_status("started"), "running")
         self.assertEqual(classify_status("pr_created"), "successful")
-        self.assertEqual(classify_status("no_changes"), "noop")
+        self.assertEqual(classify_status("no_changes"), "failed")
         self.assertEqual(classify_status("clone_failed"), "failed")
         self.assertEqual(classify_status("archived"), "archived")
 
@@ -362,6 +362,10 @@ Python-Syntaxpruefung fehlgeschlagen
         self.assertEqual(format_duration(4.4), "4s")
         self.assertEqual(format_duration(64), "1m 4s")
         self.assertEqual(format_duration(3661), "1h 1m 1s")
+
+    def test_classify_status_treats_no_changes_as_failed(self):
+        self.assertEqual(classify_status("no_changes"), "failed")
+        self.assertEqual(classify_status("nonzero_without_changes"), "failed")
 
 
 if __name__ == "__main__":
