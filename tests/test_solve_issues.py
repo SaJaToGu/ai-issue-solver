@@ -22,6 +22,7 @@ from solve_issues import (  # noqa: E402
     branch_has_changes_against_base,
     build_aider_command,
     build_opencode_command,
+    build_opencode_prompt,
     build_vibe_command,
     build_worker_command,
     build_worker_env,
@@ -40,6 +41,7 @@ from solve_issues import (  # noqa: E402
     parse_codex_reset_datetime,
     plan_branch_recovery,
     print_branch_recovery_plan,
+    relativize_repo_absolute_paths,
     preserve_worker_worktree,
     retry_branch_name,
     run_opencode_diagnostic,
@@ -826,7 +828,63 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn("/tmp/repo", cmd)
         self.assertIn("--model", cmd)
         self.assertIn("mistral/mistral-small-2603", cmd)
-        self.assertEqual(cmd[-1], "Fix issue")
+        self.assertIn("Fix issue", cmd[-1])
+        self.assertIn("repo-relative Pfade", cmd[-1])
+
+    def test_opencode_prompt_relativizes_repo_internal_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            internal_path = repo / "scripts" / "create_issues.py"
+            external_path = Path(tmpdir).parent / "outside.py"
+            prompt = (
+                f"Lies `{internal_path}` und pruefe auch "
+                f"{external_path}."
+            )
+
+            normalized = relativize_repo_absolute_paths(prompt, str(repo))
+
+        self.assertIn("`scripts/create_issues.py`", normalized)
+        self.assertNotIn(str(internal_path), normalized)
+        self.assertIn(str(external_path), normalized)
+
+    def test_opencode_prompt_keeps_urls_and_external_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            internal_path = repo / "scripts" / "create_issues.py"
+            external_path = Path(tmpdir).parent / "outside.py"
+            prompt = (
+                f"Quelle: https://example.test{internal_path}. "
+                f"Repo-Datei: {internal_path}, extern: {external_path}"
+            )
+
+            normalized = relativize_repo_absolute_paths(prompt, str(repo))
+
+        self.assertIn(f"https://example.test{internal_path}", normalized)
+        self.assertIn("Repo-Datei: scripts/create_issues.py,", normalized)
+        self.assertNotIn(f"Repo-Datei: {internal_path}", normalized)
+        self.assertIn(str(external_path), normalized)
+
+    def test_opencode_command_prompt_does_not_expose_repo_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            absolute_repo_file = repo / "scripts" / "create_issues.py"
+            prompt = f"Bitte {absolute_repo_file} bearbeiten."
+
+            with patch("solve_issues.find_opencode_executable", return_value="/usr/local/bin/opencode"):
+                cmd = build_opencode_command(prompt, str(repo))
+
+        self.assertIn("--dir", cmd)
+        self.assertIn(str(repo), cmd)
+        self.assertIn("scripts/create_issues.py", cmd[-1])
+        self.assertNotIn(str(absolute_repo_file), cmd[-1])
+        self.assertIn("ausschliesslich repo-relative Pfade", cmd[-1])
+
+    def test_opencode_prompt_adds_repo_relative_file_access_instruction(self):
+        prompt = build_opencode_prompt("Fix issue", "/tmp/repo")
+
+        self.assertIn("OpenCode wurde bereits mit `--dir`", prompt)
+        self.assertIn("repo-relative Pfade", prompt)
+        self.assertIn("Fix issue", prompt)
 
     def test_opencode_command_requires_executable(self):
         with patch("solve_issues.find_opencode_executable", return_value=None):

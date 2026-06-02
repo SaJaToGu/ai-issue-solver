@@ -178,6 +178,7 @@ NONZERO_GENERIC_SIDE_EFFECT_FILES = {
 PATH_CANDIDATE_RE = re.compile(
     r"(?<![\w:/.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.@+~-]+(?:\.[A-Za-z0-9_.+-]+)?"
 )
+ABSOLUTE_PATH_RE = re.compile(r"(?<![\w:/.-])/[^\s`'\"<>|]+")
 CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 CODEX_RATE_LIMIT_RESET_RE = re.compile(
     r"rate limit will be reset on\s+(.+?)(?:\.|\n|$)",
@@ -900,6 +901,45 @@ def build_vibe_command(prompt: str, repo_path: str,
     ]
 
 
+OPENCODE_REPO_RELATIVE_INSTRUCTIONS = """OpenCode wurde bereits mit `--dir` im geklonten Repository gestartet.
+Verwende fuer Dateioperationen ausschliesslich repo-relative Pfade wie `scripts/datei.py`.
+Wenn eine Pfadangabe auf dieses Repository zeigt, nutze den entsprechenden relativen Pfad und nicht den absoluten temporaeren Worktree-Pfad."""
+
+
+def _split_trailing_path_punctuation(path_text: str) -> tuple[str, str]:
+    trailing = ""
+    while path_text and path_text[-1] in ".,;:)]}":
+        trailing = path_text[-1] + trailing
+        path_text = path_text[:-1]
+    return path_text, trailing
+
+
+def relativize_repo_absolute_paths(text: str, repo_path: str) -> str:
+    """Ersetzt absolute repo-interne Pfade im Prompt durch repo-relative Pfade."""
+    repo_root = Path(repo_path).resolve()
+
+    def replace_match(match: re.Match) -> str:
+        raw_path, trailing = _split_trailing_path_punctuation(match.group(0))
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            return match.group(0)
+
+        resolved = candidate.resolve(strict=False)
+        if not is_relative_to(resolved, repo_root):
+            return match.group(0)
+
+        relative = resolved.relative_to(repo_root).as_posix()
+        return f"{relative}{trailing}"
+
+    return ABSOLUTE_PATH_RE.sub(replace_match, text)
+
+
+def build_opencode_prompt(prompt: str, repo_path: str) -> str:
+    """Bereitet den Prompt so vor, dass OpenCode repo-relative Pfade nutzt."""
+    normalized_prompt = relativize_repo_absolute_paths(prompt, repo_path)
+    return f"{OPENCODE_REPO_RELATIVE_INSTRUCTIONS}\n\n{normalized_prompt}"
+
+
 def build_opencode_command(prompt: str, repo_path: str,
                            model_name: str | None = None) -> list:
     opencode = find_opencode_executable(repo_path)
@@ -913,7 +953,7 @@ def build_opencode_command(prompt: str, repo_path: str,
     ]
     if model_name:
         cmd.extend(["--model", model_name])
-    cmd.append(prompt)
+    cmd.append(build_opencode_prompt(prompt, repo_path))
     return cmd
 
 
