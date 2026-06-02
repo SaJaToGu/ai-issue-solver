@@ -99,7 +99,7 @@ python scripts/solve_issues.py --model opencode --model-name deepseek-coder --re
 GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
 
 **Hinweise:**
-- Vor dem Worker-Lauf prüft der Solver `opencode auth status` und warnt bei
+- Vor dem Worker-Lauf prüft der Solver `opencode auth list` und warnt bei
   fehlender Authentifizierung
 - Mit `--diagnostic` lässt sich die OpenCode-Installation unabhängig prüfen
 - Der Solver akzeptiert auch `OPENCODE_API_KEY` als Umgebungsvariable

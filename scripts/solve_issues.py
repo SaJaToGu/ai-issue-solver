@@ -605,6 +605,7 @@ def find_opencode_executable(repo_path: str | None = None) -> str | None:
 
     candidates.append(Path.home() / ".local" / "bin" / "opencode")
     candidates.append(Path.home() / ".local" / "share" / "opencode" / "opencode")
+    candidates.append(Path.home() / ".opencode" / "bin" / "opencode")
 
     for candidate in candidates:
         if candidate.exists() and os.access(candidate, os.X_OK):
@@ -616,12 +617,12 @@ def find_opencode_executable(repo_path: str | None = None) -> str | None:
 def check_opencode_auth(opencode_exe: str) -> bool:
     """Prüft ob OpenCode authentisiert ist; gibt True zurück wenn alles ok.
 
-    Führt `opencode auth status` aus und interpretiert das Ergebnis.
+    Führt `opencode auth list` aus und interpretiert das Ergebnis.
     Bei Fehlern wird nur eine Warnung ausgegeben, kein Abbruch.
     """
     try:
         result = subprocess.run(
-            [opencode_exe, "auth", "status"],
+            [opencode_exe, "auth", "list"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -630,7 +631,7 @@ def check_opencode_auth(opencode_exe: str) -> bool:
         stdout_lower = result.stdout.lower() if result.stdout else ""
         combined = stderr_lower + stdout_lower
 
-        if result.returncode == 0 and "not authenticated" not in combined:
+        if result.returncode == 0 and "credentials" in combined and "0 credentials" not in combined:
             return True
 
         print_warn("OpenCode ist nicht authentifiziert!")
@@ -654,7 +655,7 @@ def run_opencode_diagnostic() -> int:
     Prüft:
     1. Ob das opencode-Executable gefunden wird
     2. Ob es ausführbar ist (opencode --version)
-    3. Ob der Benutzer authentifiziert ist (opencode auth status)
+    3. Ob der Benutzer authentifiziert ist (opencode auth list)
 
     Returns:
         0 wenn alles ok, 1 bei Problemen
@@ -692,7 +693,7 @@ def run_opencode_diagnostic() -> int:
 
     try:
         auth_result = subprocess.run(
-            [opencode_exe, "auth", "status"],
+            [opencode_exe, "auth", "list"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -701,12 +702,12 @@ def run_opencode_diagnostic() -> int:
         auth_stderr = (auth_result.stderr or "").strip()
         combined = (auth_stdout + auth_stderr).lower()
 
-        if auth_result.returncode == 0 and "not authenticated" not in combined and "not logged in" not in combined:
+        if auth_result.returncode == 0 and "credentials" in combined and "0 credentials" not in combined:
             print("  Auth:       ✅ Authentifiziert")
             if auth_stdout:
                 for line in auth_stdout.splitlines():
                     print(f"    {line}")
-        elif auth_result.returncode == 0 and "not authenticated" in combined:
+        elif auth_result.returncode == 0 and "0 credentials" in combined:
             print("  Auth:       ⚠️  Nicht authentifiziert")
             print("    → opencode auth login")
         else:

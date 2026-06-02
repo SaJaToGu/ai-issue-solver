@@ -803,6 +803,19 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertEqual(found, str(opencode))
 
+    def test_find_opencode_executable_uses_home_opencode_install(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_opencode = Path(tmpdir) / ".opencode" / "bin" / "opencode"
+            home_opencode.parent.mkdir(parents=True)
+            home_opencode.write_text("#!/bin/sh\n", encoding="utf-8")
+            home_opencode.chmod(0o755)
+
+            with patch("solve_issues.Path.home", return_value=Path(tmpdir)):
+                with patch("solve_issues.shutil.which", return_value=None):
+                    found = find_opencode_executable("/missing/repo")
+
+        self.assertEqual(found, str(home_opencode))
+
     def test_opencode_command_uses_run_dir_prompt_and_model(self):
         with patch("solve_issues.find_opencode_executable", return_value="/usr/local/bin/opencode"):
             cmd = build_opencode_command("Fix issue", "/tmp/repo", model_name="mistral/mistral-small-2603")
@@ -1439,7 +1452,7 @@ class OpenCodePreflightTests(unittest.TestCase):
     def test_check_opencode_auth_returns_true_when_authenticated(self):
         mock_result = unittest.mock.MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "Authenticated as user@example.com\n"
+        mock_result.stdout = "Credentials ~/.local/share/opencode/auth.json\nOpenCode Zen api\n1 credentials\n"
         mock_result.stderr = ""
 
         with unittest.mock.patch("subprocess.run", return_value=mock_result):
@@ -1451,7 +1464,7 @@ class OpenCodePreflightTests(unittest.TestCase):
     def test_check_opencode_auth_returns_false_when_not_authenticated(self):
         mock_result = unittest.mock.MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "not authenticated\n"
+        mock_result.stdout = "Credentials ~/.local/share/opencode/auth.json\n0 credentials\n"
         mock_result.stderr = ""
 
         printed = io.StringIO()
@@ -1506,7 +1519,7 @@ class OpenCodePreflightTests(unittest.TestCase):
 
             auth_mock = unittest.mock.MagicMock()
             auth_mock.returncode = 0
-            auth_mock.stdout = "Authenticated\n"
+            auth_mock.stdout = "Credentials\nOpenCode Zen api\n1 credentials\n"
             auth_mock.stderr = ""
 
             with unittest.mock.patch(

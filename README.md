@@ -691,7 +691,7 @@ und danach auf `PATH`. GitHub-Write-Tokens werden nicht an den OpenCode-Worker
 weitergereicht.
 
 Vor dem Worker-Start prüft der Solver, ob OpenCode authentifiziert ist
-(`opencode auth status`). Fehlt die Authentifizierung, erscheint eine Warnung
+(`opencode auth list`). Fehlt die Authentifizierung, erscheint eine Warnung
 mit Login-Hinweis. Der Lauf wird trotzdem gestartet, falls die OpenCode-eigene
 Konfiguration einen gültigen Provider bereitstellt.
 
