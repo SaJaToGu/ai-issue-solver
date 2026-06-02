@@ -610,6 +610,7 @@ class AiderCommandTests(unittest.TestCase):
             repo = Path(tmpdir)
             (repo / "scripts").mkdir()
             (repo / "scripts" / "solve_issues.py").write_text("print('x')\n", encoding="utf-8")
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
             prompt = "Bitte `scripts/solve_issues.py` und README.md prüfen."
 
             cmd = build_aider_command("claude", "", prompt, str(repo))
@@ -623,7 +624,7 @@ class AiderCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
             (repo / "README.md").write_text("hello\n", encoding="utf-8")
-            prompt = "Ändere `README.md`, `../secret.txt` und https://example.test/file.py"
+            prompt = "Ändere `README.md`, `LICENSE`, `../secret.txt` und https://example.test/file.py"
 
             targets = infer_aider_targets(prompt, str(repo))
 
@@ -640,6 +641,11 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertIn("--model", cmd)
         self.assertIn("ollama/llama3.2:3b", cmd)
+        self.assertIn("--no-check-update", cmd)
+        self.assertIn("--no-analytics", cmd)
+        self.assertIn("--no-gitignore", cmd)
+        self.assertIn("--chat-history-file", cmd)
+        self.assertNotIn(".aider.chat.history.md", cmd)
         self.assertEqual(cmd[-1], "src/app.py")
 
     def test_mistral_command_uses_default_magistral_model(self):
@@ -893,18 +899,18 @@ class WorkerCommandConstructionTests(unittest.TestCase):
         mock_aider.assert_called_once_with("claude", "", "prompt", "/repo", ["file.py"])
 
     def test_build_worker_command_delegates_to_aider_builder_for_openrouter(self):
-        with patch("solve_issues.build_aider_command", return_value=["aider", "--openrouter", "--model", "openai/gpt-4o-mini", "prompt"]) as mock_aider:
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--model", "openrouter/openai/gpt-4o-mini", "prompt"]) as mock_aider:
             cmd = build_worker_command("openrouter", "", "prompt", "/repo")
 
-        self.assertEqual(cmd, ["aider", "--openrouter", "--model", "openai/gpt-4o-mini", "prompt"])
+        self.assertEqual(cmd, ["aider", "--model", "openrouter/openai/gpt-4o-mini", "prompt"])
         mock_aider.assert_called_once_with("openrouter", "", "prompt", "/repo", None)
 
     def test_build_worker_command_delegates_to_aider_builder_for_openrouter_with_custom_model(self):
-        with patch("solve_issues.build_aider_command", return_value=["aider", "--openrouter", "--model", "anthropic/claude-3-haiku", "prompt"]) as mock_aider:
-            cmd = build_worker_command("openrouter", "anthropic/claude-3-haiku", "prompt", "/repo")
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--model", "openrouter/anthropic/claude-3-haiku", "prompt"]) as mock_aider:
+            cmd = build_worker_command("openrouter", "openrouter/anthropic/claude-3-haiku", "prompt", "/repo")
 
-        self.assertEqual(cmd, ["aider", "--openrouter", "--model", "anthropic/claude-3-haiku", "prompt"])
-        mock_aider.assert_called_once_with("openrouter", "anthropic/claude-3-haiku", "prompt", "/repo", None)
+        self.assertEqual(cmd, ["aider", "--model", "openrouter/anthropic/claude-3-haiku", "prompt"])
+        mock_aider.assert_called_once_with("openrouter", "openrouter/anthropic/claude-3-haiku", "prompt", "/repo", None)
 
 
 class WorkerOutputTests(unittest.TestCase):

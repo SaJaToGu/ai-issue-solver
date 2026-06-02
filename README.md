@@ -625,7 +625,8 @@ Ein **Personal Access Token (PAT)** ist dein persönlicher API-Schlüssel für G
 
 ### OpenRouter
 OpenRouter ermöglicht den Zugriff auf multiple KI-Modelle über eine API und einen
-Key. Der Solver nutzt OpenRouter über `aider` mit dem `--openrouter`-Flag.
+Key. Der Solver nutzt OpenRouter über `aider` mit dem Modellpräfix
+`openrouter/...`.
 
 1. API-Key holen: https://openrouter.ai/keys
 2. In `.env` eintragen: `OPENROUTER_API_KEY=sk-or-...`
@@ -634,23 +635,23 @@ Key. Der Solver nutzt OpenRouter über `aider` mit dem `--openrouter`-Flag.
 Starten mit:
 ```bash
 python scripts/solve_issues.py --model openrouter --repo ai-issue-solver --issue 84
-python scripts/solve_issues.py --model openrouter --model-name openai/gpt-4o-mini --repo ai-issue-solver
-python scripts/solve_issues.py --model openrouter --model-name anthropic/claude-3-haiku --repo ai-issue-solver
+python scripts/solve_issues.py --model openrouter --model-name openrouter/openai/gpt-4o-mini --repo ai-issue-solver
+python scripts/solve_issues.py --model openrouter --model-name openrouter/anthropic/claude-3-haiku --repo ai-issue-solver
 ```
 
 **Empfohlene Modelle:**
-- `openai/gpt-4o-mini` — Gute Balance aus Kosten und Qualität, standardmäßig im Solver
-- `openai/gpt-4o` — Höhere Qualität, höhere Kosten
-- `anthropic/claude-3-haiku` — Schnell und kostengünstig
-- `anthropic/claude-3-sonnet` — Gute Qualität für Code-Aufgaben
-- `mistralai/mistral-7b-instruct` — Gutes Open-Source-Modell
-- `google/gemini-flash-1.5` — Schnelle Google-Alternative
+- `openrouter/openai/gpt-4o-mini` — Gute Balance aus Kosten und Qualität, standardmäßig im Solver
+- `openrouter/openai/gpt-4o` — Höhere Qualität, höhere Kosten
+- `openrouter/anthropic/claude-3-haiku` — Schnell und kostengünstig
+- `openrouter/anthropic/claude-3-sonnet` — Gute Qualität für Code-Aufgaben
+- `openrouter/mistralai/mistral-7b-instruct` — Gutes Open-Source-Modell
+- `openrouter/google/gemini-flash-1.5` — Schnelle Google-Alternative
 
 **Hinweise:**
 - OpenRouter benötigt `aider` — installiere es mit `pip install -r requirements-aider.txt`
 - Die API-Kosten hängen vom gewählten Modell ab, nicht von OpenRouter selbst
 - OpenRouter bietet eine kostenlose Test-Stufe mit begrenztem Guthaben
-- Modellnamen sind im Format `{provider}/{model-name}` anzugeben
+- Modellnamen sind für `aider` im Format `openrouter/{provider}/{model-name}` anzugeben
 - Die vollständige Modell-Liste: https://openrouter.ai/models
 
 ### OpenCode
