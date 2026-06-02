@@ -110,12 +110,12 @@ Falls während der CLI-Ausführung SQLite/WAL-Fehler wie `Failed to run the quer
 
 2. **Authentifizierungsdatei sichern**
    ```bash
-   cp config/.env config/.env.bak
+   cp ~/.local/share/opencode/auth.json ~/.local/share/opencode/auth.json.backup
    ```
 
 3. **WAL- und SHM-Dateien entfernen**
    ```bash
-   rm -f opencode.db-wal opencode.db-shm
+   rm -f ~/.local/share/opencode/opencode.db-wal ~/.local/share/opencode/opencode.db-shm
    ```
    Dies ist der erste Wiederherstellungsschritt und entfernt nur die WAL- und SHM-Dateien.
 
@@ -124,7 +124,7 @@ Falls während der CLI-Ausführung SQLite/WAL-Fehler wie `Failed to run the quer
    python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
    ```
 
-**Hinweis:** Die SQLite-Hauptdatei (`opencode.db`) und die `.env`-Datei mit den API-Schlüsseln bleiben unberührt. Die Wiederherstellung beschränkt sich auf die temporären WAL- und SHM-Dateien.
+**Hinweis:** Die SQLite-Hauptdatei (`opencode.db`) und die Authentifizierungsdatei (`auth.json`) bleiben unberührt. Die Wiederherstellung beschränkt sich auf die temporären WAL- und SHM-Dateien.
 
 **Hinweise:**
 - Vor dem Worker-Lauf prüft der Solver `opencode auth list` und warnt bei
