@@ -187,3 +187,25 @@ Die Logs liegen pro Lauf unter `reports/overnight/<timestamp>/`:
 `pull.log`, `tests.log`, `batch.log`, `dashboard.log` und `summary.txt`.
 Wenn Pull oder Tests fehlschlagen, wird der Batch nicht gestartet; Dashboard und
 Summary werden trotzdem geschrieben.
+
+## Night-Mode und OpenCode/Mistral-Kalibrierung
+
+Für overnight runs und die Kalibrierung von OpenCode/Mistral sollten folgende Richtlinien beachtet werden:
+
+- **Empfohlener Befehl für overnight runs:**
+  ```bash
+  python scripts/run_overnight.py --model mistral --base-branch develop --workers 1
+  ```
+
+- **Empfohlene Flags während der Kalibrierung:**
+  - Verwende `--workers 1`, um die Belastung zu minimieren.
+  - Verwende explizite `--issue`-Flags, um spezifische Issues zu adressieren.
+
+- **Issues, die vermieden werden sollten:**
+  - Issues, die Credentials oder `config/.env` betreffen.
+  - Issues, die Provider-Authentifizierung oder Multi-Repo-Zugriff betreffen.
+
+- **OpenCode Smoke-Test-Befehl:**
+  ```bash
+  python scripts/solve_issues.py --model opencode --issue 1 --dry-run
+  ```
