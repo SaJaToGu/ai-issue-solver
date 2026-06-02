@@ -22,3 +22,4 @@ reports/*
 .DS_Store
 .idea/
 .vscode/
+.aider*
