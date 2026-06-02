@@ -77,15 +77,32 @@ der mehrere Provider bündeln kann. Der AI Issue Solver startet OpenCode im
 isolierten Worktree und behält Branch, Commit, Push und PR-Erstellung selbst.
 
 ```bash
-# OpenCode nach offizieller Doku installieren und Provider dort konfigurieren.
+# OpenCode nach offizieller Doku installieren
 curl -fsSL https://opencode.ai/install | bash
+
+# Anmelden
 opencode auth login
 
+# Vor dem ersten Lauf: Diagnose ausführen
+python scripts/solve_issues.py --diagnostic
+
+# Issue lösen
 python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
+
+# Mit Modellauswahl
 python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name claude-sonnet-4-20250514 --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name gpt-4o --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name deepseek-coder --repo ai-issue-solver --issue 84
 ```
 
 GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
+
+**Hinweise:**
+- Vor dem Worker-Lauf prüft der Solver `opencode auth list` und warnt bei
+  fehlender Authentifizierung
+- Mit `--diagnostic` lässt sich die OpenCode-Installation unabhängig prüfen
+- Der Solver akzeptiert auch `OPENCODE_API_KEY` als Umgebungsvariable
 
 ### Ollama (lokal)
 ```bash

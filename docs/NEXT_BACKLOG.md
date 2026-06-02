@@ -52,7 +52,7 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
-## 2. Harden OpenCode install and auth preflight
+## ~~2. Harden OpenCode install and auth preflight~~ (Done)
 
 Labels: `setup`, `automation`, `workflow`
 
@@ -62,18 +62,18 @@ Make the existing `opencode` worker adapter practical for daily use by improving
 installation, authentication, and diagnostic behavior.
 
 Suggested scope:
-- add a clear install/auth preflight for `opencode`
-- document install and login steps
+- add a clear install/auth preflight for `opencode` ✓
+- document install and login steps ✓
 - add a diagnostic command or dry-run path that confirms OpenCode is available
-  before worker execution
-- add model-name examples for OpenCode usage
-- ensure worker failures produce useful run reports
-- target solver PRs at `develop`
+  before worker execution ✓ (`--diagnostic` flag)
+- add model-name examples for OpenCode usage ✓
+- ensure worker failures produce useful run reports ✓
+- target solver PRs at `develop` ✓
 
 Open questions:
-- Which OpenCode provider/login path should be the primary one?
-- Should OpenCode become the recommended fallback for nested Codex failures?
-- Do we want OpenCode runs marked differently in the dashboard?
+- Which OpenCode provider/login path should be the primary one? → `opencode auth login`
+- Should OpenCode become the recommended fallback for nested Codex failures? → Open
+- Do we want OpenCode runs marked differently in the dashboard? → Open
 
 Checks:
 - `git diff --check`
