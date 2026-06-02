@@ -604,12 +604,128 @@ def find_opencode_executable(repo_path: str | None = None) -> str | None:
         ])
 
     candidates.append(Path.home() / ".local" / "bin" / "opencode")
+    candidates.append(Path.home() / ".local" / "share" / "opencode" / "opencode")
 
     for candidate in candidates:
         if candidate.exists() and os.access(candidate, os.X_OK):
             return str(candidate)
 
     return shutil.which("opencode")
+
+
+def check_opencode_auth(opencode_exe: str) -> bool:
+    """Prüft ob OpenCode authentisiert ist; gibt True zurück wenn alles ok.
+
+    Führt `opencode auth status` aus und interpretiert das Ergebnis.
+    Bei Fehlern wird nur eine Warnung ausgegeben, kein Abbruch.
+    """
+    try:
+        result = subprocess.run(
+            [opencode_exe, "auth", "status"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        stderr_lower = result.stderr.lower() if result.stderr else ""
+        stdout_lower = result.stdout.lower() if result.stdout else ""
+        combined = stderr_lower + stdout_lower
+
+        if result.returncode == 0 and "not authenticated" not in combined:
+            return True
+
+        print_warn("OpenCode ist nicht authentifiziert!")
+        print("   → Anmelden mit: opencode auth login")
+        print("   → Oder Provider-Token via OPENCODE_API_KEY setzen")
+        return False
+    except FileNotFoundError:
+        print_warn("OpenCode Auth-Check fehlgeschlagen: executable nicht gefunden")
+        return False
+    except subprocess.TimeoutExpired:
+        print_warn("OpenCode Auth-Check hat nicht innerhalb von 15s geantwortet")
+        return False
+    except OSError as exc:
+        print_warn(f"OpenCode Auth-Check fehlgeschlagen: {exc}")
+        return False
+
+
+def run_opencode_diagnostic() -> int:
+    """Führt eine strukturierte OpenCode-Diagnose aus und gibt das Ergebnis aus.
+
+    Prüft:
+    1. Ob das opencode-Executable gefunden wird
+    2. Ob es ausführbar ist (opencode --version)
+    3. Ob der Benutzer authentifiziert ist (opencode auth status)
+
+    Returns:
+        0 wenn alles ok, 1 bei Problemen
+    """
+    print("OpenCode Diagnostic")
+    print("=" * 50)
+
+    opencode_exe = find_opencode_executable()
+    if not opencode_exe:
+        print_err("OpenCode CLI nicht gefunden")
+        print("   Installieren: https://opencode.ai/docs/installation")
+        print("   Danach `opencode` im PATH verfügbar machen")
+        return 1
+
+    print(f"  Executable: {opencode_exe}")
+
+    try:
+        version_result = subprocess.run(
+            [opencode_exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if version_result.returncode == 0:
+            version = (version_result.stdout or version_result.stderr).strip()
+            print(f"  Version:    {version or '(keine Ausgabe)'}")
+        else:
+            print_warn("OpenCode --version fehlgeschlagen")
+            print(f"    exit code: {version_result.returncode}")
+            print(f"    stderr:    {version_result.stderr[:200]}")
+            return 1
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print_err(f"OpenCode --version fehlgeschlagen: {exc}")
+        return 1
+
+    try:
+        auth_result = subprocess.run(
+            [opencode_exe, "auth", "status"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        auth_stdout = (auth_result.stdout or "").strip()
+        auth_stderr = (auth_result.stderr or "").strip()
+        combined = (auth_stdout + auth_stderr).lower()
+
+        if auth_result.returncode == 0 and "not authenticated" not in combined and "not logged in" not in combined:
+            print("  Auth:       ✅ Authentifiziert")
+            if auth_stdout:
+                for line in auth_stdout.splitlines():
+                    print(f"    {line}")
+        elif auth_result.returncode == 0 and "not authenticated" in combined:
+            print("  Auth:       ⚠️  Nicht authentifiziert")
+            print("    → opencode auth login")
+        else:
+            print_warn(f"OpenCode Auth-Status unbekannt (exit {auth_result.returncode})")
+            if auth_stderr:
+                print(f"    {auth_stderr[:200]}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print_warn(f"OpenCode Auth-Check fehlgeschlagen: {exc}")
+
+    print()
+    print("  Verwendung:")
+    print(f"    python scripts/solve_issues.py --model opencode")
+    print(f"    python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603")
+    print(f"    python scripts/solve_issues.py --model opencode --model-name claude-sonnet-4-20250514")
+    print(f"    python scripts/solve_issues.py --model opencode --model-name gpt-4o")
+    print(f"    python scripts/solve_issues.py --model opencode --dry-run")
+    print("=" * 50)
+
+    return 0
 
 
 def clean_path_candidate(candidate: str) -> str:
@@ -2290,9 +2406,15 @@ def main():
     parser.add_argument(
         "--model-name",
         help=(
-            "Spezifisches Modell (für Codex optional, für Mistral z.B. "
-            "'magistral-small-2509', für Ollama z.B. 'deepseek-coder:6.7b')"
+            "Spezifisches Modell (z.B. 'mistral/mistral-small-2603', "
+            "'claude-sonnet-4-20250514', 'gpt-4o', 'deepseek-coder:6.7b', "
+            "'openrouter/openai/gpt-4o-mini')"
         )
+    )
+    parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="OpenCode-Diagnose: Version, Auth-Status und Modellbeispiele anzeigen",
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
@@ -2343,6 +2465,12 @@ def main():
             print("   Ohne --dry-run ausfuehren, um diese Worktrees zu loeschen.")
         return
 
+    if args.diagnostic:
+        if args.model and args.model != "opencode":
+            print_warn("--diagnostic ist nur für --model opencode vorgesehen")
+        exit_code = run_opencode_diagnostic()
+        sys.exit(exit_code)
+
     if not args.model:
         parser.error("--model ist erforderlich, ausser bei --cleanup-preserved-worktrees")
 
@@ -2367,10 +2495,14 @@ def main():
         print("   → Installieren in der aktiven Umgebung mit: pip install mistral-vibe")
         sys.exit(1)
 
-    if args.model == "opencode" and not find_opencode_executable() and not args.dry_run:
-        print_err("OpenCode CLI wurde nicht gefunden!")
-        print("   → Installieren nach OpenCode-Doku und `opencode` in PATH verfügbar machen")
-        sys.exit(1)
+    if args.model == "opencode" and not args.dry_run:
+        opencode_exe = find_opencode_executable()
+        if not opencode_exe:
+            print_err("OpenCode CLI wurde nicht gefunden!")
+            print("   → Installieren: https://opencode.ai/docs/installation")
+            print("   → Danach `opencode` im PATH verfügbar machen")
+            sys.exit(1)
+        check_opencode_auth(opencode_exe)
 
     if args.model == "openrouter" and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert, wird aber für OpenRouter benötigt!")

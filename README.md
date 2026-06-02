@@ -660,17 +660,40 @@ AI Issue Solver nutzt OpenCode nur im isolierten Worktree; Branch, Commit, Push
 und PR bleiben beim Wrapper.
 
 ```bash
-# OpenCode nach offizieller Doku installieren und Provider dort konfigurieren.
+# OpenCode nach offizieller Doku installieren
 curl -fsSL https://opencode.ai/install | bash
+
+# Anmelden (Provider-Konfiguration)
 opencode auth login
 
+# Diagnose vor dem ersten Lauf
+python scripts/solve_issues.py --diagnostic
+
+# Issue lösen (mit Standard-Provider)
 python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
+
+# Mit spezifischem Modell
 python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name claude-sonnet-4-20250514 --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name gpt-4o --repo ai-issue-solver --issue 84
 ```
 
+**Empfohlene Modellnamen für OpenCode:**
+- `mistral/mistral-small-2603` — Mistral Small, gute Balance
+- `mistral/magistral-medium-2509` — Magistral Medium (Reasoning)
+- `claude-sonnet-4-20250514` — Anthropic Claude via OpenCode
+- `gpt-4o` — OpenAI GPT-4o via OpenCode
+- `deepseek-coder` — DeepSeek Coder via OpenCode
+
 Der Solver sucht `opencode` in der aktiven Umgebung, in `.venv/bin` bzw.
-`venv/bin` des Arbeitsbaums, in `~/.local/bin` und danach auf `PATH`.
-GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
+`venv/bin` des Arbeitsbaums, in `~/.local/bin`, in `~/.local/share/opencode/`
+und danach auf `PATH`. GitHub-Write-Tokens werden nicht an den OpenCode-Worker
+weitergereicht.
+
+Vor dem Worker-Start prüft der Solver, ob OpenCode authentifiziert ist
+(`opencode auth status`). Fehlt die Authentifizierung, erscheint eine Warnung
+mit Login-Hinweis. Der Lauf wird trotzdem gestartet, falls die OpenCode-eigene
+Konfiguration einen gültigen Provider bereitstellt.
 
 ### Mistral AI / Mistral Vibe / Magistral
 1. API-Key holen: https://console.mistral.ai/

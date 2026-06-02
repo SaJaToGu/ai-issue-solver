@@ -25,6 +25,7 @@ from solve_issues import (  # noqa: E402
     build_vibe_command,
     build_worker_command,
     build_worker_env,
+    check_opencode_auth,
     cleanup_preserved_worktrees,
     create_run_report,
     create_issue_pull_request,
@@ -41,6 +42,7 @@ from solve_issues import (  # noqa: E402
     print_branch_recovery_plan,
     preserve_worker_worktree,
     retry_branch_name,
+    run_opencode_diagnostic,
     run_worker_command,
     should_preserve_worktree,
     should_surface_worker_line,
@@ -1426,6 +1428,99 @@ class GitStatusTests(unittest.TestCase):
             self.assertEqual(stale, [old_path])
             self.assertFalse(old_path.exists())
             self.assertTrue(fresh_path.exists())
+
+
+class OpenCodePreflightTests(unittest.TestCase):
+    """Tests für OpenCode Auth-Preflight und Diagnostic (Issue #139)."""
+
+    def setUp(self):
+        self.opencode_exe = "/usr/local/bin/opencode"
+
+    def test_check_opencode_auth_returns_true_when_authenticated(self):
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Authenticated as user@example.com\n"
+        mock_result.stderr = ""
+
+        with unittest.mock.patch("subprocess.run", return_value=mock_result):
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = check_opencode_auth(self.opencode_exe)
+
+        self.assertTrue(result)
+
+    def test_check_opencode_auth_returns_false_when_not_authenticated(self):
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "not authenticated\n"
+        mock_result.stderr = ""
+
+        printed = io.StringIO()
+        with unittest.mock.patch("subprocess.run", return_value=mock_result):
+            with contextlib.redirect_stdout(printed):
+                result = check_opencode_auth(self.opencode_exe)
+
+        self.assertFalse(result)
+        output = printed.getvalue()
+        self.assertIn("OpenCode ist nicht authentifiziert", output)
+        self.assertIn("opencode auth login", output)
+
+    def test_check_opencode_auth_returns_false_on_timeout(self):
+        with unittest.mock.patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired("opencode", 15)
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                result = check_opencode_auth(self.opencode_exe)
+
+        self.assertFalse(result)
+        self.assertIn("Auth-Check", printed.getvalue())
+
+    def test_check_opencode_auth_returns_false_on_file_not_found(self):
+        with unittest.mock.patch(
+            "subprocess.run", side_effect=FileNotFoundError()
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                result = check_opencode_auth(self.opencode_exe)
+
+        self.assertFalse(result)
+        self.assertIn("Auth-Check", printed.getvalue())
+
+    def test_run_opencode_diagnostic_returns_1_when_executable_missing(self):
+        with unittest.mock.patch(
+            "solve_issues.find_opencode_executable", return_value=None
+        ):
+            with contextlib.redirect_stdout(io.StringIO()):
+                exit_code = run_opencode_diagnostic()
+
+        self.assertEqual(exit_code, 1)
+
+    def test_run_opencode_diagnostic_reports_version_and_auth(self):
+        with unittest.mock.patch(
+            "solve_issues.find_opencode_executable", return_value=self.opencode_exe
+        ):
+            version_mock = unittest.mock.MagicMock()
+            version_mock.returncode = 0
+            version_mock.stdout = "opencode 0.1.0\n"
+            version_mock.stderr = ""
+
+            auth_mock = unittest.mock.MagicMock()
+            auth_mock.returncode = 0
+            auth_mock.stdout = "Authenticated\n"
+            auth_mock.stderr = ""
+
+            with unittest.mock.patch(
+                "subprocess.run", side_effect=[version_mock, auth_mock]
+            ):
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    exit_code = run_opencode_diagnostic()
+
+        self.assertEqual(exit_code, 0)
+        output = printed.getvalue()
+        self.assertIn("OpenCode Diagnostic", output)
+        self.assertIn("0.1.0", output)
+        self.assertIn("Authentifiziert", output)
 
 
 if __name__ == "__main__":
