@@ -113,12 +113,11 @@ MODEL_CONFIGS = {
     "openrouter": {
         "display_name": "OpenRouter (aider)",
         "aider_flags": [
-            "--openrouter",
             "--model", "{model_name}",
         ],
         "env_key": "OPENROUTER_API_KEY",
         "env_var": "OPENROUTER_API_KEY",
-        "default_model_name": "openai/gpt-4o-mini",
+        "default_model_name": "openrouter/openai/gpt-4o-mini",
     },
 }
 
@@ -671,7 +670,7 @@ def normalize_aider_target(candidate: str, repo_path: str) -> str | None:
     if target.exists():
         if not target.is_file():
             return None
-    elif path.parent != Path(".") and not (repo_root / path.parent).is_dir():
+    else:
         return None
 
     return target.relative_to(repo_root).as_posix()
@@ -701,11 +700,21 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
 
     targets = file_targets if file_targets is not None else infer_aider_targets(prompt, repo_path)
 
+    aider = find_aider_executable() or "aider"
+    chat_history_file = Path(tempfile.gettempdir()) / "ai-issue-solver-aider.chat.history.md"
+    input_history_file = Path(tempfile.gettempdir()) / "ai-issue-solver-aider.input.history"
+
     cmd = [
-        "aider",
+        aider,
         *flags,
         "--yes",                   # Automatisch ja sagen
         "--no-auto-commits",       # Wir committen selbst
+        "--no-check-update",       # Kein Schreibzugriff auf ~/.aider/caches nötig
+        "--no-analytics",          # Keine Telemetrie im nicht-interaktiven Worker
+        "--no-gitignore",          # Keine automatischen .gitignore-Nebenwirkungen
+        "--chat-history-file", str(chat_history_file),
+        "--input-history-file", str(input_history_file),
+        "--map-tokens", "0",       # Kein repo-lokaler .aider.tags.cache
         "--subtree-only",          # Repo-Kontext auf den geklonten Arbeitsbaum begrenzen
         "--message", prompt,       # Direkt-Prompt (kein interaktiver Modus)
         *targets,
