@@ -702,6 +702,7 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
 
     aider = find_aider_executable() or "aider"
     chat_history_file = Path(tempfile.gettempdir()) / "ai-issue-solver-aider.chat.history.md"
+    input_history_file = Path(tempfile.gettempdir()) / "ai-issue-solver-aider.input.history"
 
     cmd = [
         aider,
@@ -712,6 +713,8 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
         "--no-analytics",          # Keine Telemetrie im nicht-interaktiven Worker
         "--no-gitignore",          # Keine automatischen .gitignore-Nebenwirkungen
         "--chat-history-file", str(chat_history_file),
+        "--input-history-file", str(input_history_file),
+        "--map-tokens", "0",       # Kein repo-lokaler .aider.tags.cache
         "--subtree-only",          # Repo-Kontext auf den geklonten Arbeitsbaum begrenzen
         "--message", prompt,       # Direkt-Prompt (kein interaktiver Modus)
         *targets,

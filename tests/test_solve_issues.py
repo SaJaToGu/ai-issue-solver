@@ -645,7 +645,11 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn("--no-analytics", cmd)
         self.assertIn("--no-gitignore", cmd)
         self.assertIn("--chat-history-file", cmd)
+        self.assertIn("--input-history-file", cmd)
+        self.assertIn("--map-tokens", cmd)
+        self.assertIn("0", cmd)
         self.assertNotIn(".aider.chat.history.md", cmd)
+        self.assertNotIn(".aider.input.history", cmd)
         self.assertEqual(cmd[-1], "src/app.py")
 
     def test_mistral_command_uses_default_magistral_model(self):
