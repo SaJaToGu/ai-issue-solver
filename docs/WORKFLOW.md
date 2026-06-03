@@ -190,16 +190,18 @@ Summary werden trotzdem geschrieben.
 
 ## Night-Mode und OpenCode/Mistral-Kalibrierung
 
-Für overnight runs und die Kalibrierung von OpenCode/Mistral sollten folgende Richtlinien beachtet werden:
+Für overnight runs und die Kalibrierung von OpenCode mit Mistral als Provider
+sollten folgende Richtlinien beachtet werden:
 
 - **Empfohlener Befehl für overnight runs:**
   ```bash
-  python scripts/run_overnight.py --model mistral --base-branch develop --workers 1
+  python scripts/run_overnight.py --model opencode --model-name mistral/mistral-small-2603 --base-branch develop --workers 1
   ```
 
 - **Empfohlene Flags während der Kalibrierung:**
   - Verwende `--workers 1`, um die Belastung zu minimieren.
   - Verwende explizite `--issue`-Flags, um spezifische Issues zu adressieren.
+  - Verwende `--dry-run`, um Änderungen vorab zu prüfen.
 
 - **Issues, die vermieden werden sollten:**
   - Issues, die Credentials oder `config/.env` betreffen.
@@ -207,5 +209,13 @@ Für overnight runs und die Kalibrierung von OpenCode/Mistral sollten folgende R
 
 - **OpenCode Smoke-Test-Befehl:**
   ```bash
-  python scripts/solve_issues.py --model opencode --issue 1 --dry-run
+  python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --issue 1 --dry-run
   ```
+
+- **Wichtige Hinweise:**
+  - Alle Runs sollten standardmäßig den `develop`-Branch als Ziel verwenden, um
+    laufende Änderungen zu sammeln.
+  - Der Workflow ist dokumentations-only und erwähnt keine Secret-Dateien.
+  - GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
+  - Für den Mistral-Provider ist ein gültiger `MISTRAL_API_KEY` in der
+    OpenCode-Konfiguration erforderlich.

@@ -613,15 +613,78 @@ Ein **Personal Access Token (PAT)** ist dein persönlicher API-Schlüssel für G
 
 ---
 
-## KI-Modelle konfigurieren
+### OpenCode
+OpenCode kann als terminal-nativer Worker verschiedene Provider bündeln. Der
+AI Issue Solver nutzt OpenCode nur im isolierten Worktree; Branch, Commit, Push
+und PR bleiben beim Wrapper.
 
-### Claude (Anthropic)
-1. API-Key holen: https://console.anthropic.com/
-2. In `.env` eintragen: `ANTHROPIC_API_KEY=sk-ant-...`
+```bash
+# OpenCode nach offizieller Doku installieren
+curl -fsSL https://opencode.ai/install | bash
 
-### OpenAI
-1. API-Key holen: https://platform.openai.com/api-keys
-2. In `.env` eintragen: `OPENAI_API_KEY=sk-...`
+# Anmelden (Provider-Konfiguration)
+opencode auth login
+
+# Diagnose vor dem ersten Lauf
+python scripts/solve_issues.py --diagnostic
+
+# Issue lösen (mit Standard-Provider)
+python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
+
+# Mit spezifischem Modell
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name claude-sonnet-4-20250514 --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name gpt-4o --repo ai-issue-solver --issue 84
+```
+
+**Empfohlene Modellnamen für OpenCode:**
+- `mistral/mistral-small-2603` — Mistral Small, gute Balance
+- `mistral/magistral-medium-2509` — Magistral Medium (Reasoning)
+- `claude-sonnet-4-20250514` — Anthropic Claude via OpenCode
+- `gpt-4o` — OpenAI GPT-4o via OpenCode
+- `deepseek-coder` — DeepSeek Coder via OpenCode
+
+Der Solver sucht `opencode` in der aktiven Umgebung, in `.venv/bin` bzw.
+`venv/bin` des Arbeitsbaums, in `~/.local/bin`, in `~/.local/share/opencode/`
+und danach auf `PATH`. GitHub-Write-Tokens werden nicht an den OpenCode-Worker
+weitergereicht.
+
+Vor dem Worker-Start prüft der Solver, ob OpenCode authentifiziert ist
+(`opencode auth list`). Fehlt die Authentifizierung, erscheint eine Warnung
+mit Login-Hinweis. Der Lauf wird trotzdem gestartet, falls die OpenCode-eigene
+Konfiguration einen gültigen Provider bereitstellt.
+
+### Mistral AI / Mistral Vibe / Magistral
+1. API-Key holen: https://console.mistral.ai/
+2. In `.env` eintragen: `MISTRAL_API_KEY=...`
+3. Mistral Vibe CLI installieren, z.B. nach offizieller Doku mit:
+   ```bash
+   curl -LsSf https://mistral.ai/vibe/install.sh | bash
+   # alternativ: uv tool install mistral-vibe
+   # alternativ: pip install mistral-vibe
+   ```
+4. Starten mit:
+   ```bash
+   python scripts/solve_issues.py --model mistral-vibe
+   python scripts/solve_issues.py --model mistral
+   ```
+
+`mistral-vibe` nutzt die Mistral Vibe CLI direkt und braucht kein aider. Der
+Solver sucht `vibe` in der aktiven Umgebung, in `.venv/bin` bzw. `venv/bin` des
+Repos, in `~/.local/bin` und im `PATH`. `mistral` bleibt der aider-basierte
+Magistral-Modus.
+
+Der Solver nutzt standardmäßig `magistral-medium-2509`. Nach den offiziellen
+Mistral-Modellübersichten vom 21. Mai 2026 ist Magistral Medium 1.2 als
+aktuelles reasoning-orientiertes Magistral-Modell gelistet; ältere
+Magistral-Versionen `2506` und `2507` sind legacy oder retired.
+`magistral-small-2509` kann per `--model-name magistral-small-2509` gesetzt
+werden, falls es im eigenen Account noch verfügbar ist; die aktuelle
+Mistral-Übersicht markiert Magistral Small 1.2 inzwischen als
+Legacy/Deprecated und nennt `Mistral Small 4` (`mistral-small-2603`) als
+Alternative. Mistral/Magistral ist vor allem sinnvoll für europäische Sprachen,
+mehrsprachige Reasoning-Aufgaben und Workflows, bei denen ein europäischer
+Anbieter oder EU-Souveränitätsaspekte wichtig sind.
 
 ### OpenRouter
 OpenRouter ermöglicht den Zugriff auf multiple KI-Modelle über eine API und einen
@@ -644,7 +707,7 @@ python scripts/solve_issues.py --model openrouter --model-name openrouter/anthro
 - `openrouter/openai/gpt-4o` — Höhere Qualität, höhere Kosten
 - `openrouter/anthropic/claude-3-haiku` — Schnell und kostengünstig
 - `openrouter/anthropic/claude-3-sonnet` — Gute Qualität für Code-Aufgaben
-- `openrouter/mistralai/mistral-7b-instruct` — Gutes Open-Source-Modell
+- `openrouter/mistralai/mistral-7b-insect` — Gutes Open-Source-Modell
 - `openrouter/google/gemini-flash-1.5` — Schnelle Google-Alternative
 
 **Hinweise:**
@@ -740,6 +803,36 @@ ollama pull deepseek-coder:6.7b # gut für Code
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_MODEL=deepseek-coder:6.7b
 ```
+
+---
+
+## OpenCode → Mistral Night-Mode Workflow
+
+Für overnight runs und die Kalibrierung von OpenCode mit Mistral als Provider
+empfiehlt sich dieser sichere Workflow:
+
+**Empfohlener Befehl für overnight runs:**
+```bash
+python scripts/run_overnight.py --model opencode --model-name mistral/mistral-small-2603 --base-branch develop --workers 1
+```
+
+**Empfohlene Flags während der Kalibrierung:**
+- Verwende `--workers 1`, um die Belastung zu minimieren.
+- Verwende explizite `--issue`-Flags, um spezifische Issues zu adressieren.
+- Verwende `--dry-run`, um Änderungen vorab zu prüfen.
+
+**Smoke-Test-Befehl:**
+```bash
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --issue 1 --dry-run
+```
+
+**Wichtige Hinweise:**
+- Alle Runs sollten standardmäßig den `develop`-Branch als Ziel verwenden, um
+  laufende Änderungen zu sammeln.
+- Der Workflow ist dokumentations-only und erwähnt keine Secret-Dateien.
+- GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
+- Für den Mistral-Provider ist ein gültiger `MISTRAL_API_KEY` in der
+  OpenCode-Konfiguration erforderlich.
 
 ---
 
