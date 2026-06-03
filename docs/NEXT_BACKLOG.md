@@ -24,56 +24,86 @@ python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md
 python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-remove
 ```
 
-## 1. Add OpenRouter as a central cloud model provider
+## 1. Treat no-change worker runs as warnings in batch and overnight summaries
 
-Labels: `setup`, `automation`, `workflow`
+Labels: `automation`, `quality`, `workflow`
 
 Priority: `high`
 
-Add first-class OpenRouter support as a central cloud model provider so the
-solver can reach multiple hosted models through one account and one key.
+The batch and overnight runners can currently report a job as `OK` when the
+inner solver process exits with code 0 even though the run report says no
+changes were produced and no PR was created.
 
 Suggested scope:
-- add secret-safe configuration for `OPENROUTER_API_KEY`
-- document key setup and recommended model names
-- wire OpenRouter into the existing worker/model configuration with minimal
-  abstraction
-- keep existing providers working unchanged
-- include preflight output that clearly explains missing credentials
-- target solver PRs at `develop`
-
-Open questions:
-- Which default model should be recommended first?
-- Should OpenRouter use the existing aider path, a direct API path, or a provider
-  profile abstraction?
-- Should cost/budget notes be required before enabling batch runs?
+- classify `no_changes` and `nonzero_without_changes` run reports as warnings
+  or failures in batch summaries
+- surface the inner run status, PR URL, and issue number in overnight summaries
+- keep successful PR-creating runs clearly separate from no-op worker runs
+- add tests for mixed batches with PR-created and no-change runs
 
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
-## ~~2. Harden OpenCode install and auth preflight~~ (Done)
+## 2. Constrain OpenCode worker reads to repo-relative paths
 
-Labels: `setup`, `automation`, `workflow`
+Labels: `automation`, `quality`, `opencode`
 
 Priority: `high`
 
-Make the existing `opencode` worker adapter practical for daily use by improving
-installation, authentication, and diagnostic behavior.
+OpenCode can still request file reads through absolute temporary worktree paths,
+which the Codex app permission model treats as external directory access. The
+worker should stay within repo-relative paths while running in the cloned
+worktree.
 
 Suggested scope:
-- add a clear install/auth preflight for `opencode` ✓
-- document install and login steps ✓
-- add a diagnostic command or dry-run path that confirms OpenCode is available
-  before worker execution ✓ (`--diagnostic` flag)
-- add model-name examples for OpenCode usage ✓
-- ensure worker failures produce useful run reports ✓
-- target solver PRs at `develop` ✓
+- start OpenCode in a way that avoids model-visible absolute temp paths
+- ensure OpenCode prompts prefer repo-relative paths such as `docs/WORKFLOW.md`
+- add tests that catch absolute temp-path leakage in OpenCode prompts/commands
+- preserve existing Codex, OpenRouter, Mistral Vibe, and Aider behavior
 
-Open questions:
-- Which OpenCode provider/login path should be the primary one? → `opencode auth login`
-- Should OpenCode become the recommended fallback for nested Codex failures? → Open
-- Do we want OpenCode runs marked differently in the dashboard? → Open
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 3. Add secret-file guardrails for AI worker prompts
+
+Labels: `safety`, `automation`, `quality`
+
+Priority: `high`
+
+Worker runs should avoid reading or copying real secret files such as
+`config/.env`. Credential and preflight issues should inspect code and example
+configuration only, never local secret values.
+
+Suggested scope:
+- add a small denylist for worker-visible prompt targets such as `config/.env`
+  and other local secret files
+- allow safe example files such as `config/config.example.env` only when needed
+- document the rule in the worker setup docs
+- add tests showing secret files are not copied, targeted, or encouraged in
+  worker prompts
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 4. Document night-mode issue selection and OpenCode/Mistral calibration
+
+Labels: `documentation`, `workflow`, `opencode`
+
+Priority: `medium`
+
+Night-mode runs should start with safe, narrow issues while OpenCode/Mistral is
+being calibrated. The workflow should explain which issues are suitable and which
+ones should wait for manual supervision.
+
+Suggested scope:
+- document the OpenCode -> Mistral command for overnight runs
+- recommend `--workers 1` and explicit `--issue` flags during calibration
+- avoid unattended issues touching credentials, `config/.env`, provider auth, or
+  multi-repo access
+- include the direct OpenCode smoke-test command
 
 Checks:
 - `git diff --check`
