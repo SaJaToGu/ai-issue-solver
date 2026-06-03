@@ -851,7 +851,7 @@ class AiderCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
             internal_path = repo / "scripts" / "create_issues.py"
-            external_path = Path(tmpdir).parent / "outside.py"
+            external_path = Path("/tmp/ai-solver-xyz/outside.py")  # Kein /var/folders-Pfad
             prompt = (
                 f"Lies `{internal_path}` und pruefe auch "
                 f"{external_path}."
@@ -861,7 +861,31 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertIn("`scripts/create_issues.py`", normalized)
         self.assertNotIn(str(internal_path), normalized)
-        self.assertIn(str(external_path), normalized)
+        self.assertNotIn(str(external_path), normalized)
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)
+
+    def test_opencode_prompt_keeps_var_folders_paths_outside_repo(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            external_var_path = Path("/var/folders/pl/pgd1g7vs7n98drgk98fxj1dw0000gp/T/outside.py")
+            prompt = f"Pruefe {external_var_path}."
+
+            normalized = relativize_repo_absolute_paths(prompt, str(repo))
+
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)  # Externe /var/folders-Pfade entfernen
+        self.assertNotIn(str(external_var_path), normalized)
+
+    def test_opencode_prompt_removes_temp_worktree_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            temp_path = Path("/tmp/ai-solver-xyz/worktree/scripts/file.py")
+            prompt = f"Bearbeite {temp_path} und pruefe `scripts/file.py`."
+
+            normalized = relativize_repo_absolute_paths(prompt, str(repo))
+
+        self.assertNotIn(str(temp_path), normalized)
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)
+        self.assertIn("`scripts/file.py`", normalized)
 
     def test_secret_worker_path_detection_allows_example_files(self):
         self.assertTrue(is_secret_worker_path(".env"))
@@ -913,7 +937,8 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn(f"https://example.test{internal_path}", normalized)
         self.assertIn("Repo-Datei: scripts/create_issues.py,", normalized)
         self.assertNotIn(f"Repo-Datei: {internal_path}", normalized)
-        self.assertIn(str(external_path), normalized)
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)
+        self.assertNotIn(str(external_path), normalized)
 
     def test_opencode_command_prompt_does_not_expose_repo_absolute_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
