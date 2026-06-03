@@ -1128,6 +1128,9 @@ class WorkerOutputTests(unittest.TestCase):
         self.assertTrue(should_surface_worker_line("Plan: update solver output\n"))
         self.assertTrue(should_surface_worker_line("Ergebnis: Tests erfolgreich\n"))
         self.assertTrue(should_surface_worker_line("WARNING: test command failed\n"))
+        self.assertTrue(should_surface_worker_line("→ Read tests/test_solve_issues.py\n"))
+        self.assertTrue(should_surface_worker_line("✓ Write docs/WORKFLOW.md\n"))
+        self.assertTrue(should_surface_worker_line("✗ Read docs/WORKFLOW.md failed\n"))
         self.assertFalse(should_surface_worker_line("+print('implementation detail')\n"))
         self.assertFalse(should_surface_worker_line("@@ -1,2 +1,3 @@\n"))
 
@@ -1153,6 +1156,8 @@ class WorkerOutputTests(unittest.TestCase):
                 '+        f.write("            <th>Repo</th>\\n")',
                 'self.assertIn("test-owner", links["issue"])',
                 'WARNING: tests failed, retrying',
+                '→ Read scripts/solve_issues.py',
+                '✓ Write tests/test_solve_issues.py',
                 '"test-owner|demo|44|ai/fix-issue-44|https://github.com/test-owner/demo/pull/44":',
                 'Final result: PR ready',
             ]
@@ -1162,6 +1167,8 @@ class WorkerOutputTests(unittest.TestCase):
 
         self.assertIn("Plan: update dashboard rendering", tail)
         self.assertIn("WARNING: tests failed, retrying", tail)
+        self.assertIn("→ Read scripts/solve_issues.py", tail)
+        self.assertIn("✓ Write tests/test_solve_issues.py", tail)
         self.assertIn("Final result: PR ready", tail)
         self.assertNotIn("f.write", tail)
         self.assertNotIn("test-owner|demo|44", tail)
