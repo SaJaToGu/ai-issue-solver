@@ -1261,6 +1261,7 @@ class SolverDirectoryTests(unittest.TestCase):
         self.assertEqual(env["OPENCODE_STATE_DIR"], str(state_dir))
         self.assertEqual(env["OPENCODE_CACHE_DIR"], str(cache_dir))
         self.assertEqual(env["OPENCODE_AUTH_FILE"], str(auth_path))
+        self.assertTrue((cache_dir / "tmp").is_dir())
         self.assertFalse(auth_path.exists())
 
     def test_solver_isolates_worker_paths_from_global_home(self):

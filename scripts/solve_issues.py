@@ -88,6 +88,7 @@ def ensure_solver_directories() -> tuple[Path, Path]:
     # Verzeichnisse erstellen, falls nicht vorhanden
     state_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "tmp").mkdir(parents=True, exist_ok=True)
     
     return state_dir, cache_dir
 
