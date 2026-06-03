@@ -108,3 +108,31 @@ Suggested scope:
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+## 5. Improve OpenCode runtime health diagnostics for WAL and edit-loop failures
+
+Labels: `automation`, `quality`, `opencode`
+
+Priority: `medium`
+
+OpenCode runs can fail before worker execution with SQLite/WAL checkpoint
+errors, and some runs can get stuck in repeated edit failures. The solver should
+make those known OpenCode failure modes visible in console output and run
+reports instead of treating them as generic worker failures.
+
+Suggested scope:
+- detect OpenCode SQLite/WAL checkpoint failures such as
+  `PRAGMA wal_checkpoint(PASSIVE)` in worker output
+- surface a concise German warning with the documented recovery hint: stop
+  OpenCode processes, then remove only `opencode.db-wal` and `opencode.db-shm`
+- detect repeated OpenCode edit failures such as `Edit README.md failed` and
+  classify or report them as an edit-loop risk when possible
+- keep the implementation small and avoid broad refactors
+- do not read or copy real secret files such as `config/.env`
+- safe example files such as `config/config.example.env` and `.env.example`
+  remain allowed
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_solve_issues`
+- `python -m unittest discover -s tests`
