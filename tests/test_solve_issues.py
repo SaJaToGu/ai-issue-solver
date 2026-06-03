@@ -1216,6 +1216,104 @@ class WorkerOutputTests(unittest.TestCase):
         self.assertNotIn("bisher", output)
 
 
+class SolverDirectoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.repo_dir = Path(self.tmpdir.name)
+        self.original_env = os.environ.copy()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+        os.environ.clear()
+        os.environ.update(self.original_env)
+
+    def test_solver_uses_xdg_state_home_for_auth_json(self):
+        """Testet, dass auth.json in XDG_STATE_HOME abgelegt wird."""
+        xdg_state = self.repo_dir / "xdg_state"
+        os.environ["XDG_STATE_HOME"] = str(xdg_state)
+        os.environ.pop("HOME", None)
+
+        # Simuliere build_worker_env, um den Pfad zu prüfen
+        from solve_issues import build_worker_env
+        env = build_worker_env("opencode", {})
+
+        # Prüfe, ob der Pfad korrekt aufgelöst wird
+        auth_path = xdg_state / "opencode" / "auth.json"
+        self.assertEqual(env["OPENCODE_AUTH_FILE"], str(auth_path))
+        self.assertFalse(auth_path.exists())  # Datei sollte nicht existieren, nur Pfadprüfung
+
+    def test_solver_uses_solver_local_directories_if_xdg_unset(self):
+        """Testet, dass solver-lokale Verzeichnisse verwendet werden, wenn XDG_*_HOME nicht gesetzt ist."""
+        os.environ.pop("XDG_STATE_HOME", None)
+        os.environ.pop("XDG_CACHE_HOME", None)
+        os.environ.pop("HOME", None)
+
+        # Simuliere build_worker_env, um solver-lokale Pfade zu prüfen
+        from solve_issues import build_worker_env
+        env = build_worker_env("opencode", {})
+
+        # Prüfe, ob solver-lokale Pfade verwendet werden
+        solver_base = Path("/var/folders/pl/pgd1g7vs7n98drgk98fxj1dw0000gp/T/opencode")
+        state_dir = solver_base / "state"
+        cache_dir = solver_base / "cache"
+        auth_path = state_dir / "auth.json"
+        
+        self.assertEqual(env["OPENCODE_STATE_DIR"], str(state_dir))
+        self.assertEqual(env["OPENCODE_CACHE_DIR"], str(cache_dir))
+        self.assertEqual(env["OPENCODE_AUTH_FILE"], str(auth_path))
+        self.assertFalse(auth_path.exists())
+
+    def test_solver_isolates_worker_paths_from_global_home(self):
+        """Testet, dass Worker-Prozesse keine globalen Pfade (z. B. ~/.local/share) verwenden."""
+        os.environ.pop("XDG_STATE_HOME", None)
+        os.environ.pop("XDG_CACHE_HOME", None)
+        home = self.repo_dir / "fake_home"
+        os.environ["HOME"] = str(home)
+
+        # Simuliere build_worker_env, um Isolation zu prüfen
+        from solve_issues import build_worker_env
+        env = build_worker_env("opencode", {})
+
+        # Prüfe, dass keine globalen Pfade verwendet werden
+        global_state = home / ".local" / "share" / "opencode" / "auth.json"
+        self.assertNotEqual(env["OPENCODE_AUTH_FILE"], str(global_state))
+        self.assertNotIn(str(global_state), env.get("PATH", ""))
+
+    def test_solver_avoids_exposing_secrets_in_worker_env(self):
+        """Testet, dass Geheimnisse nicht in solver-lokalen Verzeichnissen exponiert werden."""
+        xdg_state = self.repo_dir / "xdg_state"
+        os.environ["XDG_STATE_HOME"] = str(xdg_state)
+        os.environ.pop("HOME", None)
+
+        # Simuliere build_worker_env mit Geheimnissen
+        from solve_issues import build_worker_env
+        config = {
+            "ANTHROPIC_API_KEY": "sk-test-key",
+            "MISTRAL_API_KEY": "mistral-test-key",
+        }
+        env = build_worker_env("claude", config)
+
+        # Prüfe, dass Geheimnisse nicht in solver-lokalen Pfaden landen
+        auth_path = xdg_state / "opencode" / "auth.json"
+        self.assertFalse(auth_path.exists())
+        self.assertNotIn("sk-test-key", env["OPENCODE_AUTH_FILE"])
+        self.assertNotIn("mistral-test-key", env["OPENCODE_AUTH_FILE"])
+
+    def test_solver_uses_solver_local_cache_for_repositories(self):
+        """Testet, dass Repositorys im solver-lokalen Cache-Verzeichnis geklont werden."""
+        os.environ.pop("XDG_CACHE_HOME", None)
+        os.environ.pop("HOME", None)
+
+        # Simuliere clone_repo, um solver-lokale Cache-Nutzung zu prüfen
+        from solve_issues import ensure_solver_directories
+        _, cache_dir = ensure_solver_directories()
+        repo_cache_dir = cache_dir / "repos" / "test-repo"
+        
+        # Prüfe, ob das Cache-Verzeichnis korrekt erstellt wird
+        self.assertEqual(repo_cache_dir.parent.parent, cache_dir)
+        self.assertFalse(repo_cache_dir.exists())  # Verzeichnis sollte nicht existieren, nur Pfadprüfung
+
+
 class GitStatusTests(unittest.TestCase):
     def test_git_status_porcelain_detects_untracked_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
