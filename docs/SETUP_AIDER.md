@@ -96,7 +96,10 @@ python scripts/solve_issues.py --model opencode --model-name gpt-4o --repo ai-is
 python scripts/solve_issues.py --model opencode --model-name deepseek-coder --repo ai-issue-solver --issue 84
 ```
 
-GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
+GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht. Echte
+Secret-Dateien wie `config/.env`, `.env` oder `.env.local` sollen Worker weder
+lesen noch kopieren; für Beispiele und Dokumentation wird `config/config.example.env`
+oder `.env.example` verwendet.
 
 ### SQLite/WAL-Fehler beheben
 

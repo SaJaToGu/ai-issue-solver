@@ -38,6 +38,7 @@ from solve_issues import (  # noqa: E402
     get_worker_display_name,
     git_status_porcelain,
     infer_aider_targets,
+    is_secret_worker_path,
     parse_codex_reset_datetime,
     plan_branch_recovery,
     print_branch_recovery_plan,
@@ -46,6 +47,7 @@ from solve_issues import (  # noqa: E402
     retry_branch_name,
     run_opencode_diagnostic,
     run_worker_command,
+    sanitize_worker_prompt_secret_paths,
     should_preserve_worktree,
     should_surface_worker_line,
     sleep_until_codex_reset,
@@ -634,6 +636,18 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertEqual(targets, ["README.md"])
 
+    def test_aider_target_inference_rejects_secret_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "config").mkdir()
+            (repo / "config" / ".env").write_text("SECRET=1\n", encoding="utf-8")
+            (repo / "config" / "config.example.env").write_text("SECRET=\n", encoding="utf-8")
+            prompt = "Pruefe `config/.env` und `config/config.example.env`."
+
+            targets = infer_aider_targets(prompt, str(repo))
+
+        self.assertEqual(targets, ["config/config.example.env"])
+
     def test_aider_command_can_use_explicit_file_targets(self):
         cmd = build_aider_command(
             "ollama",
@@ -846,6 +860,41 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn("`scripts/create_issues.py`", normalized)
         self.assertNotIn(str(internal_path), normalized)
         self.assertIn(str(external_path), normalized)
+
+    def test_secret_worker_path_detection_allows_example_files(self):
+        self.assertTrue(is_secret_worker_path(".env"))
+        self.assertTrue(is_secret_worker_path(".env.local"))
+        self.assertTrue(is_secret_worker_path("config/.env"))
+        self.assertTrue(is_secret_worker_path("config/.env.production"))
+        self.assertFalse(is_secret_worker_path(".env.example"))
+        self.assertFalse(is_secret_worker_path("config/config.example.env"))
+
+    def test_worker_prompt_sanitizes_secret_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            absolute_secret = repo / "config" / ".env"
+            prompt = (
+                f"Lies {absolute_secret}, pruefe `config/.env` "
+                "und vergleiche mit `config/config.example.env`."
+            )
+
+            sanitized = sanitize_worker_prompt_secret_paths(prompt, str(repo))
+
+        self.assertNotIn(str(absolute_secret), sanitized)
+        self.assertNotIn("`config/.env`", sanitized)
+        self.assertIn("config/config.example.env", sanitized)
+
+    def test_opencode_prompt_omits_secret_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            absolute_secret = repo / "config" / ".env"
+            prompt = f"Bitte {absolute_secret} zur Diagnose lesen."
+
+            normalized = build_opencode_prompt(prompt, str(repo))
+
+        self.assertNotIn(str(absolute_secret), normalized)
+        self.assertIn("config/config.example.env", normalized)
+        self.assertIn("Lies, kopiere oder bearbeite keine echten Secret-Dateien", normalized)
 
     def test_opencode_prompt_keeps_urls_and_external_absolute_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
