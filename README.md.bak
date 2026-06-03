@@ -1,0 +1,458 @@
+# 🤖 AI Issue Solver — Morpheus-Style Workflow
+
+> Automatisches Analysieren, Erstellen und Lösen von GitHub Issues mit KI-Unterstützung  
+> Inspiriert von [TheMorpheus407](https://www.youtube.com/user/TheMorpheus407) / [the-morpheus.de](https://www.the-morpheus.de)
+
+---
+
+## 📋 Inhaltsverzeichnis
+
+- [Was macht dieses Repo?](#was-macht-dieses-repo)
+- [Repository-Metadaten](#repository-metadaten)
+- [Sprachrichtlinie](#sprachrichtlinie)
+- [Voraussetzungen](#voraussetzungen)
+- [Setup & Installation](#setup--installation)
+- [Schnellstart](#schnellstart)
+- [Hauptbefehle](#hauptbefehle)
+- [Nächste Ausbaustufe](#nächste-ausbaustufe)
+- [Verzeichnisstruktur](#verzeichnisstruktur)
+
+---
+
+## Was macht dieses Repo?
+
+Dieses Repo implementiert einen vollautomatischen **KI-gestützten Verbesserungs-Workflow** für GitHub-Projekte:
+
+```
+Repos analysieren  →  Issues erstellen  →  KI löst Issues  →  PR erstellen
+```
+
+**Schritt 1 — Analyse:** `analyze_repos.py` scannt alle deine GitHub-Repos per API,  
+prüft Repo-Metadaten und Dateistruktur auf fehlende Projekt-Basics,
+Wartungssignale und Best-Practice-Auffälligkeiten.
+
+**Schritt 2 — Issues erstellen:** `create_issues.py` legt für jeden gefundenen  
+Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
+
+**Schritt 3 — Issues lösen:** `solve_issues.py` ruft wahlweise **Codex**, **Claude**,
+**OpenAI** oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code
+und erstellt einen Branch + Commit.
+
+**Status-Überblick:** `github_summary.py` zeigt offene Issues, offene PRs,
+zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
+GitHub API. Die GitHub CLI wird dafür nicht benötigt.
+
+**Post-Merge Cleanup:** `post_merge_cleanup.py` fasst gemergte AI-PRs zusammen,
+schließt sicher referenzierte Issues, löscht gemergte AI-Branches und meldet
+alles, was manuell geprüft werden sollte. Ohne `--apply` läuft es als Dry-Run.
+
+## Repository-Metadaten
+
+**Beschreibung:** Automatisiert GitHub-Repository-Analysen, Issue-Erstellung und
+KI-gestützte Issue-Lösung mit Codex oder aider.
+
+**Empfohlene GitHub Topics:**
+`ai`, `aider`, `automation`, `codex`, `developer-tools`, `github`, `github-api`,
+`issue-automation`, `python`, `repository-analysis`
+
+Die versionierbare Referenz für diese Angaben liegt in
+[.github/settings.yml](.github/settings.yml). Falls eine GitHub Settings App im
+Repo aktiv ist, kann sie daraus das About-Feld und die Topics synchronisieren.
+
+---
+
+## Sprachrichtlinie
+
+Dieses Projekt verwendet eine klare Sprachtrennung:
+
+- **🇩🇪 Deutsch** für nutzerzugewandte Dokumentation: README, Workflow-Beschreibungen, Setup-Anleitungen, CLI-Ausgaben
+- **🇬🇧 Englisch** für technische Inhalte: Backlog, Issue-Bodies, Tests, Code-Kommentare, KI-Prompts
+
+Detaillierte Richtlinien finden sich in [docs/LANGUAGE_POLICY.md](docs/LANGUAGE_POLICY.md).
+
+**Begründung:** Benutzerdokumentation bleibt in der Zielsprache (Deutsch), während technische Inhalte für bessere KI-Tool-Kompatibilität auf Englisch bleiben dürfen.
+
+---
+
+## Voraussetzungen
+
+- Python ≥ 3.10
+- git
+- GitHub Personal Access Token (PAT)
+
+---
+
+## Setup & Installation
+
+1. Repo klonen
+   ```bash
+   git clone https://github.com/SaJaToGu/ai-issue-solver.git
+   cd ai-issue-solver
+   ```
+
+2. Python-Abhängigkeiten installieren
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Konfiguration kopieren und anpassen
+   ```bash
+   cp config/config.example.env config/.env
+   # .env mit deinen Werten befüllen (NIEMALS committen!)
+   ```
+
+Für detaillierte Setup-Anleitungen siehe [Provider-Einrichtung](docs/SETUP_AIDER.md).
+
+---
+
+## Schnellstart
+
+1. Erste Analyse starten:
+   ```bash
+   python scripts/analyze_repos.py --user DeinGitHubUsername --output reports/analysis.json
+   ```
+
+2. Issues erstellen (zuerst im Dry-Run-Modus):
+   ```bash
+   python scripts/create_issues.py --report reports/analysis.json --dry-run
+   ```
+
+3. Issues mit KI lösen (Dry-Run):
+   ```bash
+   python scripts/solve_issues.py --model codex --dry-run
+   ```
+
+---
+
+## Hauptbefehle
+
+| Befehl | Beschreibung |
+|--------|-------------|
+| `python scripts/analyze_repos.py --user DeinGitHubUsername` | Analysiert alle Repos eines GitHub-Nutzers
+| `python scripts/create_issues.py --report reports/analysis.json --dry-run` | Zeigt Issues an ohne sie zu erstellen
+| `python scripts/solve_issues.py --model codex --dry-run` | Löst Issues mit KI (Simulation)
+| `python scripts/github_summary.py` | Zeigt Statusübersicht
+| `python scripts/status_dashboard.py` | Erstellt HTML-Dashboard mit Run-Reports
+
+---
+
+## Branch-Modell
+
+Dieses Projekt kann ein einfaches `develop`-basiertes Branch-Modell nutzen:
+
+- `main` bleibt stabil und enthält nur geprüfte, releasefähige Änderungen.
+- `develop` sammelt die laufende Arbeit und kann der Zielbranch für Pull Requests sein.
+- Feature- und Fix-Branches werden pro GitHub Issue erstellt und benannt, sodass
+der Bezug zum Issue sichtbar bleibt, zum Beispiel `ai/fix-issue-{nummer}`.
+
+Für detaillierte Workflow-Anleitungen siehe [docs/WORKFLOW.md](docs/WORKFLOW.md).
+
+
+
+
+
+---
+
+
+
+
+
+---
+
+
+
+
+
+---
+
+
+
+
+
+---
+
+
+
+
+
+---
+
+
+
+
+
+---
+
+
+
+
+
+---
+
+
+
+
+
+---
+
+## Nächste Ausbaustufe
+
+Die erste Workflow-Runde ist abgeschlossen: Analyse, Backlog-Issues,
+KI-Bearbeitung, PR-Erstellung, CI und Tests laufen. Als nächstes soll der
+Morpheus-Style Workflow komfortabler werden:
+
+- mehrere Issues parallel mit begrenzter Worker-Zahl lösen
+- laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen
+- offene PRs und Issues nach einem Lauf automatisch zusammenfassen
+- gemergte AI-PRs nach dem Review sicher bereinigen
+
+Der geplante Backlog dafür liegt in [docs/NEXT_BACKLOG.md](docs/NEXT_BACKLOG.md).
+
+---
+
+## Verzeichnisstruktur
+
+```
+ai-issue-solver/
+├── .github/
+│   ├── settings.yml             # Repo-Beschreibung und Topics als Referenz
+│   └── workflows/
+│       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
+├── README.md                    # Diese Datei
+├── requirements.txt             # Python-Dependencies
+├── requirements-aider.txt       # Optionale Aider-Dependencies
+├── .gitignore                   # Schützt .env und Secrets
+├── config/
+│   └── config.example.env       # Vorlage für deine .env
+├── scripts/
+│   ├── analyze_repos.py         # Schritt 1: Repos analysieren
+│   ├── create_issues.py         # Schritt 2: Issues erstellen
+│   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
+│   ├── import_repolens_results.py # RepoLens-Reports als Issues importieren
+│   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
+│   ├── plan_issue_batches.py    # Konfliktarme Issue-Wellen planen
+│   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
+│   ├── run_repolens_docker.sh   # RepoLens in Docker-Sandbox ausfuehren
+│   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
+│   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
+│   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
+│   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
+│   ├── run_overnight.py         # Unbeaufsichtigter Batch mit Preflight und Logs
+│   └── utils.py                 # Gemeinsame Hilfsfunktionen
+├── templates/
+│   └── issue_body               # Issue-Text-Vorlage
+├── reports/                     # Generierte Analyse-Reports (gitignored)
+│   └── .gitkeep
+├── docs/
+│   ├── BACKLOG.md               # Erster Projekt-Backlog
+│   ├── NEXT_BACKLOG.md          # Nächste Ausbaustufe
+│   ├── WORKFLOW.md              # Detaillierter Workflow
+│   ├── SETUP_AIDER.md           # Aider-Einrichtung
+│   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
+│   └── LANGUAGE_POLICY.md        # Sprachrichtlinie / Language Policy
+└── tests/
+    ├── test_analyze_repos.py    # Analyzer-Tests
+    ├── test_github_summary.py   # GitHub-Übersichts-Tests
+    ├── test_post_merge_cleanup.py # Post-Merge-Cleanup-Tests
+    ├── test_status_dashboard.py # Dashboard-Tests
+    ├── test_solve_issues_batch.py # Batch-Runner-Tests
+    └── test_solve_issues.py     # Solver- und Worker-Tests
+```
+
+---
+
+## Lizenz
+
+MIT — Mach damit was du willst. Viel Spaß! 🚀
+   GITHUB_TOKEN=ghp_deinTokenHier
+   ```
+
+> ⚠️ **Wichtig:** Den Token NIEMALS in ein Repo committen!  
+> Die `.env`-Datei ist in `.gitignore` eingetragen.
+
+---
+
+## KI-Modelle konfigurieren
+
+### Claude (Anthropic)
+1. API-Key holen: https://console.anthropic.com/
+2. In `.env` eintragen: `ANTHROPIC_API_KEY=sk-ant-...`
+
+### OpenAI
+1. API-Key holen: https://platform.openai.com/api-keys
+2. In `.env` eintragen: `OPENAI_API_KEY=sk-...`
+
+### OpenRouter
+OpenRouter ermöglicht den Zugriff auf multiple KI-Modelle über eine API und einen
+Key. Der Solver nutzt OpenRouter über `aider` mit dem Modellpräfix
+`openrouter/...`.
+
+1. API-Key holen: https://openrouter.ai/keys
+2. In `.env` eintragen: `OPENROUTER_API_KEY=sk-or-...`
+3. Optional: `aider` installieren falls noch nicht vorhanden: `pip install aider-chat`
+
+Starten mit:
+```bash
+python scripts/solve_issues.py --model openrouter --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model openrouter --model-name openrouter/openai/gpt-4o-mini --repo ai-issue-solver
+python scripts/solve_issues.py --model openrouter --model-name openrouter/anthropic/claude-3-haiku --repo ai-issue-solver
+```
+
+**Empfohlene Modelle:**
+- `openrouter/openai/gpt-4o-mini` — Gute Balance aus Kosten und Qualität, standardmäßig im Solver
+- `openrouter/openai/gpt-4o` — Höhere Qualität, höhere Kosten
+- `openrouter/anthropic/claude-3-haiku` — Schnell und kostengünstig
+- `openrouter/anthropic/claude-3-sonnet` — Gute Qualität für Code-Aufgaben
+- `openrouter/mistralai/mistral-7b-instruct` — Gutes Open-Source-Modell
+- `openrouter/google/gemini-flash-1.5` — Schnelle Google-Alternative
+
+**Hinweise:**
+- OpenRouter benötigt `aider` — installiere es mit `pip install -r requirements-aider.txt`
+- Die API-Kosten hängen vom gewählten Modell ab, nicht von OpenRouter selbst
+- OpenRouter bietet eine kostenlose Test-Stufe mit begrenztem Guthaben
+- Modellnamen sind für `aider` im Format `openrouter/{provider}/{model-name}` anzugeben
+- Die vollständige Modell-Liste: https://openrouter.ai/models
+
+### OpenCode
+OpenCode kann als terminal-nativer Worker verschiedene Provider bündeln. Der
+AI Issue Solver nutzt OpenCode nur im isolierten Worktree; Branch, Commit, Push
+und PR bleiben beim Wrapper.
+
+```bash
+# OpenCode nach offizieller Doku installieren
+curl -fsSL https://opencode.ai/install | bash
+
+# Anmelden (Provider-Konfiguration)
+opencode auth login
+
+# Diagnose vor dem ersten Lauf
+python scripts/solve_issues.py --diagnostic
+
+# Issue lösen (mit Standard-Provider)
+python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
+
+# Mit spezifischem Modell
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name claude-sonnet-4-20250514 --repo ai-issue-solver --issue 84
+python scripts/solve_issues.py --model opencode --model-name gpt-4o --repo ai-issue-solver --issue 84
+```
+
+**Empfohlene Modellnamen für OpenCode:**
+- `mistral/mistral-small-2603` — Mistral Small, gute Balance
+- `mistral/magistral-medium-2509` — Magistral Medium (Reasoning)
+- `claude-sonnet-4-20250514` — Anthropic Claude via OpenCode
+- `gpt-4o` — OpenAI GPT-4o via OpenCode
+- `deepseek-coder` — DeepSeek Coder via OpenCode
+
+Der Solver sucht `opencode` in der aktiven Umgebung, in `.venv/bin` bzw.
+`venv/bin` des Arbeitsbaums, in `~/.local/bin`, in `~/.local/share/opencode/`
+und danach auf `PATH`. GitHub-Write-Tokens werden nicht an den OpenCode-Worker
+weitergereicht.
+
+Vor dem Worker-Start prüft der Solver, ob OpenCode authentifiziert ist
+(`opencode auth list`). Fehlt die Authentifizierung, erscheint eine Warnung
+mit Login-Hinweis. Der Lauf wird trotzdem gestartet, falls die OpenCode-eigene
+Konfiguration einen gültigen Provider bereitstellt.
+
+### Mistral AI / Mistral Vibe / Magistral
+1. API-Key holen: https://console.mistral.ai/
+2. In `.env` eintragen: `MISTRAL_API_KEY=...`
+3. Mistral Vibe CLI installieren, z.B. nach offizieller Doku mit:
+   ```bash
+   curl -LsSf https://mistral.ai/vibe/install.sh | bash
+   # alternativ: uv tool install mistral-vibe
+   # alternativ: pip install mistral-vibe
+   ```
+4. Starten mit:
+   ```bash
+   python scripts/solve_issues.py --model mistral-vibe
+   python scripts/solve_issues.py --model mistral
+   ```
+
+`mistral-vibe` nutzt die Mistral Vibe CLI direkt und braucht kein aider. Der
+Solver sucht `vibe` in der aktiven Umgebung, in `.venv/bin` bzw. `venv/bin` des
+Repos, in `~/.local/bin` und im `PATH`. `mistral` bleibt der aider-basierte
+Magistral-Modus.
+
+Der Solver nutzt standardmäßig `magistral-medium-2509`. Nach den offiziellen
+Mistral-Modellübersichten vom 21. Mai 2026 ist Magistral Medium 1.2 als
+aktuelles reasoning-orientiertes Magistral-Modell gelistet; ältere
+Magistral-Versionen `2506` und `2507` sind legacy oder retired.
+`magistral-small-2509` kann per `--model-name magistral-small-2509` gesetzt
+werden, falls es im eigenen Account noch verfügbar ist; die aktuelle
+Mistral-Übersicht markiert Magistral Small 1.2 inzwischen als
+Legacy/Deprecated und nennt `Mistral Small 4` (`mistral-small-2603`) als
+Alternative. Mistral/Magistral ist vor allem sinnvoll für europäische Sprachen,
+mehrsprachige Reasoning-Aufgaben und Workflows, bei denen ein europäischer
+Anbieter oder EU-Souveränitätsaspekte wichtig sind.
+
+### Ollama (lokal / Raspberry Pi)
+```bash
+# Ollama installieren
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# Modell herunterladen (z.B. für Raspberry Pi: kleines Modell)
+ollama pull llama3.2:3b        # klein, schnell (Raspi-tauglich)
+ollama pull deepseek-coder:6.7b # gut für Code
+
+# In .env eintragen:
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=deepseek-coder:6.7b
+```
+
+---
+
+## Verzeichnisstruktur
+
+```
+ai-issue-solver/
+├── .github/
+│   ├── settings.yml             # Repo-Beschreibung und Topics als Referenz
+│   └── workflows/
+│       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
+├── README.md                    # Diese Datei
+├── requirements.txt             # Python-Dependencies
+├── requirements-aider.txt       # Optionale Aider-Dependencies
+├── .gitignore                   # Schützt .env und Secrets
+├── config/
+│   └── config.example.env       # Vorlage für deine .env
+├── scripts/
+│   ├── analyze_repos.py         # Schritt 1: Repos analysieren
+│   ├── create_issues.py         # Schritt 2: Issues erstellen
+│   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
+│   ├── import_repolens_results.py # RepoLens-Reports als Issues importieren
+│   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
+│   ├── plan_issue_batches.py    # Konfliktarme Issue-Wellen planen
+│   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
+│   ├── run_repolens_docker.sh   # RepoLens in Docker-Sandbox ausfuehren
+│   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
+│   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
+│   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
+│   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
+│   ├── run_overnight.py         # Unbeaufsichtigter Batch mit Preflight und Logs
+│   └── utils.py                 # Gemeinsame Hilfsfunktionen
+├── templates/
+│   └── issue_body               # Issue-Text-Vorlage
+├── reports/                     # Generierte Analyse-Reports (gitignored)
+│   └── .gitkeep
+├── docs/
+│   ├── BACKLOG.md               # Erster Projekt-Backlog
+│   ├── NEXT_BACKLOG.md          # Nächste Ausbaustufe
+│   ├── WORKFLOW.md              # Detaillierter Workflow
+│   ├── SETUP_AIDER.md           # Aider-Einrichtung
+│   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
+│   └── LANGUAGE_POLICY.md        # Sprachrichtlinie / Language Policy
+└── tests/
+    ├── test_analyze_repos.py    # Analyzer-Tests
+    ├── test_github_summary.py   # GitHub-Übersichts-Tests
+    ├── test_post_merge_cleanup.py # Post-Merge-Cleanup-Tests
+    ├── test_status_dashboard.py # Dashboard-Tests
+    ├── test_solve_issues_batch.py # Batch-Runner-Tests
+    └── test_solve_issues.py     # Solver- und Worker-Tests
+```
+
+---
+
+## Lizenz
+
+MIT — Mach damit was du willst. Viel Spaß! 🚀
