@@ -98,6 +98,34 @@ python scripts/solve_issues.py --model opencode --model-name deepseek-coder --re
 
 GitHub-Write-Tokens werden nicht an den OpenCode-Worker weitergereicht.
 
+### SQLite/WAL-Fehler beheben
+
+Falls während der CLI-Ausführung SQLite/WAL-Fehler wie `Failed to run the query 'PRAGMA wal_checkpoint(PASSIVE)'` auftreten, können folgende Schritte zur Wiederherstellung durchgeführt werden:
+
+1. **Prüfen, ob noch OpenCode-Prozesse laufen**
+   ```bash
+   ps aux | grep opencode
+   ```
+   Falls Prozesse gefunden werden, diese mit `kill <pid>` beenden.
+
+2. **Authentifizierungsdatei sichern**
+   ```bash
+   cp ~/.local/share/opencode/auth.json ~/.local/share/opencode/auth.json.backup
+   ```
+
+3. **WAL- und SHM-Dateien entfernen**
+   ```bash
+   rm -f ~/.local/share/opencode/opencode.db-wal ~/.local/share/opencode/opencode.db-shm
+   ```
+   Dies ist der erste Wiederherstellungsschritt und entfernt nur die WAL- und SHM-Dateien.
+
+4. **OpenCode neu starten**
+   ```bash
+   python scripts/solve_issues.py --model opencode --repo ai-issue-solver --issue 84
+   ```
+
+**Hinweis:** Die SQLite-Hauptdatei (`opencode.db`) und die Authentifizierungsdatei (`auth.json`) bleiben unberührt. Die Wiederherstellung beschränkt sich auf die temporären WAL- und SHM-Dateien.
+
 **Hinweise:**
 - Vor dem Worker-Lauf prüft der Solver `opencode auth list` und warnt bei
   fehlender Authentifizierung
