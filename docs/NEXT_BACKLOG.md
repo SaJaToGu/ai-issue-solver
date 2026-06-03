@@ -136,3 +136,28 @@ Checks:
 - `git diff --check`
 - `python -m unittest tests.test_solve_issues`
 - `python -m unittest discover -s tests`
+
+## 6. Slim README into quickstart and move operational details to docs
+
+Labels: `documentation`, `quality`, `workflow`
+
+Priority: `medium`
+
+The README has grown into a full operational handbook. It should become a
+shorter quickstart again, while detailed script behavior, provider setup,
+night-mode guidance, dashboard usage, and recovery notes live in dedicated docs.
+
+Suggested scope:
+- keep README focused on project purpose, quickstart, core commands, and links
+  to detailed documentation
+- move or link detailed provider setup to `docs/SETUP_AIDER.md`
+- move or link workflow, batch, dashboard, and night-mode details to
+  `docs/WORKFLOW.md`
+- avoid deleting useful documentation; preserve it in the appropriate docs file
+- keep the README change reviewable and avoid broad unrelated rewrites
+- add a short README maintenance rule so future small workflow issues do not
+  expand README by dozens of lines
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
