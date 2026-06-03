@@ -67,8 +67,8 @@ def ensure_solver_directories() -> tuple[Path, Path]:
     Returns:
         Tuple[Path, Path]: Pfade zu (state_dir, cache_dir)
     """
-    # Temporäres Verzeichnis für solver-lokale Daten (beschreibbar)
-    solver_base = Path("/var/folders/pl/pgd1g7vs7n98drgk98fxj1dw0000gp/T/opencode")
+    # Temporäres Verzeichnis für solver-lokale Daten (beschreibbar und plattformneutral)
+    solver_base = Path(tempfile.gettempdir()) / "ai-issue-solver" / "opencode"
     solver_base.mkdir(parents=True, exist_ok=True)
     
     # XDG_STATE_HOME (für Zustandsdateien wie Chat-History, Authentifizierung)
@@ -92,9 +92,9 @@ def ensure_solver_directories() -> tuple[Path, Path]:
     return state_dir, cache_dir
 
 
-def prepare_worker_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
+def prepare_opencode_worker_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """
-    Bereitet die Umgebung für Worker-Prozesse vor, inklusive solver-lokaler Verzeichnisse.
+    Bereitet die Umgebung für OpenCode vor, inklusive solver-lokaler Verzeichnisse.
     
     Args:
         base_env: Basis-Umgebung, falls vorhanden. Standardmäßig wird os.environ verwendet.
@@ -1054,7 +1054,7 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
 
 def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None = None) -> dict[str, str]:
     """Erzeugt die Worker-Umgebung und validiert provider-spezifische Pflichtwerte."""
-    env = prepare_worker_environment(base_env)
+    env = dict(base_env if base_env is not None else os.environ)
     model_config = MODEL_CONFIGS[model]
     env_key = model_config.get("env_key")
     if env_key:
@@ -1066,6 +1066,7 @@ def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None =
         env["OLLAMA_API_BASE"] = ollama_host
 
     if model == "opencode":
+        env = prepare_opencode_worker_environment(env)
         env.pop("GITHUB_TOKEN", None)
         env.pop("GH_TOKEN", None)
 

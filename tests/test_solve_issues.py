@@ -1253,7 +1253,7 @@ class SolverDirectoryTests(unittest.TestCase):
         env = build_worker_env("opencode", {})
 
         # Prüfe, ob solver-lokale Pfade verwendet werden
-        solver_base = Path("/var/folders/pl/pgd1g7vs7n98drgk98fxj1dw0000gp/T/opencode")
+        solver_base = Path(tempfile.gettempdir()) / "ai-issue-solver" / "opencode"
         state_dir = solver_base / "state"
         cache_dir = solver_base / "cache"
         auth_path = state_dir / "auth.json"
@@ -1296,8 +1296,9 @@ class SolverDirectoryTests(unittest.TestCase):
         # Prüfe, dass Geheimnisse nicht in solver-lokalen Pfaden landen
         auth_path = xdg_state / "opencode" / "auth.json"
         self.assertFalse(auth_path.exists())
-        self.assertNotIn("sk-test-key", env["OPENCODE_AUTH_FILE"])
-        self.assertNotIn("mistral-test-key", env["OPENCODE_AUTH_FILE"])
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
+        self.assertNotIn("OPENCODE_CACHE_DIR", env)
 
     def test_solver_uses_solver_local_cache_for_repositories(self):
         """Testet, dass Repositorys im solver-lokalen Cache-Verzeichnis geklont werden."""
