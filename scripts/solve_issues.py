@@ -344,6 +344,28 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         })
 
+    def are_issues_enabled(self, repo: str) -> bool:
+        """Prüft, ob Issues für das Repository aktiviert sind."""
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}")
+            raise_for_github_response(resp, f"Repo-Status prüfen: {repo}")
+            repo_data = resp.json()
+            return repo_data.get("has_issues", False)
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Repo-Status prüfen: {repo}")
+            return False
+
+    def validate_token_permissions(self) -> bool:
+        """Prüft, ob das Token die erforderlichen Berechtigungen hat (z. B. 'repo')."""
+        try:
+            resp = self.session.get(f"{self.BASE}/user")
+            raise_for_github_response(resp, "Token-Berechtigungen prüfen")
+            scopes = resp.headers.get("X-OAuth-Scopes", "")
+            return "repo" in scopes
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, "Token-Berechtigungen prüfen")
+            return False
+
     def get_repos(self) -> list:
         try:
             resp = self.session.get(
@@ -2698,8 +2720,12 @@ def main():
 
     # Config laden
     cfg = load_env()
-    token = require_config_value(cfg, "GITHUB_TOKEN", "GitHub Token")
-    user = require_config_value(cfg, "GITHUB_USER", "GitHub User")
+    
+    # Preflight-Checks durchführen
+    if args.repo:
+        preflight_checks(cfg, args.repo)
+    
+    token, user = require_github_config(cfg, require_user=True)
 
     # KI-Worker prüfen
     if args.model == "codex" and not find_codex_executable() and not args.dry_run:
