@@ -112,13 +112,19 @@ MODEL_CONFIGS = {
         "env_var": None,
     },
     "openrouter": {
-        "display_name": "OpenRouter (aider)",
+        "display_name": "OpenRouter (aider, legacy)",
         "aider_flags": [
             "--model", "{model_name}",
         ],
         "env_key": "OPENROUTER_API_KEY",
         "env_var": "OPENROUTER_API_KEY",
         "default_model_name": "openrouter/openai/gpt-4o-mini",
+    },
+    "openrouter_direct": {
+        "display_name": "OpenRouter (Direct)",
+        "env_key": "OPENROUTER_API_KEY",
+        "env_var": "OPENROUTER_API_KEY",
+        "default_model_name": "mistralai/mistral-large",
     },
 }
 
@@ -1007,7 +1013,7 @@ def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None =
         env.pop("GITHUB_TOKEN", None)
         env.pop("GH_TOKEN", None)
 
-    if model == "openrouter":
+    if model in ("openrouter", "openrouter_direct"):
         # OpenRouter benoetigt explizit OPENROUTER_API_KEY in der Umgebung
         # und wir entfernen andere Provider-Keys zur Sicherheit
         env.pop("ANTHROPIC_API_KEY", None)
@@ -1130,8 +1136,14 @@ def get_worker_display_name(model: str) -> str:
     return MODEL_CONFIGS[model]["display_name"]
 
 
-def build_worker_command(model: str, model_name: str, prompt: str, repo_path: str,
-                           file_targets: list[str] | None = None) -> list:
+def build_worker_command(
+    model: str,
+    model_name: str,
+    prompt: str,
+    repo_path: str,
+    file_targets: list[str] | None = None,
+    config: dict | None = None,
+) -> list[str] | str:
     """Baut den KI-Worker-Befehl basierend auf dem Modell.
 
     Zentralisiert die Command-Konstruktion für alle unterstützten Worker.
@@ -1139,17 +1151,20 @@ def build_worker_command(model: str, model_name: str, prompt: str, repo_path: st
     Für model_name wird None an die Builder weitergegeben, falls nicht gesetzt.
 
     Args:
-        model: Das zu verwendende Modell (codex, claude, openai, mistral, ollama, mistral-vibe, opencode)
+        model: Das zu verwendende Modell (codex, claude, openai, mistral, ollama, mistral-vibe, opencode, openrouter_direct)
         model_name: Spezifischer Modellname oder leerer String
         prompt: Der Prompt für den Worker
         repo_path: Pfad zum Repository
         file_targets: Optionale Liste von Dateizielen (nur für aider relevant)
+        config: Konfigurationsdaten für API-Keys und Einstellungen
 
     Returns:
-        Die Befehlszeile als Liste von String-Argumenten
+        list[str]: Die Befehlszeile als Liste von String-Argumenten (für CLI-Worker).
+        str: Generierte Antwort als String (für direkte API-Worker wie OpenRouter Direct).
     """
     effective_model_name = model_name if model_name else None
     safe_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_path)
+    config = config or {}
 
     if model == "codex":
         return build_codex_command(safe_prompt, repo_path, effective_model_name)
@@ -1157,6 +1172,13 @@ def build_worker_command(model: str, model_name: str, prompt: str, repo_path: st
         return build_vibe_command(safe_prompt, repo_path)
     elif model == "opencode":
         return build_opencode_command(safe_prompt, repo_path, effective_model_name)
+    elif model == "openrouter_direct":
+        from workers.openrouter_worker import OpenRouterWorker
+        worker = OpenRouterWorker(
+            api_key=config.get("OPENROUTER_API_KEY"),
+            model=model_name or MODEL_CONFIGS[model]["default_model_name"],
+        )
+        return worker.generate(safe_prompt)
     else:
         return build_aider_command(model, model_name, safe_prompt, repo_path, file_targets)
 
