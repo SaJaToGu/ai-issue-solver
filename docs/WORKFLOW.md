@@ -144,7 +144,16 @@ python scripts/post_merge_cleanup.py --repo ai-issue-solver --apply
 - **Abschluss:** Regeneriert das lokale Status-Dashboard.
 - **Logs:** Alle Schritte werden unter `reports/overnight/<timestamp>/` protokolliert.
 
-**Beispiel:**
+### OpenCode mit Mistral im Night Mode
+
+**Exakter Befehl für unbeaufsichtigte Läufe:**
 ```bash
-python scripts/run_overnight.py --model codex --base-branch develop --workers 2
+python scripts/run_overnight.py --model opencode --model-name mistral/mistral-small-2603 --base-branch develop --workers 2
 ```
+
+**Smoke-Test (direkt prüfen, ob der Workflow funktioniert):**
+```bash
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo <repo-name> --issue <issue-number> --dry-run
+```
+
+> ⚠️ **Hinweis:** Night-Mode-Läufe sollten immer auf den `develop`-Branch zielen, um Stabilität in `main` zu gewährleisten. Die Dokumentation ist rein informativ und enthält keine Secrets.
