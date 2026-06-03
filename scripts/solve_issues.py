@@ -53,6 +53,7 @@ from utils import (
     handle_github_request_error,
     raise_for_github_response,
     require_config_value,
+    require_github_config,
 )
 
 
@@ -344,6 +345,28 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         })
 
+    def are_issues_enabled(self, repo: str) -> bool:
+        """Prüft, ob Issues für das Repository aktiviert sind."""
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}")
+            raise_for_github_response(resp, f"Repo-Status prüfen: {repo}")
+            repo_data = resp.json()
+            return repo_data.get("has_issues", False)
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Repo-Status prüfen: {repo}")
+            return False
+
+    def validate_token_permissions(self) -> bool:
+        """Prüft, ob das Token die erforderlichen Berechtigungen hat (z. B. 'repo')."""
+        try:
+            resp = self.session.get(f"{self.BASE}/user")
+            raise_for_github_response(resp, "Token-Berechtigungen prüfen")
+            scopes = resp.headers.get("X-OAuth-Scopes", "")
+            return "repo" in scopes
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, "Token-Berechtigungen prüfen")
+            return False
+
     def get_repos(self) -> list:
         try:
             resp = self.session.get(
@@ -519,6 +542,36 @@ class GitHubClient:
             return resp.json()
         print_warn(f"PR konnte nicht erstellt werden: {resp.status_code}")
         return None
+
+
+def preflight_checks(config: dict, repo: str, issue_number: int | None = None) -> tuple[str, str | None]:
+    """Prueft GitHub-Zugang, Ziel-Repo und optional die konkrete Issue vor dem Worker-Start."""
+    print_step(0, "Preflight-Checks")
+    token, user = require_github_config(config, require_user=True)
+    client = GitHubClient(token, user)
+
+    repo_info = client.get_repo(repo)
+    if not repo_info:
+        print_err(f"Ziel-Repository nicht gefunden: {user}/{repo}")
+        raise SystemExit(1)
+    print(f"   ✅ Repo erreichbar: {user}/{repo}")
+
+    if not repo_info.get("has_issues", False):
+        print_err(f"Issues sind fuer {user}/{repo} nicht aktiviert")
+        raise SystemExit(1)
+    print("   ✅ Issues sind aktiviert")
+
+    if issue_number is not None:
+        issue = client.get_single_issue(repo, issue_number)
+        if not issue or "pull_request" in issue:
+            print_err(f"Issue nicht gefunden: {repo}#{issue_number}")
+            raise SystemExit(1)
+        if issue.get("state") != "open":
+            print_err(f"Issue ist nicht offen: {repo}#{issue_number}")
+            raise SystemExit(1)
+        print(f"   ✅ Issue offen: #{issue_number} {issue.get('title', '')}")
+
+    return token, user
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2698,8 +2751,12 @@ def main():
 
     # Config laden
     cfg = load_env()
-    token = require_config_value(cfg, "GITHUB_TOKEN", "GitHub Token")
-    user = require_config_value(cfg, "GITHUB_USER", "GitHub User")
+    
+    # Preflight-Checks durchfuehren
+    if args.repo:
+        token, user = preflight_checks(cfg, args.repo, args.issue)
+    else:
+        token, user = require_github_config(cfg, require_user=True)
 
     # KI-Worker prüfen
     if args.model == "codex" and not find_codex_executable() and not args.dry_run:
