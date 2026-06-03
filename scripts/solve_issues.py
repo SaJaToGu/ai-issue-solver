@@ -53,6 +53,7 @@ from utils import (
     handle_github_request_error,
     raise_for_github_response,
     require_config_value,
+    require_github_config,
 )
 
 
@@ -541,6 +542,36 @@ class GitHubClient:
             return resp.json()
         print_warn(f"PR konnte nicht erstellt werden: {resp.status_code}")
         return None
+
+
+def preflight_checks(config: dict, repo: str, issue_number: int | None = None) -> tuple[str, str | None]:
+    """Prueft GitHub-Zugang, Ziel-Repo und optional die konkrete Issue vor dem Worker-Start."""
+    print_step(0, "Preflight-Checks")
+    token, user = require_github_config(config, require_user=True)
+    client = GitHubClient(token, user)
+
+    repo_info = client.get_repo(repo)
+    if not repo_info:
+        print_err(f"Ziel-Repository nicht gefunden: {user}/{repo}")
+        raise SystemExit(1)
+    print(f"   ✅ Repo erreichbar: {user}/{repo}")
+
+    if not repo_info.get("has_issues", False):
+        print_err(f"Issues sind fuer {user}/{repo} nicht aktiviert")
+        raise SystemExit(1)
+    print("   ✅ Issues sind aktiviert")
+
+    if issue_number is not None:
+        issue = client.get_single_issue(repo, issue_number)
+        if not issue or "pull_request" in issue:
+            print_err(f"Issue nicht gefunden: {repo}#{issue_number}")
+            raise SystemExit(1)
+        if issue.get("state") != "open":
+            print_err(f"Issue ist nicht offen: {repo}#{issue_number}")
+            raise SystemExit(1)
+        print(f"   ✅ Issue offen: #{issue_number} {issue.get('title', '')}")
+
+    return token, user
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2721,11 +2752,11 @@ def main():
     # Config laden
     cfg = load_env()
     
-    # Preflight-Checks durchführen
+    # Preflight-Checks durchfuehren
     if args.repo:
-        preflight_checks(cfg, args.repo)
-    
-    token, user = require_github_config(cfg, require_user=True)
+        token, user = preflight_checks(cfg, args.repo, args.issue)
+    else:
+        token, user = require_github_config(cfg, require_user=True)
 
     # KI-Worker prüfen
     if args.model == "codex" and not find_codex_executable() and not args.dry_run:
