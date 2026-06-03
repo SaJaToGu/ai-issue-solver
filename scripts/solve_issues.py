@@ -998,6 +998,7 @@ def build_vibe_command(prompt: str, repo_path: str,
 
 
 OPENCODE_REPO_RELATIVE_INSTRUCTIONS = """OpenCode wurde bereits mit `--dir` im geklonten Repository gestartet.
+Das aktuelle Arbeitsverzeichnis ist die Repository-Wurzel.
 Verwende fuer Dateioperationen ausschliesslich repo-relative Pfade wie `scripts/datei.py`.
 Wenn eine Pfadangabe auf dieses Repository zeigt, nutze den entsprechenden relativen Pfad und nicht den absoluten temporaeren Worktree-Pfad.
 Lies, kopiere oder bearbeite keine echten Secret-Dateien wie `.env`, `.env.*`, `config/.env` oder `config/.env.*`.
@@ -1050,7 +1051,7 @@ def build_opencode_command(prompt: str, repo_path: str,
     cmd = [
         opencode,
         "run",
-        "--dir", repo_path,
+        "--dir", ".",
     ]
     if model_name:
         cmd.extend(["--model", model_name])
