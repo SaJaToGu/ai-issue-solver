@@ -162,6 +162,19 @@ COMMON_REPO_FILES = {
     "setup.py",
     "tsconfig.json",
 }
+SECRET_WORKER_PATHS = {
+    ".env",
+    "config/.env",
+}
+SECRET_WORKER_PREFIXES = (
+    ".env.",
+    "config/.env.",
+)
+SAFE_SECRET_EXAMPLE_PATHS = {
+    ".env.example",
+    "config/config.example.env",
+}
+SECRET_WORKER_PATH_REPLACEMENT = "config/config.example.env"
 WORKER_SIDE_EFFECT_PATTERNS = {
     ".aider*",
     ".aider/**",
@@ -751,6 +764,68 @@ def looks_like_repo_file(path: str) -> bool:
     )
 
 
+def normalize_repo_relative_path_text(path_text: str) -> str:
+    normalized = Path(path_text).as_posix()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def clean_worker_secret_path_candidate(candidate: str) -> str:
+    return candidate.strip().strip(" \t\r\n'\"“”‘’,;:()[]{}<>")
+
+
+def is_secret_worker_path(path_text: str) -> bool:
+    normalized = normalize_repo_relative_path_text(clean_worker_secret_path_candidate(path_text))
+    if not normalized or normalized in SAFE_SECRET_EXAMPLE_PATHS:
+        return False
+    return (
+        normalized in SECRET_WORKER_PATHS
+        or any(normalized.startswith(prefix) for prefix in SECRET_WORKER_PREFIXES)
+    )
+
+
+def sanitize_worker_prompt_secret_paths(text: str, repo_path: str) -> str:
+    """Entfernt echte Secret-Dateipfade aus Worker-Prompts."""
+    repo_root = Path(repo_path).resolve()
+
+    def replacement(path_text: str, trailing: str = "") -> str:
+        return f"{SECRET_WORKER_PATH_REPLACEMENT}{trailing}"
+
+    def replace_absolute(match: re.Match) -> str:
+        raw_path, trailing = _split_trailing_path_punctuation(match.group(0))
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            return match.group(0)
+
+        resolved = candidate.resolve(strict=False)
+        if not is_relative_to(resolved, repo_root):
+            return match.group(0)
+
+        relative = resolved.relative_to(repo_root).as_posix()
+        if is_secret_worker_path(relative):
+            return replacement(relative, trailing)
+        return match.group(0)
+
+    sanitized = ABSOLUTE_PATH_RE.sub(replace_absolute, text)
+
+    for candidate in sorted(
+        collect_issue_path_candidates(sanitized),
+        key=len,
+        reverse=True,
+    ):
+        cleaned = clean_worker_secret_path_candidate(candidate)
+        if not is_secret_worker_path(cleaned):
+            continue
+        sanitized = re.sub(
+            rf"(?<![\w./-]){re.escape(cleaned)}(?![\w./-])",
+            SECRET_WORKER_PATH_REPLACEMENT,
+            sanitized,
+        )
+
+    return sanitized
+
+
 def collect_issue_path_candidates(text: str) -> list[str]:
     """Sammelt plausible Datei-/Pfadangaben aus Issue-Text ohne URLs zu treffen."""
     candidates = []
@@ -778,6 +853,9 @@ def normalize_aider_target(candidate: str, repo_path: str) -> str | None:
         return None
 
     if not looks_like_repo_file(candidate):
+        return None
+
+    if is_secret_worker_path(candidate):
         return None
 
     repo_root = Path(repo_path).resolve()
@@ -903,7 +981,9 @@ def build_vibe_command(prompt: str, repo_path: str,
 
 OPENCODE_REPO_RELATIVE_INSTRUCTIONS = """OpenCode wurde bereits mit `--dir` im geklonten Repository gestartet.
 Verwende fuer Dateioperationen ausschliesslich repo-relative Pfade wie `scripts/datei.py`.
-Wenn eine Pfadangabe auf dieses Repository zeigt, nutze den entsprechenden relativen Pfad und nicht den absoluten temporaeren Worktree-Pfad."""
+Wenn eine Pfadangabe auf dieses Repository zeigt, nutze den entsprechenden relativen Pfad und nicht den absoluten temporaeren Worktree-Pfad.
+Lies, kopiere oder bearbeite keine echten Secret-Dateien wie `.env`, `.env.*`, `config/.env` oder `config/.env.*`.
+Nutze fuer Konfigurationsbeispiele ausschliesslich sichere Beispiel-Dateien wie `config/config.example.env` oder `.env.example`."""
 
 
 def _split_trailing_path_punctuation(path_text: str) -> tuple[str, str]:
@@ -929,6 +1009,8 @@ def relativize_repo_absolute_paths(text: str, repo_path: str) -> str:
             return match.group(0)
 
         relative = resolved.relative_to(repo_root).as_posix()
+        if is_secret_worker_path(relative):
+            return f"{SECRET_WORKER_PATH_REPLACEMENT}{trailing}"
         return f"{relative}{trailing}"
 
     return ABSOLUTE_PATH_RE.sub(replace_match, text)
@@ -936,7 +1018,8 @@ def relativize_repo_absolute_paths(text: str, repo_path: str) -> str:
 
 def build_opencode_prompt(prompt: str, repo_path: str) -> str:
     """Bereitet den Prompt so vor, dass OpenCode repo-relative Pfade nutzt."""
-    normalized_prompt = relativize_repo_absolute_paths(prompt, repo_path)
+    sanitized_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_path)
+    normalized_prompt = relativize_repo_absolute_paths(sanitized_prompt, repo_path)
     return f"{OPENCODE_REPO_RELATIVE_INSTRUCTIONS}\n\n{normalized_prompt}"
 
 
@@ -981,15 +1064,16 @@ def build_worker_command(model: str, model_name: str, prompt: str, repo_path: st
         Die Befehlszeile als Liste von String-Argumenten
     """
     effective_model_name = model_name if model_name else None
+    safe_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_path)
 
     if model == "codex":
-        return build_codex_command(prompt, repo_path, effective_model_name)
+        return build_codex_command(safe_prompt, repo_path, effective_model_name)
     elif model == "mistral-vibe":
-        return build_vibe_command(prompt, repo_path)
+        return build_vibe_command(safe_prompt, repo_path)
     elif model == "opencode":
-        return build_opencode_command(prompt, repo_path, effective_model_name)
+        return build_opencode_command(safe_prompt, repo_path, effective_model_name)
     else:
-        return build_aider_command(model, model_name, prompt, repo_path, file_targets)
+        return build_aider_command(model, model_name, safe_prompt, repo_path, file_targets)
 
 
 def run_worker_command(cmd: list, repo_dir: str, env: dict,
