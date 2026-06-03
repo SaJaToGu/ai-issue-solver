@@ -54,7 +54,8 @@ Löst offene Issues automatisch mit KI + Codex, Mistral Vibe, OpenCode oder aide
 
 **Flags:**
 - `--model`: `codex`, `mistral-vibe`, `opencode`, `claude`, `openai`, `mistral`, `ollama`
-- `--model-name`: Spezifisches Modell (z.B. `mistral/mistral-small-2603`)
+- `--model-name`: Spezifisches Modell (z.B. `mistral/magistral-medium-latest`
+  oder `mistral/mistral-large-latest`)
 - `--dry-run`: Zeigt Plan ohne Änderungen
 - `--issue`: Nur ein bestimmtes Issue lösen
 
@@ -146,14 +147,19 @@ python scripts/post_merge_cleanup.py --repo ai-issue-solver --apply
 
 ### OpenCode mit Mistral im Night Mode
 
-**Exakter Befehl für unbeaufsichtigte Läufe:**
+**Exakter Befehl für unbeaufsichtigte Läufe mit Medium:**
 ```bash
-python scripts/run_overnight.py --model opencode --model-name mistral/mistral-small-2603 --base-branch develop --workers 2
+python scripts/run_overnight.py --model opencode --model-name mistral/magistral-medium-latest --base-branch develop --workers 1
+```
+
+**Stärkeres Modell für Review-sensible Issues:**
+```bash
+python scripts/run_overnight.py --model opencode --model-name mistral/mistral-large-latest --base-branch develop --workers 1
 ```
 
 **Smoke-Test (direkt prüfen, ob der Workflow funktioniert):**
 ```bash
-python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603 --repo <repo-name> --issue <issue-number> --dry-run
+python scripts/solve_issues.py --model opencode --model-name mistral/mistral-large-latest --repo <repo-name> --issue <issue-number> --dry-run
 ```
 
 > ⚠️ **Hinweis:** Night-Mode-Läufe sollten immer auf den `develop`-Branch zielen, um Stabilität in `main` zu gewährleisten. Die Dokumentation ist rein informativ und enthält keine Secrets.
