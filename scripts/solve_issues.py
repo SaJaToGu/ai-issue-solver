@@ -217,8 +217,11 @@ WORKER_LIVE_OUTPUT_RE = re.compile(
     r"\b(task|aufgabe|plan|planung|planning|reasoning|reasoning summary|"
     r"summary|zusammenfassung|warn(?:ing)?|warnung|error|fehler|failed|failure|"
     r"done|fertig|completed|abgeschlossen|result|ergebnis|final|rate limit|"
-    r"retry|blocked|blockiert|commit|test|tests)\b"
+    r"retry|blocked|blockiert|commit|test|tests|read|write|edit|update|"
+    r"created|updated|modified|deleted|analyse|analysiere|check|checking|"
+    r"diagnostic|diagnose|auth|login|pull request|pr erstellt)\b"
     r"|^\s*(?:===|##|###|\[.*\])"
+    r"|^\s*(?:\|\s*)?(?:[→✓✗•])\s+"
     r")",
     re.IGNORECASE,
 )
