@@ -145,11 +145,27 @@ python scripts/post_merge_cleanup.py --repo ai-issue-solver --apply
 - **Abschluss:** Regeneriert das lokale Status-Dashboard.
 - **Logs:** Alle Schritte werden unter `reports/overnight/<timestamp>/` protokolliert.
 
-### OpenCode mit Mistral im Night Mode
+### Auswahl sicherer Issues für Night Mode
 
-**Exakter Befehl für unbeaufsichtigte Läufe mit Medium:**
+Night-Mode-Läufe sind **unbeaufsichtigt** und sollten daher nur für **risikoarme Issues** verwendet werden:
+
+- **Dokumentation:** README, Workflow-Dokus, Kommentare, Typo-Fixes
+- **Isolierte Workflows:** Kleine, abgegrenzte Code-Änderungen (z. B. einzelne Funktionen, Tests)
+- **Vermeiden:** Issues mit Auswirkungen auf:
+  - **Credentials** (`.env`, `config/config.example.env`, Provider-Auth)
+  - **Multi-Repo-Zugriffe** (gleichzeitige Änderungen in mehreren Repositories)
+  - **Kritische Logik** (Authentifizierung, Datenbank-Schemata, CI/CD-Pipelines)
+
+### Empfohlene Night-Mode-Einstellungen
+
+**Worker-Limit für erste Läufe:**
 ```bash
 python scripts/run_overnight.py --model opencode --model-name mistral/magistral-medium-latest --base-branch develop --workers 1
+```
+
+**Explizite Issue-Auswahl (empfohlen für Kalibrierung):**
+```bash
+python scripts/run_overnight.py --model opencode --model-name mistral/mistral-large-latest --base-branch develop --workers 1 --issue 123 --issue 456
 ```
 
 **Stärkeres Modell für Review-sensible Issues:**
@@ -162,4 +178,7 @@ python scripts/run_overnight.py --model opencode --model-name mistral/mistral-la
 python scripts/solve_issues.py --model opencode --model-name mistral/mistral-large-latest --repo <repo-name> --issue <issue-number> --dry-run
 ```
 
-> ⚠️ **Hinweis:** Night-Mode-Läufe sollten immer auf den `develop`-Branch zielen, um Stabilität in `main` zu gewährleisten. Die Dokumentation ist rein informativ und enthält keine Secrets.
+> ⚠️ **Hinweise:**
+> - Night-Mode-Läufe sollten immer auf den `develop`-Branch zielen, um Stabilität in `main` zu gewährleisten.
+> - Vermeide breite `--open-issue`-Sweeps während der Kalibrierung. Nutze stattdessen explizite `--issue`-Flags.
+> - Die Dokumentation ist rein informativ und enthält keine Secrets.
