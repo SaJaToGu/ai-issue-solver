@@ -979,7 +979,7 @@ class WorkerCommandConstructionTests(unittest.TestCase):
         self.assertEqual(get_worker_display_name("ollama"), "Ollama (lokal)")
         self.assertEqual(get_worker_display_name("mistral-vibe"), "Mistral Vibe CLI")
         self.assertEqual(get_worker_display_name("opencode"), "OpenCode CLI")
-        self.assertEqual(get_worker_display_name("openrouter"), "OpenRouter (aider)")
+        self.assertEqual(get_worker_display_name("openrouter"), "OpenRouter (aider, legacy)")
 
     def test_build_worker_command_delegates_to_codex_builder(self):
         with patch("solve_issues.build_codex_command", return_value=["codex", "exec", "--cd", "/repo", "prompt"]):
