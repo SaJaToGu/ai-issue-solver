@@ -30,6 +30,7 @@ from solve_issues import (  # noqa: E402
     cleanup_preserved_worktrees,
     create_run_report,
     create_issue_pull_request,
+    detect_opencode_runtime_diagnostics,
     detect_codex_rate_limit,
     find_vibe_executable,
     format_git_change_summary,
@@ -54,6 +55,7 @@ from solve_issues import (  # noqa: E402
     validate_worker_changes,
     solve_issue,
     write_run_report,
+    write_run_health,
     write_worker_diagnostics,
 )
 
@@ -1040,6 +1042,33 @@ class WorkerCommandConstructionTests(unittest.TestCase):
 
 
 class WorkerOutputTests(unittest.TestCase):
+    def test_detect_opencode_runtime_diagnostics_finds_wal_failure(self):
+        output = "Failed to run the query 'PRAGMA wal_checkpoint(PASSIVE)'"
+
+        diagnostics = detect_opencode_runtime_diagnostics(output)
+
+        self.assertTrue(diagnostics.wal_failure)
+        self.assertFalse(diagnostics.edit_loop)
+
+    def test_detect_opencode_runtime_diagnostics_finds_edit_loop(self):
+        output = "\n".join(
+            [
+                "Edit README.md failed",
+                "Edit README.md failed",
+                "Edit docs/WORKFLOW.md failed",
+            ]
+        )
+
+        diagnostics = detect_opencode_runtime_diagnostics(output)
+
+        self.assertFalse(diagnostics.wal_failure)
+        self.assertTrue(diagnostics.edit_loop)
+        self.assertEqual(diagnostics.edit_failure_count, 3)
+        self.assertEqual(
+            diagnostics.edit_failure_files,
+            ("README.md", "docs/WORKFLOW.md"),
+        )
+
     def test_output_tail_uses_last_lines(self):
         output = "\n".join(f"line {i}" for i in range(40))
 
@@ -1389,6 +1418,52 @@ class GitStatusTests(unittest.TestCase):
         self.assertEqual(metadata["preserved_worktree"], "")
         self.assertNotIn("line 0", tail)
         self.assertIn("line 39", tail)
+
+    def test_run_health_persists_opencode_runtime_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_run_report(
+                repo="demo",
+                issue_number=64,
+                branch="ai/fix-issue-64",
+                model="opencode",
+                run_dir=Path(tmpdir) / "run",
+            )
+
+            write_run_health(
+                report,
+                "Edit README.md failed\nEdit README.md failed\nEdit README.md failed\n",
+            )
+
+            health = json.loads((report.path / "health.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(health["opencode_runtime"]["edit_loop"])
+        self.assertEqual(health["opencode_runtime"]["edit_failure_count"], 3)
+        self.assertIn("OpenCode Edit-Loop-Risiko erkannt", health["opencode_runtime"]["diagnostic_lines"][0])
+
+    def test_run_report_persists_opencode_runtime_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_run_report(
+                repo="demo",
+                issue_number=164,
+                branch="ai/fix-issue-164",
+                model="opencode",
+                run_dir=Path(tmpdir) / "run",
+            )
+            run_dir = write_run_report(
+                report,
+                "nonzero_without_changes",
+                worker_result=WorkerRunResult(
+                    1,
+                    "Failed to run the query 'PRAGMA wal_checkpoint(PASSIVE)'\n",
+                ),
+            )
+            summary = (Path(run_dir) / "summary.txt").read_text(encoding="utf-8")
+            metadata = json.loads((Path(run_dir) / "metadata.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(metadata["opencode_runtime"]["wal_failure"])
+        self.assertIn("opencode_runtime:", summary)
+        self.assertIn("OpenCode SQLite/WAL-Fehler erkannt.", summary)
+        self.assertIn("opencode.db-wal/opencode.db-shm", summary)
 
     def test_run_report_without_worker_records_partial_status(self):
         with tempfile.TemporaryDirectory() as tmpdir:
