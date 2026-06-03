@@ -1037,10 +1037,7 @@ def relativize_repo_absolute_paths(text: str, repo_path: str) -> str:
 
         resolved = candidate.resolve(strict=False)
         if not is_relative_to(resolved, repo_root):
-            # Pfade außerhalb des Repos behalten, wenn sie in /var/folders/ liegen (für Tests)
-            if raw_path.startswith(('/var/folders/', '/private/var/folders/')):
-                return match.group(0)
-            # Andere externe Pfade entfernen
+            # Alle externen Pfade entfernen, einschließlich /var/folders/
             return f"{leading_backtick}<EXTERNAL_PATH_REMOVED>{trailing_backtick}{trailing}"
 
         relative = resolved.relative_to(repo_root).as_posix()

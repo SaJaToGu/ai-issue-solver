@@ -872,7 +872,8 @@ class AiderCommandTests(unittest.TestCase):
 
             normalized = relativize_repo_absolute_paths(prompt, str(repo))
 
-        self.assertIn(str(external_var_path), normalized)  # Externe /var/folders-Pfade behalten
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)  # Externe /var/folders-Pfade entfernen
+        self.assertNotIn(str(external_var_path), normalized)
 
     def test_opencode_prompt_removes_temp_worktree_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -936,7 +937,8 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn(f"https://example.test{internal_path}", normalized)
         self.assertIn("Repo-Datei: scripts/create_issues.py,", normalized)
         self.assertNotIn(f"Repo-Datei: {internal_path}", normalized)
-        self.assertIn(str(external_path), normalized)
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)
+        self.assertNotIn(str(external_path), normalized)
 
     def test_opencode_command_prompt_does_not_expose_repo_absolute_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
