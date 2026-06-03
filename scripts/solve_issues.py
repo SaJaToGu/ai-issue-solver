@@ -205,6 +205,12 @@ VIBE_TURN_LIMIT_RE = re.compile(
     r"<vibe_stop_event>Turn limit of \d+ reached</vibe_stop_event>",
     re.IGNORECASE,
 )
+OPENCODE_WAL_FAILURE_RE = re.compile(
+    r"(?:PRAGMA\s+wal_checkpoint\s*\(\s*PASSIVE\s*\)|wal_checkpoint|journal_mode\s*=\s*WAL)",
+    re.IGNORECASE,
+)
+OPENCODE_EDIT_FAILURE_RE = re.compile(r"\bEdit\s+(.+?)\s+failed\b", re.IGNORECASE)
+OPENCODE_EDIT_FAILURE_REPEAT_THRESHOLD = 3
 WORKER_LIVE_OUTPUT_RE = re.compile(
     r"("
     r"\b(task|aufgabe|plan|planung|planning|reasoning|reasoning summary|"
@@ -263,6 +269,18 @@ class RunReport:
     issue_title: str
     branch: str
     model: str
+
+
+@dataclass(frozen=True)
+class OpenCodeRuntimeDiagnostics:
+    wal_failure: bool = False
+    edit_loop: bool = False
+    edit_failure_count: int = 0
+    edit_failure_files: tuple[str, ...] = ()
+
+    @property
+    def has_findings(self) -> bool:
+        return self.wal_failure or self.edit_loop
 
 
 @dataclass(frozen=True)
@@ -1338,17 +1356,62 @@ def create_run_report(repo: str, issue_number: int, branch: str, model: str,
     return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
 
 
+def detect_opencode_runtime_diagnostics(output: str) -> OpenCodeRuntimeDiagnostics:
+    """Erkennt bekannte OpenCode-Runtime-Probleme aus Worker-Output."""
+    edit_failures = [
+        clean_path_candidate(match.group(1))
+        for match in OPENCODE_EDIT_FAILURE_RE.finditer(output)
+    ]
+    edit_failure_files = tuple(dict.fromkeys(edit_failures))
+    return OpenCodeRuntimeDiagnostics(
+        wal_failure=bool(OPENCODE_WAL_FAILURE_RE.search(output)),
+        edit_loop=len(edit_failures) >= OPENCODE_EDIT_FAILURE_REPEAT_THRESHOLD,
+        edit_failure_count=len(edit_failures),
+        edit_failure_files=edit_failure_files,
+    )
+
+
+def opencode_runtime_diagnostic_lines(diagnostics: OpenCodeRuntimeDiagnostics) -> list[str]:
+    lines = []
+    if diagnostics.wal_failure:
+        lines.extend([
+            "OpenCode SQLite/WAL-Fehler erkannt.",
+            "Recovery: OpenCode-Prozesse beenden und nur opencode.db-wal/opencode.db-shm entfernen.",
+            "Nicht auth.json oder opencode.db löschen.",
+        ])
+    if diagnostics.edit_loop:
+        files = ", ".join(diagnostics.edit_failure_files[:5]) or "unbekannte Dateien"
+        lines.append(
+            "OpenCode Edit-Loop-Risiko erkannt: "
+            f"{diagnostics.edit_failure_count} fehlgeschlagene Edit-Versuche ({files})."
+        )
+    return lines
+
+
+def print_opencode_runtime_diagnostics(diagnostics: OpenCodeRuntimeDiagnostics) -> None:
+    for line in opencode_runtime_diagnostic_lines(diagnostics):
+        print_warn(line)
+
+
 def write_run_health(report: RunReport, output: str = "",
                      last_activity_at: datetime | None = None,
                      status: str = "running") -> None:
     """Speichert leichte Health-Daten, ohne den eigentlichen Summary-Report umzubauen."""
     last_activity_at = last_activity_at or datetime.now()
     tail = format_worker_output_tail(output)
+    opencode_diagnostics = detect_opencode_runtime_diagnostics(output)
     payload = {
         "status": status,
         "last_activity_at": last_activity_at.isoformat(timespec="seconds"),
         "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
         "output_tail": tail,
+        "opencode_runtime": {
+            "wal_failure": opencode_diagnostics.wal_failure,
+            "edit_loop": opencode_diagnostics.edit_loop,
+            "edit_failure_count": opencode_diagnostics.edit_failure_count,
+            "edit_failure_files": list(opencode_diagnostics.edit_failure_files),
+            "diagnostic_lines": opencode_runtime_diagnostic_lines(opencode_diagnostics),
+        },
     }
     try:
         (report.path / "health.json").write_text(
@@ -1482,6 +1545,8 @@ def write_run_report(report: RunReport, status: str,
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
+    opencode_diagnostics = detect_opencode_runtime_diagnostics(worker_output)
+    opencode_diagnostic_lines = opencode_runtime_diagnostic_lines(opencode_diagnostics)
     last_activity_at = worker_result.last_activity_at if worker_result else None
     pr_value = pr_url or ""
     preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
@@ -1512,6 +1577,13 @@ def write_run_report(report: RunReport, status: str,
             "cleanup_command": cleanup_command,
             "git_change_summary": git_change_summary or [],
             "vibe_log_snippet": vibe_snippet,
+            "opencode_runtime": {
+                "wal_failure": opencode_diagnostics.wal_failure,
+                "edit_loop": opencode_diagnostics.edit_loop,
+                "edit_failure_count": opencode_diagnostics.edit_failure_count,
+                "edit_failure_files": list(opencode_diagnostics.edit_failure_files),
+                "diagnostic_lines": opencode_diagnostic_lines,
+            },
         }
         (report.path / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -1545,6 +1617,8 @@ def write_run_report(report: RunReport, status: str,
             summary_lines.extend(["", "Der vollstaendige Worker-Output liegt in worker-output.log."])
         if git_change_summary:
             summary_lines.extend(["", "git_diff_stat:", *git_change_summary])
+        if opencode_diagnostic_lines:
+            summary_lines.extend(["", "opencode_runtime:", *opencode_diagnostic_lines])
         if output_tail:
             summary_lines.extend(["", "output_tail:", output_tail])
         if vibe_snippet:
@@ -2322,6 +2396,10 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             issue_text=f"{title}\n\n{body or ''}",
         )
         print_worker_assessment(result, assessment)
+        if model == "opencode":
+            print_opencode_runtime_diagnostics(
+                detect_opencode_runtime_diagnostics(result.output)
+            )
         
         # Vibe-Log-Snippet lesen (nur fuer Mistral Vibe Modelle)
         vibe_log_snippet = ""
