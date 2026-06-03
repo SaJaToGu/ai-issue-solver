@@ -57,6 +57,66 @@ from utils import (
 )
 
 
+def ensure_solver_directories() -> tuple[Path, Path]:
+    """
+    Erstellt und verwaltet solver-lokale Verzeichnisse für XDG_STATE_HOME und XDG_CACHE_HOME.
+    
+    Falls XDG_*_HOME-Umgebungsvariablen nicht gesetzt sind, werden solver-lokale Verzeichnisse
+    unter einem temporären Präfix (z. B. /tmp/opencode/state bzw. /tmp/opencode/cache) erstellt.
+    
+    Returns:
+        Tuple[Path, Path]: Pfade zu (state_dir, cache_dir)
+    """
+    # Temporäres Verzeichnis für solver-lokale Daten (beschreibbar und plattformneutral)
+    solver_base = Path(tempfile.gettempdir()) / "ai-issue-solver" / "opencode"
+    solver_base.mkdir(parents=True, exist_ok=True)
+    
+    # XDG_STATE_HOME (für Zustandsdateien wie Chat-History, Authentifizierung)
+    xdg_state_home = os.getenv("XDG_STATE_HOME")
+    if xdg_state_home:
+        state_dir = Path(xdg_state_home) / "opencode"
+    else:
+        state_dir = solver_base / "state"
+    
+    # XDG_CACHE_HOME (für Cache-Dateien wie Modelle, temporäre Daten)
+    xdg_cache_home = os.getenv("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        cache_dir = Path(xdg_cache_home) / "opencode"
+    else:
+        cache_dir = solver_base / "cache"
+    
+    # Verzeichnisse erstellen, falls nicht vorhanden
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "tmp").mkdir(parents=True, exist_ok=True)
+    
+    return state_dir, cache_dir
+
+
+def prepare_opencode_worker_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Bereitet die Umgebung für OpenCode vor, inklusive solver-lokaler Verzeichnisse.
+    
+    Args:
+        base_env: Basis-Umgebung, falls vorhanden. Standardmäßig wird os.environ verwendet.
+    
+    Returns:
+        dict[str, str]: Angepasste Umgebung mit solver-lokalen Pfaden.
+    """
+    state_dir, cache_dir = ensure_solver_directories()
+    env = dict(base_env if base_env is not None else os.environ)
+    
+    # Solver-lokale Pfade setzen
+    env["OPENCODE_STATE_DIR"] = str(state_dir)
+    env["OPENCODE_CACHE_DIR"] = str(cache_dir)
+    
+    # Auth-Datei im state_dir speichern
+    auth_file = state_dir / "auth.json"
+    env["OPENCODE_AUTH_FILE"] = str(auth_file)
+    
+    return env
+
+
 # ─────────────────────────────────────────────────────────────
 # Modell-Konfigurationen
 # ─────────────────────────────────────────────────────────────
@@ -974,8 +1034,11 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
     targets = file_targets if file_targets is not None else infer_aider_targets(prompt, repo_path)
 
     aider = find_aider_executable() or "aider"
-    chat_history_file = Path(tempfile.gettempdir()) / "ai-issue-solver-aider.chat.history.md"
-    input_history_file = Path(tempfile.gettempdir()) / "ai-issue-solver-aider.input.history"
+    
+    # Solver-lokale Pfade für Chat- und Input-History verwenden
+    state_dir, _ = ensure_solver_directories()
+    chat_history_file = state_dir / "aider.chat.history.md"
+    input_history_file = state_dir / "aider.input.history"
 
     cmd = [
         aider,
@@ -1010,6 +1073,7 @@ def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None =
         env["OLLAMA_API_BASE"] = ollama_host
 
     if model == "opencode":
+        env = prepare_opencode_worker_environment(env)
         env.pop("GITHUB_TOKEN", None)
         env.pop("GH_TOKEN", None)
 
@@ -1974,11 +2038,24 @@ def print_worker_assessment(result: WorkerRunResult, assessment: WorkerAssessmen
 
 def clone_repo(owner: str, repo: str, token: str, target_dir: str,
                base_branch: str) -> bool:
+    """Klont das Repository in ein solver-lokales Cache-Verzeichnis."""
+    _, cache_dir = ensure_solver_directories()
+    repo_cache_dir = cache_dir / "repos" / repo
+    repo_cache_dir.mkdir(parents=True, exist_ok=True)
+    
     url = f"https://{token}@github.com/{owner}/{repo}.git"
     result = subprocess.run(
-        ["git", "clone", "--branch", base_branch, "--single-branch", url, target_dir],
+        ["git", "clone", "--branch", base_branch, "--single-branch", url, str(repo_cache_dir)],
         capture_output=True, text=True
     )
+    
+    if result.returncode == 0:
+        # Symbolischen Link vom Cache-Verzeichnis zum Zielverzeichnis erstellen
+        target_path = Path(target_dir)
+        if target_path.exists():
+            target_path.unlink()
+        target_path.symlink_to(repo_cache_dir, target_is_directory=True)
+    
     return result.returncode == 0
 
 
@@ -2341,8 +2418,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             )
         return True
 
-    # Repo klonen
-    tmpdir = tempfile.mkdtemp(prefix="ai-solver-")
+    # Solver-lokale Verzeichnisse vorbereiten
+    state_dir, cache_dir = ensure_solver_directories()
+    
+    # Temporäres Verzeichnis im solver-lokalen Cache erstellen
+    tmpdir = tempfile.mkdtemp(prefix="ai-solver-", dir=str(cache_dir / "tmp"))
     preserved_worktree: Path | None = None
     try:
         repo_dir = os.path.join(tmpdir, repo)
@@ -2683,6 +2763,27 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     return True
 
 
+def print_solver_directories() -> None:
+    """
+    Dokumentiert die solver-lokalen Verzeichnisstrukturen und Umgebungsvariablen.
+    """
+    state_dir, cache_dir = ensure_solver_directories()
+    auth_file = state_dir / "auth.json"
+    
+    print("\n📁 Solver-lokale Verzeichnisstruktur:")
+    print(f"   XDG_STATE_HOME/opencode: {state_dir}")
+    print(f"   XDG_CACHE_HOME/opencode: {cache_dir}")
+    print("\n🔧 Wichtige Umgebungsvariablen:")
+    print(f"   OPENCODE_STATE_DIR: {state_dir}")
+    print(f"   OPENCODE_CACHE_DIR: {cache_dir}")
+    print(f"   OPENCODE_AUTH_FILE: {auth_file}")
+    print("\n📝 Verwendung:")
+    print("   - Chat- und Input-History: $OPENCODE_STATE_DIR/aider.{chat,input}.history")
+    print("   - Authentifizierung: $OPENCODE_AUTH_FILE")
+    print("   - Repository-Cache: $OPENCODE_CACHE_DIR/repos/<repo>")
+    print("   - Temporäre Dateien: $OPENCODE_CACHE_DIR/tmp/")
+
+
 # ─────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────
@@ -2799,6 +2900,7 @@ def main():
             print("   → Danach `opencode` im PATH verfügbar machen")
             sys.exit(1)
         check_opencode_auth(opencode_exe)
+        print_solver_directories()
 
     if args.model == "openrouter" and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert, wird aber für OpenRouter benötigt!")
