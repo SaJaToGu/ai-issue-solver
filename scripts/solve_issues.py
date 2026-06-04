@@ -322,6 +322,17 @@ class WorkerRunResult:
 
 
 @dataclass(frozen=True)
+class CloneResult:
+    ok: bool
+    stderr: str = ""
+    stdout: str = ""
+    target_dir: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+@dataclass(frozen=True)
 class WorkerAssessment:
     should_continue: bool
     has_changes: bool
@@ -2151,27 +2162,38 @@ def print_worker_assessment(result: WorkerRunResult, assessment: WorkerAssessmen
             print(f"        | {line}")
 
 
+def sanitize_clone_output(output: str, token: str) -> str:
+    if not output:
+        return ""
+    cleaned = output
+    if token:
+        cleaned = cleaned.replace(token, "***")
+    return cleaned
+
+
 def clone_repo(owner: str, repo: str, token: str, target_dir: str,
-               base_branch: str) -> bool:
-    """Klont das Repository in ein solver-lokales Cache-Verzeichnis."""
-    _, cache_dir = ensure_solver_directories()
-    repo_cache_dir = cache_dir / "repos" / repo
-    repo_cache_dir.mkdir(parents=True, exist_ok=True)
-    
+               base_branch: str) -> CloneResult:
+    """Klont das Repository als isolierten Checkout in das Zielverzeichnis."""
+    target_path = Path(target_dir)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if target_path.exists() or target_path.is_symlink():
+        if target_path.is_symlink() or target_path.is_file():
+            target_path.unlink()
+        else:
+            shutil.rmtree(target_path)
+
     url = f"https://{token}@github.com/{owner}/{repo}.git"
     result = subprocess.run(
-        ["git", "clone", "--branch", base_branch, "--single-branch", url, str(repo_cache_dir)],
+        ["git", "clone", "--branch", base_branch, "--single-branch", url, str(target_path)],
         capture_output=True, text=True
     )
-    
-    if result.returncode == 0:
-        # Symbolischen Link vom Cache-Verzeichnis zum Zielverzeichnis erstellen
-        target_path = Path(target_dir)
-        if target_path.exists():
-            target_path.unlink()
-        target_path.symlink_to(repo_cache_dir, target_is_directory=True)
-    
-    return result.returncode == 0
+
+    return CloneResult(
+        ok=result.returncode == 0,
+        stdout=sanitize_clone_output(result.stdout, token),
+        stderr=sanitize_clone_output(result.stderr, token),
+        target_dir=str(target_path),
+    )
 
 
 def create_branch(repo_dir: str, branch_name: str) -> bool:
@@ -2550,11 +2572,20 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             if additional_dirs:
                 print(f"      📁 Zusätzliche Verzeichnisse für Codex Sandbox: {additional_dirs}")
 
-        if not clone_repo(config["owner"], repo, token, repo_dir, base_branch):
+        clone_result = clone_repo(config["owner"], repo, token, repo_dir, base_branch)
+        if not clone_result:
             print_err("Klonen fehlgeschlagen")
+            clone_error = clone_result.stderr.strip() or clone_result.stdout.strip()
+            if clone_error:
+                print("      Git-Clone-Ausgabe:")
+                for line in clone_error.splitlines()[-8:]:
+                    print(f"        | {line}")
             print(f"      Prüfe, ob der Branch '{base_branch}' in {repo} existiert.")
             if run_report:
-                write_run_report(run_report, "clone_failed", note=f"base_branch: {base_branch}", vibe_log_snippet=None)
+                note = f"base_branch: {base_branch}"
+                if clone_error:
+                    note = f"{note}\nclone_output:\n{clone_error}"
+                write_run_report(run_report, "clone_failed", note=note, vibe_log_snippet=None)
             return False
         print("✅")
 
@@ -2918,7 +2949,7 @@ def print_solver_directories() -> None:
     print("\n📝 Verwendung:")
     print("   - Chat- und Input-History: $OPENCODE_STATE_DIR/aider.{chat,input}.history")
     print("   - Authentifizierung: $OPENCODE_AUTH_FILE")
-    print("   - Repository-Cache: $OPENCODE_CACHE_DIR/repos/<repo>")
+    print("   - Isolierte Run-Checkouts: $OPENCODE_CACHE_DIR/tmp/ai-solver-*/<repo>")
     print("   - Temporäre Dateien: $OPENCODE_CACHE_DIR/tmp/")
 
 

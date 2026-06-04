@@ -28,6 +28,7 @@ from solve_issues import (  # noqa: E402
     build_worker_command,
     build_worker_env,
     check_opencode_auth,
+    clone_repo,
     cleanup_preserved_worktrees,
     create_run_report,
     create_issue_pull_request,
@@ -1310,19 +1311,62 @@ class SolverDirectoryTests(unittest.TestCase):
         self.assertNotIn("OPENCODE_STATE_DIR", env)
         self.assertNotIn("OPENCODE_CACHE_DIR", env)
 
-    def test_solver_uses_solver_local_cache_for_repositories(self):
-        """Testet, dass Repositorys im solver-lokalen Cache-Verzeichnis geklont werden."""
-        os.environ.pop("XDG_CACHE_HOME", None)
-        os.environ.pop("HOME", None)
+    def test_clone_repo_uses_isolated_target_directories(self):
+        """Each run should clone into its own checkout path, not a shared repo cache."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_one = Path(tmpdir) / "run-one" / "demo"
+            target_two = Path(tmpdir) / "run-two" / "demo"
 
-        # Simuliere clone_repo, um solver-lokale Cache-Nutzung zu prüfen
-        from solve_issues import ensure_solver_directories
-        _, cache_dir = ensure_solver_directories()
-        repo_cache_dir = cache_dir / "repos" / "test-repo"
-        
-        # Prüfe, ob das Cache-Verzeichnis korrekt erstellt wird
-        self.assertEqual(repo_cache_dir.parent.parent, cache_dir)
-        self.assertFalse(repo_cache_dir.exists())  # Verzeichnis sollte nicht existieren, nur Pfadprüfung
+            with patch("subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                )
+
+                result_one = clone_repo("test-owner", "demo", "secret-token", str(target_one), "develop")
+                result_two = clone_repo("test-owner", "demo", "secret-token", str(target_two), "develop")
+
+        self.assertTrue(result_one)
+        self.assertTrue(result_two)
+        clone_targets = [Path(call.args[0][-1]) for call in run.call_args_list]
+        self.assertEqual(clone_targets, [target_one, target_two])
+        self.assertNotEqual(clone_targets[0], clone_targets[1])
+
+    def test_clone_repo_removes_stale_target_directory_before_clone(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "run" / "demo"
+            target.mkdir(parents=True)
+            (target / "stale.txt").write_text("old\n", encoding="utf-8")
+
+            def fake_run(cmd, **kwargs):
+                self.assertEqual(Path(cmd[-1]), target)
+                self.assertFalse(target.exists())
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+            with patch("subprocess.run", side_effect=fake_run):
+                result = clone_repo("test-owner", "demo", "secret-token", str(target), "develop")
+
+        self.assertTrue(result)
+
+    def test_clone_repo_returns_sanitized_stderr_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "run" / "demo"
+
+            with patch("subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=128,
+                    stdout="",
+                    stderr="fatal: could not read https://secret-token@github.com/test-owner/demo.git\n",
+                )
+
+                result = clone_repo("test-owner", "demo", "secret-token", str(target), "missing")
+
+        self.assertFalse(result)
+        self.assertIn("***", result.stderr)
+        self.assertNotIn("secret-token", result.stderr)
 
 
 class GitStatusTests(unittest.TestCase):
