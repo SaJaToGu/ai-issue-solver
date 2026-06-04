@@ -1035,8 +1035,8 @@ class WorkerCommandConstructionTests(unittest.TestCase):
             with patch("solve_issues.find_codex_executable", return_value="/usr/bin/codex"):
                 build_worker_command("codex", "", "prompt", "/repo")
 
-        # Leerer String soll als None weitergegeben werden
-        mock_codex.assert_called_once_with("prompt", "/repo", None)
+        # Leerer String soll als None weitergegeben werden (zusätzlicher None für additional_dirs)
+        mock_codex.assert_called_once_with("prompt", "/repo", None, None)
 
     def test_build_worker_command_passes_model_name_for_non_empty(self):
         with patch("solve_issues.build_opencode_command", return_value=["opencode", "run", "--model", "custom", "prompt"]) as mock_opencode:

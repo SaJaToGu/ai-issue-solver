@@ -1079,6 +1079,11 @@ def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None =
         env = prepare_opencode_worker_environment(env)
         env.pop("GITHUB_TOKEN", None)
         env.pop("GH_TOKEN", None)
+    else:
+        # Entferne OpenCode-spezifische Variablen für nicht-OpenCode-Worker
+        env.pop("OPENCODE_AUTH_FILE", None)
+        env.pop("OPENCODE_STATE_DIR", None)
+        env.pop("OPENCODE_CACHE_DIR", None)
 
     if model in ("openrouter", "openrouter_direct"):
         # OpenRouter benoetigt explizit OPENROUTER_API_KEY in der Umgebung
@@ -1090,7 +1095,13 @@ def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None =
     return env
 
 
-def build_codex_command(prompt: str, repo_path: str, model_name: str | None = None) -> list:
+def build_codex_command(
+    prompt: str,
+    repo_path: str,
+    model_name: str | None = None,
+    additional_dirs: list[str] | None = None,
+    sandbox_mode: str = "workspace-write",
+) -> list:
     codex = find_codex_executable()
     if not codex:
         raise FileNotFoundError("codex")
@@ -1099,10 +1110,13 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
         codex,
         "exec",
         "--cd", repo_path,
-        "--sandbox", "workspace-write",
+        "--sandbox", sandbox_mode,
     ]
     if model_name:
         cmd.extend(["--model", model_name])
+    if additional_dirs:
+        for dir_path in additional_dirs:
+            cmd.extend(["--add-dir", dir_path])
     cmd.append(prompt)
     return cmd
 
@@ -1203,12 +1217,37 @@ def get_worker_display_name(model: str) -> str:
     return MODEL_CONFIGS[model]["display_name"]
 
 
+def preflight_temp_dir_check(temp_dir: str) -> list[str]:
+    """Prüft Schreibrechte im Temp-Verzeichnis und gibt zusätzliche --add-dir-Pfade zurück."""
+    additional_dirs = []
+    if not os.access(temp_dir, os.W_OK):
+        # Versuche, workspace-temp im ursprünglichen Verzeichnis zu erstellen
+        workspace_temp = os.path.join(temp_dir, "workspace-temp")
+        try:
+            os.makedirs(workspace_temp, exist_ok=True)
+            if os.access(workspace_temp, os.W_OK):
+                additional_dirs.append(workspace_temp)
+        except OSError as exc:
+            print_warn(f"Konnte workspace-temp nicht erstellen: {exc}")
+            # Fallback auf /tmp, falls das ursprüngliche Verzeichnis nicht beschreibbar ist
+            fallback_temp = os.path.join("/tmp", "ai-issue-solver-workspace")
+            try:
+                os.makedirs(fallback_temp, exist_ok=True)
+                if os.access(fallback_temp, os.W_OK):
+                    additional_dirs.append(fallback_temp)
+                    print_warn(f"Verwende Fallback-Verzeichnis: {fallback_temp}")
+            except OSError as fallback_exc:
+                print_warn(f"Konnte Fallback-Verzeichnis nicht erstellen: {fallback_exc}")
+    return additional_dirs
+
+
 def build_worker_command(
     model: str,
     model_name: str,
     prompt: str,
     repo_path: str,
     file_targets: list[str] | None = None,
+    additional_dirs: list[str] | None = None,
     config: dict | None = None,
 ) -> list[str] | str:
     """Baut den KI-Worker-Befehl basierend auf dem Modell.
@@ -1223,6 +1262,7 @@ def build_worker_command(
         prompt: Der Prompt für den Worker
         repo_path: Pfad zum Repository
         file_targets: Optionale Liste von Dateizielen (nur für aider relevant)
+        additional_dirs: Zusätzliche Verzeichnisse für Codex Sandbox (nur für codex relevant)
         config: Konfigurationsdaten für API-Keys und Einstellungen
 
     Returns:
@@ -1234,7 +1274,7 @@ def build_worker_command(
     config = config or {}
 
     if model == "codex":
-        return build_codex_command(safe_prompt, repo_path, effective_model_name)
+        return build_codex_command(safe_prompt, repo_path, effective_model_name, additional_dirs)
     elif model == "mistral-vibe":
         return build_vibe_command(safe_prompt, repo_path)
     elif model == "opencode":
@@ -1903,6 +1943,12 @@ def validate_worker_changes(repo_dir: str, git_status: str | None = None) -> Wor
 
     for relative_path in changed_paths:
         path = repo_root / relative_path
+        if not path.exists():
+            errors.append(f"{relative_path}: Datei konnte nicht erstellt werden (Schreibrechte?)")
+            continue
+        if not os.access(path, os.W_OK):
+            errors.append(f"{relative_path}: Keine Schreibrechte")
+            continue
         if not path.is_file():
             continue
         marker_line = conflict_marker_line(path)
@@ -2031,6 +2077,8 @@ def print_worker_assessment(result: WorkerRunResult, assessment: WorkerAssessmen
         print_warn(
             f"KI-Worker exit code: {result.returncode}; keine Änderungen erzeugt"
         )
+        if assessment.reason == "nonzero_without_changes" and "Schreibrechte" in "\n".join(result.output.splitlines()):
+            print_warn("  → Mögliche Ursache: Fehlende Schreibrechte im Sandbox-Verzeichnis")
 
     tail = format_worker_output_tail(result.output)
     if tail:
@@ -2430,6 +2478,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     try:
         repo_dir = os.path.join(tmpdir, repo)
         print(f"      📥 Klone {repo} ...", end=" ", flush=True)
+        
+        # Preflight-Check für Schreibrechte im Temp-Verzeichnis
+        additional_dirs = []
+        if model == "codex":
+            additional_dirs = preflight_temp_dir_check(tmpdir)
+            if additional_dirs:
+                print(f"      📁 Zusätzliche Verzeichnisse für Codex Sandbox: {additional_dirs}")
 
         if not clone_repo(config["owner"], repo, token, repo_dir, base_branch):
             print_err("Klonen fehlgeschlagen")
@@ -2512,7 +2567,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         # KI-Worker ausführen
         display_name = get_worker_display_name(model)
         print(f"      🤖 Starte {display_name} ...", flush=True)
-        cmd = build_worker_command(model, model_name, prompt, repo_dir)
+        cmd = build_worker_command(model, model_name, prompt, repo_dir, additional_dirs=additional_dirs if model == "codex" else None)
 
         rate_limit_retries = 0
         rate_limit_deferred_note = None
