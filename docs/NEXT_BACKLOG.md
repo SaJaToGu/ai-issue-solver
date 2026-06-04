@@ -132,30 +132,6 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
-## 2. Make OpenRouter Direct file-edit capable
-
-Labels: `automation`, `quality`, `provider`
-
-Priority: `1`
-
-The direct OpenRouter worker path should be verified and hardened so it can
-actually modify files in the worker checkout, not just return API text. This is
-the key requirement before OpenRouter can be a practical non-Aider fallback.
-
-Suggested scope:
-- inspect the current `openrouter_direct` worker integration end to end
-- ensure model output is converted into file edits or patches that are applied
-  safely in the worker repo
-- make failures explicit when the model returns prose without actionable edits
-- support `mistralai/mistral-large` as the default test model
-- add tests for successful patch application, no-op output, malformed patches,
-  and missing `OPENROUTER_API_KEY`
-- do not read or expose secret files such as `config/.env`
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
 ## 6. Support low-code and non-code repositories without Python assumptions
 
 Labels: `automation`, `quality`, `workflow`, `analysis`

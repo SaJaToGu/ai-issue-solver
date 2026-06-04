@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -46,6 +47,7 @@ from solve_issues import (  # noqa: E402
     relativize_repo_absolute_paths,
     preserve_worker_worktree,
     retry_branch_name,
+    run_openrouter_direct_worker,
     run_opencode_diagnostic,
     run_worker_command,
     sanitize_worker_prompt_secret_paths,
@@ -1848,6 +1850,32 @@ class OpenCodePreflightTests(unittest.TestCase):
         self.assertIn("OpenCode Diagnostic", output)
         self.assertIn("0.1.0", output)
         self.assertIn("Authentifiziert", output)
+
+
+class TestOpenRouterDirectWorkerPath(unittest.TestCase):
+    def test_run_openrouter_direct_worker_imports_repo_level_worker(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            direct_result = SimpleNamespace(
+                returncode=2,
+                output="[openrouter_direct] Keine Patches.",
+            )
+
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                with patch("workers.openrouter_worker.OpenRouterWorker") as worker_cls:
+                    worker_cls.return_value.run_direct.return_value = direct_result
+
+                    result = run_openrouter_direct_worker(
+                        prompt="Fix the issue",
+                        repo_dir=repo_dir,
+                        model_name="mistralai/mistral-large",
+                    )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.output, direct_result.output)
+        worker_cls.assert_called_once_with(
+            api_key="test-key",
+            model="mistralai/mistral-large",
+        )
 
 
 if __name__ == "__main__":

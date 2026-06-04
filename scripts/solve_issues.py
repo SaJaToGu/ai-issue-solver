@@ -42,7 +42,10 @@ try:
 except ModuleNotFoundError:
     requests = None
 
-sys.path.insert(0, str(Path(__file__).parent))
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(PROJECT_ROOT))
 from utils import (
     is_placeholder_value,
     load_env,
