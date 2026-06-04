@@ -88,6 +88,45 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 10. Add configurable worker verbosity and job heartbeats
+
+Labels: `automation`, `quality`, `workflow`, `dashboard`
+
+Priority: `1`
+
+Worker output is currently filtered to avoid noisy patch/code floods, but long
+runs are still hard to supervise from Codex or a phone. The solver should expose
+clear job heartbeats and configurable verbosity so a run can be followed without
+starting separate parallel monitoring commands.
+
+Suggested scope:
+- add a worker output mode such as `quiet`, `normal`, and `verbose` for
+  `solve_issues.py`, `solve_issues_batch.py`, and overnight runs
+- keep `normal` compact by surfacing status lines such as plan, read, write,
+  edit, tests, warnings, errors, and final result
+- make `verbose` show more live worker output for debugging while still keeping
+  secrets and known auth paths hidden
+- make Codex output more compact in `normal` mode while preserving full raw
+  output in diagnostics
+- write regular per-job heartbeat updates to run metadata or `health.json`,
+  including phase, runtime, last worker activity time, last surfaced signal,
+  current worker/model, issue, branch, and run report directory
+- update heartbeats during clone, worker execution, validation, commit, PR
+  creation, and cleanup phases
+- teach batch and overnight runners to read these heartbeats instead of needing
+  external `ps`/parallel polling for basic liveness
+- surface heartbeat status in summaries and the dashboard so running jobs show
+  alive, stalled, waiting, failed, or completed states
+- include clear stale-heartbeat behavior and health-timeout diagnostics
+- keep full raw output in run reports but never write secrets, API keys, or
+  provider auth file contents
+- add tests for verbosity modes, heartbeat updates across phases, stale
+  heartbeat detection, and dashboard rendering of running jobs
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 8. Automate model selection by issue type, expected performance, and cost
 
 Labels: `automation`, `quality`, `provider`, `workflow`
