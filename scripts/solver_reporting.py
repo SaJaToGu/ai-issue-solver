@@ -461,7 +461,8 @@ def write_run_report(report: RunReport, status: str,
                      base_branch: str | None = None,
                      git_change_summary: list[str] | None = None,
                      vibe_log_snippet: str | None = None,
-                     resource_diagnostics=None) -> Path | None:
+                     resource_diagnostics=None,
+                     model_selection_metadata: dict | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -508,6 +509,7 @@ def write_run_report(report: RunReport, status: str,
                 "diagnostic_lines": opencode_diagnostic_lines,
             },
             "resource_diagnostics": resource_diag_dict,
+            "model_selection": model_selection_metadata or {},
         }
         (report.path / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -529,6 +531,19 @@ def write_run_report(report: RunReport, status: str,
             f"pr_url: {pr_value}",
             f"preserved_worktree: {preserved_value}",
         ]
+        
+        # Modellauswahl-Metadaten hinzufügen
+        if model_selection_metadata:
+            summary_lines.extend([
+                "",
+                "model_selection:",
+                f"  model: {model_selection_metadata.get('model', '')}",
+                f"  reason: {model_selection_metadata.get('reason', '')}",
+                f"  category: {model_selection_metadata.get('category', '')}",
+                f"  risk: {model_selection_metadata.get('risk', '')}",
+                f"  cost_tier: {model_selection_metadata.get('cost_tier', '')}",
+                f"  fallback_plan: {', '.join(model_selection_metadata.get('fallback_plan', []))}",
+            ])
         if cleanup_command:
             summary_lines.append(f"cleanup_command: {cleanup_command}")
             summary_lines.extend([
