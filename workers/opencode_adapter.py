@@ -6,7 +6,7 @@ Umgebungseinrichtung und Ausführung für den OpenCode CLI (`opencode run`).
 
 Besonderheiten:
     - GitHub-Write-Tokens werden aus der Umgebung entfernt (GITHUB_TOKEN, GH_TOKEN).
-    - Solver-lokale Verzeichnisse (XDG_STATE_HOME, XDG_CACHE_HOME) werden eingerichtet.
+    - Solver-lokale Cache-Verzeichnisse werden eingerichtet.
     - Der Prompt wird mit Anweisungen für repo-relative Pfade angereichert.
     - OpenCode Runtime-Diagnostics (WAL-Fehler, Edit-Loop) werden gesammelt.
 """
@@ -88,21 +88,22 @@ def ensure_solver_directories() -> tuple[Path, Path]:
 
 def prepare_opencode_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """
-    Bereitet die Umgebung für OpenCode vor: solver-lokale Verzeichnisse, kein GitHub-Token.
+    Bereitet die Umgebung für OpenCode vor: solver-lokaler Cache, kein GitHub-Token.
 
     Args:
         base_env: Basis-Umgebung. Standard: os.environ.
 
     Returns:
-        Angepasste Umgebungsvariablen mit OPENCODE_STATE_DIR, OPENCODE_CACHE_DIR,
-        OPENCODE_AUTH_FILE; ohne GITHUB_TOKEN und GH_TOKEN.
+        Angepasste Umgebungsvariablen mit OPENCODE_CACHE_DIR; ohne GITHUB_TOKEN,
+        GH_TOKEN und erzwungenes XDG_STATE_HOME.
     """
-    state_dir, cache_dir = ensure_solver_directories()
+    _state_dir, cache_dir = ensure_solver_directories()
     env = dict(base_env if base_env is not None else os.environ)
 
-    env["OPENCODE_STATE_DIR"] = str(state_dir)
+    # Nur Cache isolieren. State/Auth nicht überschreiben, damit OpenCode seine
+    # bestehende SQLite-Datenbank inklusive WAL-Dateien konsistent findet.
+    env.pop("XDG_STATE_HOME", None)
     env["OPENCODE_CACHE_DIR"] = str(cache_dir)
-    env["OPENCODE_AUTH_FILE"] = str(state_dir / "auth.json")
 
     # GitHub-Write-Tokens entfernen: OpenCode soll keinen Push-Zugriff haben
     env.pop("GITHUB_TOKEN", None)

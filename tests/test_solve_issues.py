@@ -1237,8 +1237,8 @@ class SolverDirectoryTests(unittest.TestCase):
         os.environ.clear()
         os.environ.update(self.original_env)
 
-    def test_solver_uses_xdg_state_home_for_auth_json(self):
-        """Testet, dass auth.json in XDG_STATE_HOME abgelegt wird."""
+    def test_solver_does_not_force_xdg_state_home_for_opencode_auth(self):
+        """OpenCode-State/Auth bleiben bei OpenCode, damit SQLite/WAL konsistent bleiben."""
         xdg_state = self.repo_dir / "xdg_state"
         os.environ["XDG_STATE_HOME"] = str(xdg_state)
         os.environ.pop("HOME", None)
@@ -1247,13 +1247,12 @@ class SolverDirectoryTests(unittest.TestCase):
         from solve_issues import build_worker_env
         env = build_worker_env("opencode", {})
 
-        # Prüfe, ob der Pfad korrekt aufgelöst wird
-        auth_path = xdg_state / "opencode" / "auth.json"
-        self.assertEqual(env["OPENCODE_AUTH_FILE"], str(auth_path))
-        self.assertFalse(auth_path.exists())  # Datei sollte nicht existieren, nur Pfadprüfung
+        self.assertNotIn("XDG_STATE_HOME", env)
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
 
-    def test_solver_uses_solver_local_directories_if_xdg_unset(self):
-        """Testet, dass solver-lokale Verzeichnisse verwendet werden, wenn XDG_*_HOME nicht gesetzt ist."""
+    def test_solver_uses_solver_local_cache_if_xdg_unset(self):
+        """OpenCode bekommt einen solver-lokalen Cache, aber keinen erzwungenen State/Auth-Pfad."""
         os.environ.pop("XDG_STATE_HOME", None)
         os.environ.pop("XDG_CACHE_HOME", None)
         os.environ.pop("HOME", None)
@@ -1264,18 +1263,15 @@ class SolverDirectoryTests(unittest.TestCase):
 
         # Prüfe, ob solver-lokale Pfade verwendet werden
         solver_base = Path(tempfile.gettempdir()) / "ai-issue-solver" / "opencode"
-        state_dir = solver_base / "state"
         cache_dir = solver_base / "cache"
-        auth_path = state_dir / "auth.json"
-        
-        self.assertEqual(env["OPENCODE_STATE_DIR"], str(state_dir))
-        self.assertEqual(env["OPENCODE_CACHE_DIR"], str(cache_dir))
-        self.assertEqual(env["OPENCODE_AUTH_FILE"], str(auth_path))
-        self.assertTrue((cache_dir / "tmp").is_dir())
-        self.assertFalse(auth_path.exists())
 
-    def test_solver_isolates_worker_paths_from_global_home(self):
-        """Testet, dass Worker-Prozesse keine globalen Pfade (z. B. ~/.local/share) verwenden."""
+        self.assertEqual(env["OPENCODE_CACHE_DIR"], str(cache_dir))
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
+        self.assertTrue((cache_dir / "tmp").is_dir())
+
+    def test_solver_leaves_opencode_state_to_default_home(self):
+        """Der Solver setzt keinen alternativen Auth-Pfad, der OpenCode-WAL-Dateien trennt."""
         os.environ.pop("XDG_STATE_HOME", None)
         os.environ.pop("XDG_CACHE_HOME", None)
         home = self.repo_dir / "fake_home"
@@ -1285,9 +1281,9 @@ class SolverDirectoryTests(unittest.TestCase):
         from solve_issues import build_worker_env
         env = build_worker_env("opencode", {})
 
-        # Prüfe, dass keine globalen Pfade verwendet werden
         global_state = home / ".local" / "share" / "opencode" / "auth.json"
-        self.assertNotEqual(env["OPENCODE_AUTH_FILE"], str(global_state))
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
         self.assertNotIn(str(global_state), env.get("PATH", ""))
 
     def test_solver_avoids_exposing_secrets_in_worker_env(self):

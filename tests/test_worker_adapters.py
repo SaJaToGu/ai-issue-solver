@@ -279,13 +279,19 @@ class TestOpenCodeAdapter(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", env)
         self.assertEqual(env["KEEP"], "1")
 
-    def test_build_env_sets_solver_local_opencode_vars(self):
+    def test_build_env_sets_solver_local_opencode_cache_only(self):
         from workers.opencode_adapter import OpenCodeAdapter
         adapter = OpenCodeAdapter()
         env = adapter.build_env({}, base_env={})
-        self.assertIn("OPENCODE_STATE_DIR", env)
         self.assertIn("OPENCODE_CACHE_DIR", env)
-        self.assertIn("OPENCODE_AUTH_FILE", env)
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
+
+    def test_build_env_removes_xdg_state_home(self):
+        from workers.opencode_adapter import OpenCodeAdapter
+        adapter = OpenCodeAdapter()
+        env = adapter.build_env({}, base_env={"XDG_STATE_HOME": "/tmp/opencode-state"})
+        self.assertNotIn("XDG_STATE_HOME", env)
 
     def test_run_returns_failed_result_when_opencode_not_found(self):
         from workers.opencode_adapter import OpenCodeAdapter

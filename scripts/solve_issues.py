@@ -141,25 +141,22 @@ def ensure_solver_directories() -> tuple[Path, Path]:
 
 def prepare_opencode_worker_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """
-    Bereitet die Umgebung für OpenCode vor, inklusive solver-lokaler Verzeichnisse.
+    Bereitet die Umgebung für OpenCode vor, inklusive solver-lokalem Cache.
     
     Args:
         base_env: Basis-Umgebung, falls vorhanden. Standardmäßig wird os.environ verwendet.
     
     Returns:
-        dict[str, str]: Angepasste Umgebung mit solver-lokalen Pfaden.
+        dict[str, str]: Angepasste Umgebung mit solver-lokalem Cache-Pfad.
     """
-    state_dir, cache_dir = ensure_solver_directories()
+    _state_dir, cache_dir = ensure_solver_directories()
     env = dict(base_env if base_env is not None else os.environ)
-    
-    # Solver-lokale Pfade setzen
-    env["OPENCODE_STATE_DIR"] = str(state_dir)
+
+    # Nur Cache isolieren. State/Auth nicht überschreiben, damit OpenCode seine
+    # bestehende SQLite-Datenbank inklusive WAL-Dateien konsistent findet.
+    env.pop("XDG_STATE_HOME", None)
     env["OPENCODE_CACHE_DIR"] = str(cache_dir)
-    
-    # Auth-Datei im state_dir speichern
-    auth_file = state_dir / "auth.json"
-    env["OPENCODE_AUTH_FILE"] = str(auth_file)
-    
+
     return env
 
 
@@ -2414,19 +2411,15 @@ def print_solver_directories() -> None:
     """
     Dokumentiert die solver-lokalen Verzeichnisstrukturen und Umgebungsvariablen.
     """
-    state_dir, cache_dir = ensure_solver_directories()
-    auth_file = state_dir / "auth.json"
-    
+    _state_dir, cache_dir = ensure_solver_directories()
+
     print("\n📁 Solver-lokale Verzeichnisstruktur:")
-    print(f"   XDG_STATE_HOME/opencode: {state_dir}")
     print(f"   XDG_CACHE_HOME/opencode: {cache_dir}")
     print("\n🔧 Wichtige Umgebungsvariablen:")
-    print(f"   OPENCODE_STATE_DIR: {state_dir}")
     print(f"   OPENCODE_CACHE_DIR: {cache_dir}")
-    print(f"   OPENCODE_AUTH_FILE: {auth_file}")
     print("\n📝 Verwendung:")
-    print("   - Chat- und Input-History: $OPENCODE_STATE_DIR/aider.{chat,input}.history")
-    print("   - Authentifizierung: $OPENCODE_AUTH_FILE")
+    print("   - OpenCode State/Auth: Standardpfad der OpenCode-Installation")
+    print("   - OpenCode Cache: $OPENCODE_CACHE_DIR")
     print("   - Isolierte Run-Checkouts: $OPENCODE_CACHE_DIR/tmp/ai-solver-*/<repo>")
     print("   - Temporäre Dateien: $OPENCODE_CACHE_DIR/tmp/")
 
