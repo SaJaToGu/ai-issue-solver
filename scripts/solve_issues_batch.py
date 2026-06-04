@@ -215,6 +215,8 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
         cmd.append("--defer-codex-rate-limit")
     if run_report_dir:
         cmd.extend(["--run-report-dir", str(run_report_dir)])
+    verbosity = getattr(args, "verbosity", "quiet")
+    cmd.extend(["--verbosity", verbosity])
 
     return cmd
 
@@ -999,6 +1001,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=positive_int,
         default=1,
         help="Maximale Retry-Versuche fuer unhealthy Jobs bei --unhealthy-action retry, Standard: 1",
+    )
+    parser.add_argument(
+        "--verbosity",
+        choices=("quiet", "normal", "verbose"),
+        default="quiet",
+        help="Worker-Ausgabe: quiet=keine Live-Ausgabe (Standard), normal=gefiltert, verbose=alles",
     )
     return parser.parse_args(argv)
 
