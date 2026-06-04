@@ -1452,11 +1452,31 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         note_parts.append(f"Hinweis: {escape(run.recovery_hint)}")
     if run.preserved_worktree:
         note_parts.append(f"Recovery-Worktree: <code>{escape(run.preserved_worktree)}</code>")
+    
+    # Provider Scorecard
+    scorecard_parts = []
+    if run.get("requested_model"):
+        scorecard_parts.append(f"Requested Model: <code>{escape(run.get('requested_model', '-'))}</code>")
+    if run.get("actual_model"):
+        scorecard_parts.append(f"Actual Model: <code>{escape(run.get('actual_model', '-'))}</code>")
+    if run.get("fallback_source"):
+        scorecard_parts.append(f"Fallback Source: <code>{escape(run.get('fallback_source', '-'))}</code>")
+    if run.get("duration"):
+        scorecard_parts.append(f"Duration: <code>{escape(str(run.get('duration', '-')))}</code> seconds")
+    if run.get("test_command"):
+        scorecard_parts.append(f"Test Command: <code>{escape(run.get('test_command', '-'))}</code>")
+    if run.get("test_result"):
+        scorecard_parts.append(f"Test Result: <code>{escape(run.get('test_result', '-'))}</code>")
+    if run.get("no_change_classification"):
+        scorecard_parts.append(f"No-Change Classification: <code>{escape(run.get('no_change_classification', '-'))}</code>")
+    
+    scorecard = f"<div class=\"scorecard\">{'<br>'.join(scorecard_parts)}</div>" if scorecard_parts else ""
+    
     note = f"<div class=\"note\">{'<br>'.join(note_parts)}</div>" if note_parts else ""
     last_activity = escape(format_datetime(run.last_activity_at))
     return "\n".join([
         "<tr>",
-        f'  <td><span class="badge badge-{escape(run.category)}">{escape(STATUS_LABELS[run.category])}</span></td>',
+        f'<td><span class="badge badge-{escape(run.category)}">{escape(STATUS_LABELS[run.category])}</span></td>',
         f"  <td>{escape(format_datetime(run.created_at))}</td>",
         f"  <td>{escape(run.repo or '-')}</td>",
         f"  <td>{render_issue_cell(run)}</td>",
@@ -1464,7 +1484,7 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         f"  <td>{render_lifecycle_cell(run)}</td>",
         f"  <td>{escape(run.model or '-')}</td>",
         f"  <td>{escape(run.worker_exit_code or '-')}</td>",
-        f"  <td>{escape(run.status)}<div class=\"note\">Letzte Aktivitaet: {last_activity}</div>{note}{tail}</td>",
+        f"  <td>{escape(run.status)}<div class=\"note\">Letzte Aktivitaet: {last_activity}</div>{note}{scorecard}{tail}</td>",
         f"  <td>{' '.join(actions)}</td>",
         "</tr>",
     ])

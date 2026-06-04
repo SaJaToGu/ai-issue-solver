@@ -94,6 +94,14 @@ class RunReport:
     issue_title: str
     branch: str
     model: str
+    # Provider Scorecard Felder
+    requested_model: str = ""
+    actual_model: str = ""
+    fallback_source: str = ""
+    duration: float = 0.0
+    test_command: str = ""
+    test_result: str = ""
+    no_change_classification: str = ""
 
 
 @dataclass(frozen=True)
@@ -257,7 +265,14 @@ def safe_run_repo_name(repo: str) -> str:
 def create_run_report(repo: str, issue_number: int, branch: str, model: str,
                       now_fn=datetime.now,
                       issue_title: str = "",
-                      run_dir: Path | str | None = None) -> RunReport | None:
+                      run_dir: Path | str | None = None,
+                      requested_model: str = "",
+                      actual_model: str = "",
+                      fallback_source: str = "",
+                      duration: float = 0.0,
+                      test_command: str = "",
+                      test_result: str = "",
+                      no_change_classification: str = "") -> RunReport | None:
     if run_dir is None:
         timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
         run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
@@ -270,7 +285,21 @@ def create_run_report(repo: str, issue_number: int, branch: str, model: str,
     except OSError as exc:
         print_warn(f"Run-Report konnte nicht angelegt werden: {exc}")
         return None
-    return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
+    return RunReport(
+        path=run_dir,
+        repo=repo,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        branch=branch,
+        model=model,
+        requested_model=requested_model,
+        actual_model=actual_model,
+        fallback_source=fallback_source,
+        duration=duration,
+        test_command=test_command,
+        test_result=test_result,
+        no_change_classification=no_change_classification,
+    )
 
 
 def detect_opencode_runtime_diagnostics(output: str) -> OpenCodeRuntimeDiagnostics:
@@ -461,7 +490,14 @@ def write_run_report(report: RunReport, status: str,
                      base_branch: str | None = None,
                      git_change_summary: list[str] | None = None,
                      vibe_log_snippet: str | None = None,
-                     resource_diagnostics=None) -> Path | None:
+                     resource_diagnostics=None,
+                     requested_model: str = "",
+                     actual_model: str = "",
+                     fallback_source: str = "",
+                     duration: float = 0.0,
+                     test_command: str = "",
+                     test_result: str = "",
+                     no_change_classification: str = "") -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -508,6 +544,14 @@ def write_run_report(report: RunReport, status: str,
                 "diagnostic_lines": opencode_diagnostic_lines,
             },
             "resource_diagnostics": resource_diag_dict,
+            # Provider Scorecard
+            "requested_model": requested_model,
+            "actual_model": actual_model,
+            "fallback_source": fallback_source,
+            "duration": duration,
+            "test_command": test_command,
+            "test_result": test_result,
+            "no_change_classification": no_change_classification,
         }
         (report.path / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -528,6 +572,14 @@ def write_run_report(report: RunReport, status: str,
             f"last_report_update_at: {datetime.now().isoformat(timespec='seconds')}",
             f"pr_url: {pr_value}",
             f"preserved_worktree: {preserved_value}",
+            # Provider Scorecard
+            f"requested_model: {requested_model}",
+            f"actual_model: {actual_model}",
+            f"fallback_source: {fallback_source}",
+            f"duration: {duration}",
+            f"test_command: {test_command}",
+            f"test_result: {test_result}",
+            f"no_change_classification: {no_change_classification}",
         ]
         if cleanup_command:
             summary_lines.append(f"cleanup_command: {cleanup_command}")
