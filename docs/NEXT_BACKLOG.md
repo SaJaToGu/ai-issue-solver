@@ -60,6 +60,123 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 11. Extract repository checkout and branch lifecycle from solve_issues.py
+
+Labels: `automation`, `quality`, `workflow`, `refactor`
+
+Priority: `1`
+
+`scripts/solve_issues.py` has grown too large and mixes repository checkout,
+branch recovery, commit/push, PR creation, worker execution, reporting, and
+cleanup. The first safe refactoring step should extract repository checkout and
+branch lifecycle behavior into a focused module without changing user-facing
+solver behavior.
+
+Suggested scope:
+- create a focused module for repository checkout, branch creation/reuse,
+  remote branch checkout, branch diff checks, commit, push, and PR lifecycle
+  helpers
+- keep isolated per-run checkout behavior from issue #193 intact
+- make checkout paths, branch names, and run directories explicit data passed
+  between functions instead of implicit local variables
+- preserve recovery behavior for existing branches and preserved worktrees
+- keep GitHub tokens out of logs, reports, exceptions, and test snapshots
+- add tests around clone failure stderr, existing remote branch reuse, branch
+  diff detection, commit/push failure, and PR lifecycle handoff
+- keep the public CLI behavior and existing report formats compatible
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 12. Extract worker execution adapters from solve_issues.py
+
+Labels: `automation`, `quality`, `workflow`, `provider`, `refactor`
+
+Priority: `1`
+
+Worker-specific command construction and execution for Codex, OpenCode, Aider
+style providers, Mistral Vibe, and OpenRouter Direct should move behind a small
+adapter interface. This will make provider behavior easier to test and reduce
+the risk that changes for one worker break another.
+
+Suggested scope:
+- define a small worker adapter protocol or dataclass for build, run, output
+  filtering, diagnostics, and result classification
+- move Codex, OpenCode, OpenRouter Direct, Mistral Vibe, and Aider-style
+  behavior out of the main solver flow into focused modules
+- preserve existing CLI flags and model names
+- keep provider-specific secret handling and environment pruning covered by
+  tests
+- keep full raw worker output available in diagnostics while using the shared
+  live-output filter in normal mode
+- make no-change, nonzero-with-changes, rate-limit, and failed-worker outcomes
+  consistent across adapters
+- add adapter-level tests that do not call real provider APIs or CLIs
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 13. Extract run reporting, diagnostics, and health state from solve_issues.py
+
+Labels: `automation`, `quality`, `workflow`, `dashboard`, `refactor`
+
+Priority: `1`
+
+Run reports, worker diagnostics, health files, preserved worktree notes, and
+dashboard-facing status metadata should be managed outside the main solver
+script. This extraction should prepare the codebase for issue #194 job
+heartbeats without forcing that feature into the same change.
+
+Suggested scope:
+- move run report creation, metadata writing, summaries, diagnostics, health
+  updates, and preserved worktree notes into focused modules
+- keep existing report file names and fields compatible unless a migration is
+  explicitly documented
+- expose a small API for status transitions such as started, cloned, running
+  worker, validating, committing, creating PR, failed, warning, and completed
+- make health updates safe for concurrent jobs writing to distinct run
+  directories
+- keep dashboard parsing compatible with existing historical reports
+- add tests for report compatibility, health writes, preserved worktree notes,
+  and stale/missing report data
+- do not write secrets, full provider auth contents, or raw tokens to reports
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 14. Add per-run resource ownership and locking for parallel solver jobs
+
+Labels: `automation`, `quality`, `workflow`, `parallelism`, `refactor`
+
+Priority: `1`
+
+Parallel solver jobs should have explicit ownership of their checkout,
+temporary directory, report directory, health file, branch, and PR lifecycle.
+Shared resources should be minimized and guarded so same-repo and same-issue
+runs do not collide during benchmarks or unattended batches.
+
+Suggested scope:
+- define a per-run resource model with checkout path, temp path, report path,
+  branch name, issue key, provider/model, and cleanup policy
+- ensure same-repo parallel jobs never share mutable checkout directories
+- add issue/branch-level locking or conflict detection for resources that must
+  remain unique, especially branch names and PR creation
+- keep provider auth and cache directories shared only when safe and documented
+- make lock acquisition, stale lock cleanup, and lock failure diagnostics visible
+  in run reports and batch summaries
+- support same-issue benchmark groups by requiring distinct branch names or
+  explicit comparison IDs
+- add tests for two parallel same-repo runs, two same-issue provider attempts,
+  stale locks, branch-name conflicts, and cleanup after failed runs
+- avoid storing secrets in lock files, paths, or report metadata
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 10. Add configurable worker verbosity and job heartbeats
 
 Labels: `automation`, `quality`, `workflow`, `dashboard`
