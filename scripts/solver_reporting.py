@@ -460,7 +460,8 @@ def write_run_report(report: RunReport, status: str,
                      preserved_worktree_path: Path | str | None = None,
                      base_branch: str | None = None,
                      git_change_summary: list[str] | None = None,
-                     vibe_log_snippet: str | None = None) -> Path | None:
+                     vibe_log_snippet: str | None = None,
+                     resource_diagnostics=None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -471,6 +472,9 @@ def write_run_report(report: RunReport, status: str,
     preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
     cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
     vibe_snippet = vibe_log_snippet or ""
+
+    # Ressourcen-Diagnosen als optionaler Bestandteil
+    resource_diag_dict = resource_diagnostics.to_report_dict() if resource_diagnostics else {}
 
     try:
         if worker_result is not None:
@@ -503,6 +507,7 @@ def write_run_report(report: RunReport, status: str,
                 "edit_failure_files": list(opencode_diagnostics.edit_failure_files),
                 "diagnostic_lines": opencode_diagnostic_lines,
             },
+            "resource_diagnostics": resource_diag_dict,
         }
         (report.path / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -542,6 +547,12 @@ def write_run_report(report: RunReport, status: str,
             summary_lines.extend(["", "output_tail:", output_tail])
         if vibe_snippet:
             summary_lines.extend(["", "vibe_log_snippet:", vibe_snippet])
+        # Ressourcen-Diagnosen im Summary nur bei Befunden
+        if resource_diagnostics and resource_diagnostics.has_findings:
+            from solver_run_resources import format_resource_diagnostics_summary_lines
+            resource_summary = format_resource_diagnostics_summary_lines(resource_diagnostics)
+            if resource_summary:
+                summary_lines.extend(["", *resource_summary])
 
         (report.path / "summary.txt").write_text(
             "\n".join(summary_lines) + "\n",
