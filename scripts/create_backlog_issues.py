@@ -84,6 +84,35 @@ class GitHubClient:
         raise_for_github_response(resp, "Issues prüfen")
         return any(item.get("title") == title for item in resp.json())
 
+    def get_issues_by_title(self, repo: str, titles: list[str]) -> dict[str, dict]:
+        wanted = set(titles)
+        found: dict[str, dict] = {}
+        issues_url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
+        page = 1
+
+        while True:
+            resp = self.session.get(
+                issues_url,
+                params={"state": "all", "per_page": 100, "page": page},
+            )
+            raise_for_github_response(resp, "Issues prüfen")
+            items = resp.json()
+            if not items:
+                break
+
+            for item in items:
+                if "pull_request" in item:
+                    continue
+                title = item.get("title") or ""
+                if title in wanted:
+                    found[title] = item
+
+            if len(items) < 100:
+                break
+            page += 1
+
+        return found
+
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> str:
         issues_url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
         resp = self.session.post(
@@ -92,6 +121,16 @@ class GitHubClient:
         )
         raise_for_github_response(resp, f"Issue erstellen: {title}")
         return resp.json()["html_url"]
+
+
+def find_closed_issues_in_backlog(issues: list[dict], github_issues: dict[str, dict]) -> list[str]:
+    """Identify closed GitHub issues still present in the backlog."""
+    closed = []
+    for issue in issues:
+        title = issue["title"]
+        if title in github_issues and github_issues[title].get("state") == "closed":
+            closed.append(title)
+    return closed
 
 
 def parse_backlog(path: Path) -> list[dict]:
@@ -196,6 +235,15 @@ def main() -> int:
     print_step(2, f"Erstelle Issues in {owner}/{args.repo}")
     created = 0
     skipped = 0
+
+    # Check for closed issues still in backlog
+    github_issues = client.get_issues_by_title(args.repo, [issue["title"] for issue in issues])
+    closed_in_backlog = find_closed_issues_in_backlog(issues, github_issues)
+    if closed_in_backlog:
+        print_warn("Geschlossene Issues im Backlog gefunden:")
+        for title in closed_in_backlog:
+            print_warn(f"   - {title}")
+        print_warn("Bitte bereinige das Backlog mit scripts/cleanup_backlog.py")
 
     for issue in issues:
         if client.issue_exists(args.repo, issue["title"]):

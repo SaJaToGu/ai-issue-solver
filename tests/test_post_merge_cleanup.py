@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from post_merge_cleanup import (  # noqa: E402
     CleanupResult,
     ReferencedIssue,
     can_close_issue,
+    cleanup_backlog_entries,
     cleanup_repo,
     referenced_issues_from_pr,
 )
@@ -45,6 +47,15 @@ class FakeCleanupClient:
         if number == 41:
             return {"number": 41, "state": "open", "labels": [{"name": "ai-generated"}]}
         return None
+
+    def get_issues_by_title(self, repo, titles):
+        return {
+            "Fix dashboard cleanup": {
+                "number": 41,
+                "state": "closed",
+                "html_url": "https://github.com/test-owner/demo/issues/41",
+            }
+        }
 
     def get_open_prs_for_branch(self, repo, branch):
         return []
@@ -164,6 +175,60 @@ class PostMergeCleanupTests(unittest.TestCase):
         self.assertEqual(result.deleted_branch_count, 1)
         self.assertEqual(result.stale_deleted_branches, ["ai/fix-issue-30"])
         self.assertEqual(client.deleted, [("demo", "ai/fix-issue-30")])
+
+    def test_cleanup_backlog_entries_dry_run_does_not_edit_file(self):
+        client = FakeCleanupClient()
+        content = """# Next Backlog
+
+## 1. Fix dashboard cleanup
+
+Labels: `automation`
+
+Remove this after the issue closes.
+
+## 2. Keep open item
+
+Labels: `quality`
+
+Keep this entry.
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backlog_path = Path(tmpdir) / "NEXT_BACKLOG.md"
+            backlog_path.write_text(content, encoding="utf-8")
+
+            result = cleanup_backlog_entries(client, "demo", backlog_path, dry_run=True)
+
+            self.assertEqual(result.completed_titles, ["Fix dashboard cleanup"])
+            self.assertEqual(result.removed_count, 0)
+            self.assertEqual(backlog_path.read_text(encoding="utf-8"), content)
+
+    def test_cleanup_backlog_entries_apply_removes_closed_issue_section(self):
+        client = FakeCleanupClient()
+        content = """# Next Backlog
+
+## 1. Fix dashboard cleanup
+
+Labels: `automation`
+
+Remove this after the issue closes.
+
+## 2. Keep open item
+
+Labels: `quality`
+
+Keep this entry.
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backlog_path = Path(tmpdir) / "NEXT_BACKLOG.md"
+            backlog_path.write_text(content, encoding="utf-8")
+
+            result = cleanup_backlog_entries(client, "demo", backlog_path, dry_run=False)
+
+            updated = backlog_path.read_text(encoding="utf-8")
+            self.assertEqual(result.completed_titles, ["Fix dashboard cleanup"])
+            self.assertEqual(result.removed_count, 1)
+            self.assertNotIn("Fix dashboard cleanup", updated)
+            self.assertIn("Keep open item", updated)
 
 
 if __name__ == "__main__":
