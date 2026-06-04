@@ -312,13 +312,15 @@ def print_opencode_runtime_diagnostics(diagnostics: OpenCodeRuntimeDiagnostics) 
 
 def write_run_health(report: RunReport, output: str = "",
                      last_activity_at: datetime | None = None,
-                     status: str = "running") -> None:
+                     status: str = "running",
+                     phase: str = "") -> None:
     """Speichert leichte Health-Daten, ohne den eigentlichen Summary-Report umzubauen."""
     last_activity_at = last_activity_at or datetime.now()
     tail = format_worker_output_tail(output)
     opencode_diagnostics = detect_opencode_runtime_diagnostics(output)
     payload = {
         "status": status,
+        "phase": phase,
         "last_activity_at": last_activity_at.isoformat(timespec="seconds"),
         "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
         "output_tail": tail,

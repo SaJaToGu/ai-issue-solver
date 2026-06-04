@@ -1243,7 +1243,8 @@ def build_worker_command(
 
 
 def run_worker_command(cmd: list, repo_dir: str, env: dict,
-                       run_report: RunReport | None = None) -> WorkerRunResult:
+                       run_report: RunReport | None = None,
+                       verbosity: str = "normal") -> WorkerRunResult:
     """Fuehrt den KI-Worker aus, zeigt verdichteten Output und haelt Rohdaten fest."""
     try:
         process = subprocess.Popen(
@@ -1265,16 +1266,35 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict,
     if process.stdout:
         for line in process.stdout:
             output_parts.append(line)
-            if should_surface_worker_line(line):
-                print(f"        | {line}", end="")
+            if verbosity == "verbose":
+                if line.strip():
+                    print(f"        | {line}", end="")
                 last_activity_at = datetime.now()
                 if run_report:
-                    write_run_health(run_report, "".join(output_parts), last_activity_at)
+                    write_run_health(run_report, "".join(output_parts), last_activity_at,
+                                     phase="worker_running")
+            elif verbosity == "normal":
+                if should_surface_worker_line(line):
+                    print(f"        | {line}", end="")
+                    last_activity_at = datetime.now()
+                    if run_report:
+                        write_run_health(run_report, "".join(output_parts), last_activity_at,
+                                         phase="worker_running")
+                else:
+                    suppressed_lines += 1
             else:
-                suppressed_lines += 1
+                # quiet: nichts drucken, aber Aktivitaet tracken
+                if should_surface_worker_line(line):
+                    last_activity_at = datetime.now()
+                    if run_report:
+                        write_run_health(run_report, "".join(output_parts), last_activity_at,
+                                         phase="worker_running")
+                else:
+                    suppressed_lines += 1
         process.stdout.close()
 
-    print_worker_suppression_summary(suppressed_lines)
+    if verbosity != "quiet":
+        print_worker_suppression_summary(suppressed_lines)
 
     return WorkerRunResult(
         returncode=process.wait(),
@@ -1288,6 +1308,7 @@ def run_openrouter_direct_worker(
     repo_dir: str,
     model_name: str,
     api_key: str | None = None,
+    verbosity: str = "normal",
 ) -> WorkerRunResult:
     """Fuehrt den OpenRouter-Direct-Worker aus und gibt ein WorkerRunResult zurueck.
 
@@ -1328,12 +1349,23 @@ def run_openrouter_direct_worker(
     suppressed_lines = 0
     last_activity_at = datetime.now()
     for line in direct_result.output.splitlines(keepends=True):
-        if should_surface_worker_line(line):
-            print(f"        | {line}", end="")
+        if verbosity == "verbose":
+            if line.strip():
+                print(f"        | {line}", end="")
             last_activity_at = datetime.now()
+        elif verbosity == "normal":
+            if should_surface_worker_line(line):
+                print(f"        | {line}", end="")
+                last_activity_at = datetime.now()
+            else:
+                suppressed_lines += 1
         else:
-            suppressed_lines += 1
-    print_worker_suppression_summary(suppressed_lines)
+            if should_surface_worker_line(line):
+                last_activity_at = datetime.now()
+            else:
+                suppressed_lines += 1
+    if verbosity != "quiet":
+        print_worker_suppression_summary(suppressed_lines)
 
     return WorkerRunResult(
         returncode=direct_result.returncode,
@@ -1825,7 +1857,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 token: str, dry_run: bool, base_branch: str,
                 close_issues: bool,
                 defer_codex_rate_limit: bool = False,
-                run_report_dir: Path | str | None = None) -> bool:
+                run_report_dir: Path | str | None = None,
+                verbosity: str = "normal") -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -1860,7 +1893,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     )
     if run_report:
         write_run_report(run_report, "started")
-        write_run_health(run_report, status="running")
+        write_run_health(run_report, status="running", phase="clone")
         print(f"      Run-Report: {run_report.path}")
     if recovery_plan.action.startswith("skip"):
         if recovery_plan.pull_request and recovery_plan.pull_request.html_url:
@@ -1987,6 +2020,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         rate_limit_deferred_note = None
         diagnostic_outputs = []
 
+        if run_report:
+            write_run_health(run_report, status="running", phase="worker_running")
+
         # openrouter_direct hat einen eigenen Ausführungspfad ohne subprocess
         if model == "openrouter_direct":
             safe_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_dir)
@@ -1996,6 +2032,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 repo_dir=repo_dir,
                 model_name=effective_model_name,
                 api_key=config["config"].get("OPENROUTER_API_KEY"),
+                verbosity=verbosity,
             )
             diagnostic_outputs.append(result.output)
             # openrouter_direct kennt kein Rate-Limiting wie Codex — direkt weiter
@@ -2004,7 +2041,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         while True:
             if model != "openrouter_direct":
-                result = run_worker_command(cmd, repo_dir, env, run_report=run_report)
+                result = run_worker_command(cmd, repo_dir, env, run_report=run_report,
+                                            verbosity=verbosity)
                 diagnostic_outputs.append(result.output)
             rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
             if not rate_limit:
@@ -2042,6 +2080,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 for index, output in enumerate(diagnostic_outputs, start=1)
             )
             diagnostic_result = WorkerRunResult(result.returncode, combined_output)
+
+        if run_report:
+            write_run_health(run_report, result.output if result else "",
+                             result.last_activity_at if result else None,
+                             status="running", phase="validating")
 
         git_status = git_status_porcelain(repo_dir)
         git_change_summary = format_git_change_summary(repo_dir, git_status)
@@ -2162,6 +2205,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             return False
 
         # Committen & pushen
+        if run_report:
+            write_run_health(run_report, status="running", phase="committing")
         print(f"      📤 Commit & Push ...", end=" ", flush=True)
         commit_msg = f"fix: Löse Issue #{number} — {title}\n\nAutomatisch gelöst mit AI Issue Solver (Modell: {model})\nIssue: https://github.com/{config['owner']}/{repo}/issues/{number}"
 
@@ -2199,6 +2244,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             return False
         print("✅")
 
+        if run_report:
+            write_run_health(run_report, status="running", phase="creating_pr")
         pr = create_issue_pull_request(
             client=client,
             repo=repo,
@@ -2319,6 +2366,12 @@ def main():
     parser.add_argument(
         "--run-report-dir",
         help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--verbosity",
+        choices=("quiet", "normal", "verbose"),
+        default="normal",
+        help="Worker-Ausgabe: quiet=keine Live-Ausgabe, normal=gefiltert (Standard), verbose=alles",
     )
     parser.add_argument(
         "--cleanup-preserved-worktrees",
@@ -2471,6 +2524,7 @@ def main():
                 close_issues=args.close_issues,
                 defer_codex_rate_limit=args.defer_codex_rate_limit,
                 run_report_dir=args.run_report_dir,
+                verbosity=args.verbosity,
             )
             if ok:
                 solved += 1
