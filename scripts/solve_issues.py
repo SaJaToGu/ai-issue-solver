@@ -84,6 +84,19 @@ from solver_reporting import (  # noqa: F401 (re-exports used by tests/batch)
     write_run_report,
     write_worker_diagnostics,
 )
+from solver_run_resources import (  # noqa: F401 (re-exports used by tests)
+    LOCKS_ROOT,
+    LOCK_STALE_SECONDS,
+    RunResources,
+    RunResourceDiagnostics,
+    ResourceLock,
+    cleanup_stale_locks,
+    create_run_resources,
+    detect_branch_name_conflict,
+    format_resource_diagnostics_summary_lines,
+    make_run_id,
+    write_resource_diagnostics_to_report,
+)
 
 
 def ensure_solver_directories() -> tuple[Path, Path]:
@@ -1910,14 +1923,79 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
     # Solver-lokale Verzeichnisse vorbereiten
     state_dir, cache_dir = ensure_solver_directories()
-    
+
+    # Ressourcen-Diagnosen für Locking-Ereignisse
+    resource_diagnostics = RunResourceDiagnostics()
+
     # Temporäres Verzeichnis im solver-lokalen Cache erstellen
     tmpdir = tempfile.mkdtemp(prefix="ai-solver-", dir=str(cache_dir / "tmp"))
     preserved_worktree: Path | None = None
+
+    # Per-Run-Ressourcenmodell aufbauen
+    provider_label = f"{model}/{model_name}" if model_name else model
+    run_resources = create_run_resources(
+        repo=repo,
+        issue_number=number,
+        branch_name=recovery_plan.branch,
+        provider=provider_label,
+        base_branch=base_branch,
+        temp_base=Path(tmpdir).parent,
+        report_path=run_report.path if run_report else Path(tmpdir),
+        cleanup_on_exit=True,
+    )
+
+    # Branch-Namens-Konflikt frühzeitig erkennen (parallele Runs auf gleichem Branch)
+    branch_conflict = detect_branch_name_conflict(
+        branch_name=recovery_plan.branch,
+        repo=repo,
+        issue_number=number,
+        own_run_id=run_resources.run_id,
+    )
+    if branch_conflict:
+        resource_diagnostics.branch_conflict_detected = True
+        resource_diagnostics.branch_conflict_message = branch_conflict
+        print_warn(f"Branch-Konflikt erkannt: {branch_conflict}")
+        if run_report:
+            write_resource_diagnostics_to_report(
+                run_report.path, run_resources, resource_diagnostics
+            )
+            write_run_report(
+                run_report,
+                "branch_conflict",
+                note=branch_conflict,
+            )
+        return False
+
+    # Issue-Level-Lock erwerben (verhindert doppelten PR bei parallelen Same-Issue-Runs)
+    issue_lock = ResourceLock(
+        key=run_resources.issue_key,
+        resources=run_resources,
+    )
+
     try:
+        # Issue-Level-Lock erwerben: verhindert parallele PR-Erstellung für dasselbe Issue
+        with issue_lock.acquire(resource_diagnostics) as lock_acquired:
+            if not lock_acquired:
+                lock_failure_msg = (
+                    f"Lock-Akquisition fehlgeschlagen für {run_resources.issue_key}: "
+                    "ein anderer Run arbeitet möglicherweise an demselben Issue"
+                )
+                print_warn(lock_failure_msg)
+                if run_report:
+                    write_resource_diagnostics_to_report(
+                        run_report.path, run_resources, resource_diagnostics
+                    )
+                    write_run_report(
+                        run_report,
+                        "lock_failed",
+                        note=lock_failure_msg,
+                        resource_diagnostics=resource_diagnostics,
+                    )
+                return False
+
         repo_dir = os.path.join(tmpdir, repo)
         print(f"      📥 Klone {repo} ...", end=" ", flush=True)
-        
+
         # Preflight-Check für Schreibrechte im Temp-Verzeichnis
         additional_dirs = []
         if model == "codex":
@@ -1938,7 +2016,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 note = f"base_branch: {base_branch}"
                 if clone_error:
                     note = f"{note}\nclone_output:\n{clone_error}"
-                write_run_report(run_report, "clone_failed", note=note, vibe_log_snippet=None)
+                write_run_report(run_report, "clone_failed", note=note, vibe_log_snippet=None,
+                                 resource_diagnostics=resource_diagnostics)
             return False
         print("✅")
 
@@ -1948,7 +2027,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             if not checkout_existing_remote_branch(repo_dir, branch_name):
                 print_err(f"Vorhandener Branch konnte nicht ausgecheckt werden: {branch_name}")
                 if run_report:
-                    write_run_report(run_report, "checkout_failed")
+                    write_run_report(run_report, "checkout_failed",
+                                     resource_diagnostics=resource_diagnostics)
                 return False
             if branch_has_changes_against_base(repo_dir, base_branch):
                 git_status = git_status_porcelain(repo_dir)
@@ -1994,12 +2074,14 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                         preserved_worktree_path=preserved_worktree,
                         base_branch=base_branch,
                         git_change_summary=git_change_summary,
+                        resource_diagnostics=resource_diagnostics,
                     )
                 return bool(pr)
         elif not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
             if run_report:
-                write_run_report(run_report, "branch_create_failed")
+                write_run_report(run_report, "branch_create_failed",
+                                 resource_diagnostics=resource_diagnostics)
             return False
 
         # Prompt bauen
@@ -2128,6 +2210,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                 )
             if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
                 write_run_report(
                     run_report,
                     status,
@@ -2137,6 +2222,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
                 )
             return False
         if not assessment.should_continue:
@@ -2158,6 +2244,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                 )
             if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
                 write_run_report(
                     run_report,
                     status,
@@ -2166,6 +2255,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
                 )
             return False
 
@@ -2192,6 +2282,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                 )
             if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
                 write_run_report(
                     run_report,
                     status,
@@ -2201,6 +2294,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
                 )
             return False
 
@@ -2232,6 +2326,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                 )
             if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
                 write_run_report(
                     run_report,
                     status,
@@ -2240,6 +2337,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
                 )
             return False
         print("✅")
@@ -2282,6 +2380,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 base_branch=base_branch,
             )
         if run_report:
+            write_resource_diagnostics_to_report(
+                run_report.path, run_resources, resource_diagnostics
+            )
             write_run_report(
                 run_report,
                 status,
@@ -2291,6 +2392,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 base_branch=base_branch,
                 git_change_summary=git_change_summary,
                 vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                resource_diagnostics=resource_diagnostics,
             )
         return bool(pr)
     finally:
@@ -2384,6 +2486,11 @@ def main():
         default=PRESERVED_WORKTREE_RETENTION_DAYS,
         help=f"Aufbewahrung fuer gesicherte Worktrees in Tagen (Default: {PRESERVED_WORKTREE_RETENTION_DAYS})",
     )
+    parser.add_argument(
+        "--cleanup-stale-locks",
+        action="store_true",
+        help="Veraltete Lock-Dateien unter reports/locks bereinigen",
+    )
     args = parser.parse_args()
 
     if args.cleanup_preserved_worktrees:
@@ -2398,6 +2505,17 @@ def main():
             print(f"   {action}: {path}")
         if args.dry_run and stale_paths:
             print("   Ohne --dry-run ausfuehren, um diese Worktrees zu loeschen.")
+        return
+
+    if args.cleanup_stale_locks:
+        stale_locks = cleanup_stale_locks(dry_run=args.dry_run)
+        action = "Wuerde loeschen" if args.dry_run else "Geloescht"
+        if not stale_locks:
+            print("   Keine veralteten Lock-Dateien gefunden.")
+        for lock_path in stale_locks:
+            print(f"   {action}: {lock_path}")
+        if args.dry_run and stale_locks:
+            print("   Ohne --dry-run ausfuehren, um diese Lock-Dateien zu loeschen.")
         return
 
     if args.diagnostic:
