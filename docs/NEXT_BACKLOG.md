@@ -393,6 +393,50 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 15. Add vertical process quality analysis and periodic workflow retrospective
+
+Labels: `automation`, `quality`, `workflow`, `dashboard`
+
+Priority: `2`
+
+The solver should not only move forward through the backlog but periodically
+step back and assess quality at every stage of its own workflow. After a
+configurable number of solved issues per repository, or on demand, it should
+analyse each workflow step — analysis, issue creation, worker execution,
+validation, commit, PR creation, and review — and surface patterns, regressions,
+and improvement opportunities before the next batch starts.
+
+A periodic comparison with structurally similar open-source solver projects
+should also be included so the project does not optimise in isolation.
+
+Suggested scope:
+- define the workflow steps to be assessed: repo analysis, issue creation,
+  worker execution (per provider), validation, commit/push, PR creation,
+  and post-merge cleanup
+- collect per-step quality signals from existing run reports: success rate,
+  no-change rate, failure mode distribution, median runtime, retry count,
+  and open vs closed PR ratio per step and per provider
+- trigger a retrospective automatically after a configurable number of solved
+  issues per repository (for example every 10 issues), and expose it as an
+  explicit `--retrospective` mode or standalone script
+- produce a structured retrospective report per repository with findings per
+  workflow step, trend direction (improving, stable, degrading), and suggested
+  next actions such as retry threshold adjustment, provider swap, or backlog
+  reprioritisation
+- include a periodic comparison with structurally comparable open-source
+  AI-assisted issue solver projects to avoid local optimisation traps; record
+  comparable metrics, approach differences, and transferable ideas
+- surface retrospective findings in the dashboard and overnight summaries so
+  they are visible without running a separate command
+- keep retrospective reports free of secrets, API keys, provider auth contents,
+  and raw prompts
+- add tests for retrospective triggering logic, per-step signal collection,
+  trend detection, and report formatting with missing or partial run data
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 5. Evaluate mobile-first Claude Code alternative to Codex
 
 Labels: `automation`, `quality`, `provider`, `workflow`
