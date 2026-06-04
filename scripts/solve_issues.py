@@ -45,6 +45,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# Worker-Adapter-Paket liegt im Projekt-Root (nicht in scripts/)
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from utils import (
     clean_path_candidate,
     is_placeholder_value,
@@ -1204,6 +1208,43 @@ def preflight_temp_dir_check(temp_dir: str) -> list[str]:
     return additional_dirs
 
 
+def get_worker_adapter(model: str):
+    """
+    Factory-Funktion: Gibt den passenden WorkerAdapter für ein Modell zurück.
+
+    Kapselt die Zuordnung von Modell-Namen zu Adapter-Klassen, sodass
+    ``solve_issue()`` provider-agnostisch arbeiten kann.
+
+    Args:
+        model: Provider-Name (codex, opencode, mistral-vibe, openrouter_direct
+               oder ein Aider-Provider: claude, openai, mistral, ollama, openrouter).
+
+    Returns:
+        WorkerAdapter-Instanz für den angegebenen Provider.
+
+    Raises:
+        ValueError: Bei unbekanntem Provider-Namen.
+    """
+    from workers.codex_adapter import CodexAdapter
+    from workers.opencode_adapter import OpenCodeAdapter
+    from workers.mistral_vibe_adapter import MistralVibeAdapter
+    from workers.openrouter_direct_adapter import OpenRouterDirectAdapter
+    from workers.aider_adapter import AiderAdapter, AIDER_MODEL_CONFIGS
+
+    if model == "codex":
+        return CodexAdapter()
+    elif model == "opencode":
+        return OpenCodeAdapter()
+    elif model == "mistral-vibe":
+        return MistralVibeAdapter()
+    elif model == "openrouter_direct":
+        return OpenRouterDirectAdapter()
+    elif model in AIDER_MODEL_CONFIGS:
+        return AiderAdapter(provider=model)
+    else:
+        raise ValueError(f"Unbekannter Worker-Provider: '{model}'")
+
+
 def build_worker_command(
     model: str,
     model_name: str,
@@ -2091,69 +2132,43 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             body=body or "(kein Beschreibungstext)"
         )
 
-        # API-Key bzw. lokale Endpoint-Variablen setzen
-        env = build_worker_env(model, config["config"])
+        # Worker-Adapter instanziieren und Umgebung vorbereiten
+        adapter = get_worker_adapter(model)
+        env = adapter.build_env(config["config"])
 
         # KI-Worker ausführen
-        display_name = get_worker_display_name(model)
+        display_name = adapter.get_display_name()
         print(f"      🤖 Starte {display_name} ...", flush=True)
-
-        rate_limit_retries = 0
-        rate_limit_deferred_note = None
-        diagnostic_outputs = []
 
         if run_report:
             write_run_health(run_report, status="running", phase="worker_running")
 
-        # openrouter_direct hat einen eigenen Ausführungspfad ohne subprocess
-        if model == "openrouter_direct":
-            safe_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_dir)
-            effective_model_name = model_name or MODEL_CONFIGS[model]["default_model_name"]
-            result = run_openrouter_direct_worker(
-                prompt=safe_prompt,
-                repo_dir=repo_dir,
-                model_name=effective_model_name,
-                api_key=config["config"].get("OPENROUTER_API_KEY"),
-                verbosity=verbosity,
-            )
-            diagnostic_outputs.append(result.output)
-            # openrouter_direct kennt kein Rate-Limiting wie Codex — direkt weiter
-        else:
-            cmd = build_worker_command(model, model_name, prompt, repo_dir, additional_dirs=additional_dirs if model == "codex" else None)
+        # Adapter-spezifische Parameter
+        adapter_kwargs: dict = {}
+        if model == "codex":
+            adapter_kwargs["additional_dirs"] = additional_dirs
+        if model == "codex" and defer_codex_rate_limit:
+            from workers.codex_adapter import CodexAdapter
+            adapter = CodexAdapter(defer_rate_limit=True)
+            # Umgebung neu aufbauen (Adapter wurde ersetzt)
+            env = adapter.build_env(config["config"])
 
-        while True:
-            if model != "openrouter_direct":
-                result = run_worker_command(cmd, repo_dir, env, run_report=run_report,
-                                            verbosity=verbosity)
-                diagnostic_outputs.append(result.output)
-            rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
-            if not rate_limit:
-                break
-            if defer_codex_rate_limit:
-                if rate_limit.reset_text:
-                    print_warn(
-                        "Codex-Rate-Limit erreicht; "
-                        f"Batch-Runner soll nach {rate_limit.reset_text} neu einplanen"
-                    )
-                else:
-                    print_warn(
-                        "Codex-Rate-Limit erreicht; "
-                        "Batch-Runner soll diesen Job verzögern"
-                    )
-                break
-            if not rate_limit.reset_at:
-                rate_limit_deferred_note = "Codex-Rate-Limit ohne verwertbare Reset-Zeit"
-                sleep_until_codex_reset(rate_limit)
-                break
-            rate_limit_retries += 1
-            if rate_limit_retries > CODEX_RATE_LIMIT_RETRY_LIMIT:
-                rate_limit_deferred_note = (
-                    f"Codex-Rate-Limit nach {CODEX_RATE_LIMIT_RETRY_LIMIT} "
-                    "Retries weiter aktiv"
-                )
-                print_warn("Codex-Rate-Limit wurde mehrfach erreicht; breche dieses Issue ab")
-                break
-            sleep_until_codex_reset(rate_limit)
+        # Effektiven Modell-Namen bestimmen
+        effective_model_name = model_name or MODEL_CONFIGS[model].get("default_model_name") or None
+
+        # Worker über Adapter ausführen
+        result, adapter_diagnostics = adapter.run(
+            prompt=sanitize_worker_prompt_secret_paths(prompt, repo_dir),
+            repo_path=repo_dir,
+            env=env,
+            model_name=effective_model_name,
+            verbosity=verbosity,
+            run_report=run_report,
+            **adapter_kwargs,
+        )
+
+        diagnostic_outputs = list(adapter_diagnostics.all_outputs)
+        rate_limit_deferred_note = adapter_diagnostics.rate_limit_note or None
 
         diagnostic_result = result
         if len(diagnostic_outputs) > 1:
@@ -2179,17 +2194,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             issue_text=f"{title}\n\n{body or ''}",
         )
         print_worker_assessment(result, assessment)
-        if model == "opencode":
-            print_opencode_runtime_diagnostics(
-                detect_opencode_runtime_diagnostics(result.output)
-            )
+        # OpenCode Runtime-Diagnostics werden bereits vom OpenCodeAdapter ausgegeben.
+        # Zur Vollständigkeit: falls ein anderer Adapter diesen Code aufruft, hier nicht doppeln.
 
-        # Vibe-Log-Snippet lesen (nur fuer Mistral Vibe Modelle)
-        vibe_log_snippet = ""
-        if model == "mistral-vibe":
-            vibe_log_snippet = read_vibe_log_snippet(repo_dir)
-            if vibe_log_snippet:
-                print(f"      📝 Vibe-Log-Snippet gesammelt ({len(vibe_log_snippet)} Zeichen)")
+        # Vibe-Log-Snippet aus Adapter-Diagnostics verwenden (MistralVibeAdapter sammelt es bereits)
+        vibe_log_snippet = adapter_diagnostics.vibe_log_snippet
 
         if rate_limit_deferred_note:
             status = "rate_limit_deferred"
