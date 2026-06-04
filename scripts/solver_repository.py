@@ -31,6 +31,29 @@ class CloneResult:
         return self.ok
 
 
+def git_status_porcelain(repo_dir: str) -> str:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_dir, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print_warn("Git-Status konnte nicht gelesen werden")
+        return ""
+    return result.stdout
+
+
+def git_output(repo_dir: str, args: list[str]) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def sanitize_clone_output(output: str, token: str) -> str:
     if not output:
         return ""

@@ -195,3 +195,7 @@ def print_warn(text: str):
 
 def print_err(text: str):
     print(f"    ❌ {text}")
+
+
+def clean_path_candidate(candidate: str) -> str:
+    return candidate.strip().strip(" \t\r\n'\"“”‘’.,;:()[]{}<>")
