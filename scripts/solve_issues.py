@@ -1267,7 +1267,10 @@ def build_worker_command(
 
     Returns:
         list[str]: Die Befehlszeile als Liste von String-Argumenten (für CLI-Worker).
-        str: Generierte Antwort als String (für direkte API-Worker wie OpenRouter Direct).
+
+    Raises:
+        ValueError: Wenn model == "openrouter_direct" — dieser Worker hat einen eigenen
+                    Ausführungspfad über run_openrouter_direct_worker().
     """
     effective_model_name = model_name if model_name else None
     safe_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_path)
@@ -1280,12 +1283,11 @@ def build_worker_command(
     elif model == "opencode":
         return build_opencode_command(safe_prompt, repo_path, effective_model_name)
     elif model == "openrouter_direct":
-        from workers.openrouter_worker import OpenRouterWorker
-        worker = OpenRouterWorker(
-            api_key=config.get("OPENROUTER_API_KEY"),
-            model=model_name or MODEL_CONFIGS[model]["default_model_name"],
+        # openrouter_direct hat einen eigenen Ausführungspfad — siehe run_openrouter_direct_worker()
+        raise ValueError(
+            "openrouter_direct darf nicht über build_worker_command aufgerufen werden. "
+            "Verwende stattdessen run_openrouter_direct_worker()."
         )
-        return worker.generate(safe_prompt)
     else:
         return build_aider_command(model, model_name, safe_prompt, repo_path, file_targets)
 
@@ -1327,6 +1329,65 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict,
     return WorkerRunResult(
         returncode=process.wait(),
         output="".join(output_parts),
+        last_activity_at=last_activity_at,
+    )
+
+
+def run_openrouter_direct_worker(
+    prompt: str,
+    repo_dir: str,
+    model_name: str,
+    api_key: str | None = None,
+) -> WorkerRunResult:
+    """Fuehrt den OpenRouter-Direct-Worker aus und gibt ein WorkerRunResult zurueck.
+
+    Dieser Worker ruft die OpenRouter API direkt auf, extrahiert Unified-Diff-Patches
+    aus der Modellantwort und wendet sie im Repository-Verzeichnis an.
+
+    Returncode-Semantik (aus DirectRunResult):
+        0  — Mindestens ein Patch erfolgreich angewendet.
+        1  — Patches gefunden, aber alle fehlgeschlagen oder API-Fehler.
+        2  — Modell hat Prosa ohne auswertbare Diffs zurueckgegeben.
+
+    Args:
+        prompt: Eingabe-Prompt fuer das Modell (bereits sanitiert).
+        repo_dir: Absoluter Pfad zum Ziel-Repository-Verzeichnis.
+        model_name: OpenRouter Modell-String (z. B. "mistralai/mistral-large").
+        api_key: Optionaler API-Key; wird sonst aus OPENROUTER_API_KEY gelesen.
+
+    Returns:
+        WorkerRunResult mit Returncode und kombiniertem Log-Output.
+    """
+    from workers.openrouter_worker import OpenRouterWorker, DirectRunResult
+
+    # Fehlender API-Key fruehzeitig abfangen
+    effective_key = api_key or os.getenv("OPENROUTER_API_KEY")
+    if not effective_key:
+        error_msg = "[openrouter_direct] FEHLER: OPENROUTER_API_KEY ist nicht gesetzt."
+        print_err(error_msg)
+        return WorkerRunResult(returncode=1, output=error_msg)
+
+    worker = OpenRouterWorker(api_key=effective_key, model=model_name)
+
+    direct_result: DirectRunResult = worker.run_direct(
+        prompt=prompt,
+        repo_dir=repo_dir,
+    )
+
+    # Ausgabe live anzeigen (zeilenweise gefiltert)
+    suppressed_lines = 0
+    last_activity_at = datetime.now()
+    for line in direct_result.output.splitlines(keepends=True):
+        if should_surface_worker_line(line):
+            print(f"        | {line}", end="")
+            last_activity_at = datetime.now()
+        else:
+            suppressed_lines += 1
+    print_worker_suppression_summary(suppressed_lines)
+
+    return WorkerRunResult(
+        returncode=direct_result.returncode,
+        output=direct_result.output,
         last_activity_at=last_activity_at,
     )
 
@@ -2567,14 +2628,30 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         # KI-Worker ausführen
         display_name = get_worker_display_name(model)
         print(f"      🤖 Starte {display_name} ...", flush=True)
-        cmd = build_worker_command(model, model_name, prompt, repo_dir, additional_dirs=additional_dirs if model == "codex" else None)
 
         rate_limit_retries = 0
         rate_limit_deferred_note = None
         diagnostic_outputs = []
-        while True:
-            result = run_worker_command(cmd, repo_dir, env, run_report=run_report)
+
+        # openrouter_direct hat einen eigenen Ausführungspfad ohne subprocess
+        if model == "openrouter_direct":
+            safe_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_dir)
+            effective_model_name = model_name or MODEL_CONFIGS[model]["default_model_name"]
+            result = run_openrouter_direct_worker(
+                prompt=safe_prompt,
+                repo_dir=repo_dir,
+                model_name=effective_model_name,
+                api_key=config["config"].get("OPENROUTER_API_KEY"),
+            )
             diagnostic_outputs.append(result.output)
+            # openrouter_direct kennt kein Rate-Limiting wie Codex — direkt weiter
+        else:
+            cmd = build_worker_command(model, model_name, prompt, repo_dir, additional_dirs=additional_dirs if model == "codex" else None)
+
+        while True:
+            if model != "openrouter_direct":
+                result = run_worker_command(cmd, repo_dir, env, run_report=run_report)
+                diagnostic_outputs.append(result.output)
             rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
             if not rate_limit:
                 break
