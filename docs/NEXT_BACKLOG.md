@@ -60,6 +60,34 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 9. Isolate worker repository clones per issue run
+
+Labels: `automation`, `quality`, `workflow`, `bug`
+
+Priority: `1`
+
+Parallel or repeated solver runs for the same repository can collide because
+`clone_repo()` currently clones into a shared solver cache path such as
+`OPENCODE_CACHE_DIR/repos/<repo>` and then symlinks the per-run worktree to that
+shared clone. Each issue run should get an isolated real checkout so same-repo
+batch runs and same-issue model benchmarks do not fail during clone.
+
+Suggested scope:
+- change clone handling so the real Git checkout is unique per issue run, branch,
+  or run report directory instead of shared only by repository name
+- avoid symlinking the worker repo path to a shared mutable clone unless locking
+  and invalidation are implemented
+- preserve solver-local state/cache behavior for OpenCode runtime files
+- make clone failures include captured stderr in run reports and console output
+- add tests proving two runs for the same repo use distinct checkout paths
+- add tests for stale existing clone directories and clone stderr reporting
+- keep cleanup/recovery behavior for preserved worktrees intact
+- do not read or expose GitHub tokens, provider auth files, or local secret files
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 8. Automate model selection by issue type, expected performance, and cost
 
 Labels: `automation`, `quality`, `provider`, `workflow`
