@@ -38,6 +38,11 @@ from utils import (  # noqa: E402
     raise_for_github_response,
     require_github_config,
 )
+from cleanup_backlog import (  # noqa: E402
+    find_completed_issues as find_completed_backlog_issues,
+    parse_backlog as parse_cleanup_backlog,
+    remove_sections_from_backlog,
+)
 
 
 ISSUE_KEYWORD_RE = re.compile(
@@ -86,6 +91,14 @@ class CleanupResult:
     @property
     def review_count(self) -> int:
         return sum(len(item.review_notes) for item in self.items) + len(self.stale_branch_notes)
+
+
+@dataclass
+class BacklogCleanupResult:
+    backlog_path: Path
+    completed_titles: list[str] = field(default_factory=list)
+    removed_count: int = 0
+    skipped_reason: str = ""
 
 
 class GitHubClient:
@@ -169,6 +182,20 @@ class GitHubClient:
         if item and "pull_request" in item:
             return None
         return item
+
+    def get_issues_by_title(self, repo: str, titles: list[str]) -> dict[str, dict]:
+        wanted = set(titles)
+        found: dict[str, dict] = {}
+        for issue in self.get_all_pages(
+            f"/repos/{self.owner}/{repo}/issues",
+            state="all",
+        ):
+            if "pull_request" in issue:
+                continue
+            title = issue.get("title") or ""
+            if title in wanted:
+                found[title] = issue
+        return found
 
     def get_open_prs_for_branch(self, repo: str, branch: str) -> list[dict]:
         return self.get_all_pages(
@@ -394,6 +421,43 @@ def cleanup_stale_branches(
     return deleted, notes
 
 
+def cleanup_backlog_entries(
+    client: GitHubClient,
+    repo: str,
+    backlog_path: Path,
+    dry_run: bool,
+) -> BacklogCleanupResult:
+    if not backlog_path.exists():
+        return BacklogCleanupResult(
+            backlog_path=backlog_path,
+            skipped_reason=f"Backlog-Datei nicht gefunden: {backlog_path}",
+        )
+
+    issues = parse_cleanup_backlog(backlog_path)
+    if not issues:
+        return BacklogCleanupResult(
+            backlog_path=backlog_path,
+            skipped_reason="Keine Backlog-Einträge gefunden",
+        )
+
+    github_issues = client.get_issues_by_title(repo, [issue["title"] for issue in issues])
+    completed = find_completed_backlog_issues(issues, github_issues)
+    result = BacklogCleanupResult(
+        backlog_path=backlog_path,
+        completed_titles=[issue["title"] for issue in completed],
+    )
+    if not completed:
+        return result
+
+    if dry_run:
+        return result
+
+    new_content, removed_count = remove_sections_from_backlog(backlog_path, completed)
+    backlog_path.write_text(new_content, encoding="utf-8")
+    result.removed_count = removed_count
+    return result
+
+
 def close_comment(pull: dict) -> str:
     return (
         "Automatisch geschlossen durch post_merge_cleanup.py, weil der "
@@ -432,6 +496,20 @@ def print_cleanup_result(result: CleanupResult, dry_run: bool) -> None:
             print(f"      {action} Branch löschen: {branch}")
 
 
+def print_backlog_cleanup_result(result: BacklogCleanupResult, dry_run: bool) -> None:
+    if result.skipped_reason:
+        print_warn(result.skipped_reason)
+        return
+    if not result.completed_titles:
+        print("   Keine abgeschlossenen Backlog-Einträge gefunden.")
+        return
+
+    action = "Würde entfernen" if dry_run else "Entfernt"
+    print(f"   {action}: {len(result.completed_titles)} Eintrag/Einträge aus {result.backlog_path}")
+    for title in result.completed_titles:
+        print(f"      - {title}")
+
+
 def collect_repos(client: GitHubClient, repo: str | None) -> list[str]:
     if repo:
         if client.get_repo(repo) is None:
@@ -453,6 +531,16 @@ def main() -> int:
     parser.add_argument("--branch-prefix", default="ai/", help="Präfix für AI-Branches")
     parser.add_argument("--apply", action="store_true", help="Änderungen wirklich auf GitHub ausführen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen; Standard ohne --apply")
+    parser.add_argument(
+        "--cleanup-backlog",
+        action="store_true",
+        help="Entfernt abgeschlossene Einträge aus der Backlog-Datei nach dem Issue-Cleanup",
+    )
+    parser.add_argument(
+        "--backlog",
+        default="docs/NEXT_BACKLOG.md",
+        help="Backlog-Datei für --cleanup-backlog",
+    )
     args = parser.parse_args()
 
     if args.merged_days < 1:
@@ -461,6 +549,8 @@ def main() -> int:
         parser.error("--stale-days muss mindestens 1 sein")
     if not args.branch_prefix:
         parser.error("--branch-prefix darf nicht leer sein")
+    if args.cleanup_backlog and not args.repo:
+        parser.error("--cleanup-backlog braucht --repo, damit Backlog-Titel einem Repository zugeordnet werden")
 
     if requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")
@@ -490,6 +580,17 @@ def main() -> int:
         totals.stale_deleted_branches.extend(result.stale_deleted_branches)
         totals.stale_branch_notes.extend(result.stale_branch_notes)
 
+    backlog_result = None
+    if args.cleanup_backlog:
+        print_step(2, "Bereinige abgeschlossene Backlog-Einträge")
+        backlog_result = cleanup_backlog_entries(
+            client,
+            args.repo,
+            Path(args.backlog),
+            dry_run,
+        )
+        print_backlog_cleanup_result(backlog_result, dry_run)
+
     print("\n" + "─" * 50)
     print(
         "  Cleanup: "
@@ -498,6 +599,9 @@ def main() -> int:
         f"{totals.deleted_branch_count} Branches {'würden gelöscht' if dry_run else 'gelöscht'} | "
         f"{totals.review_count} Review-Hinweise"
     )
+    if backlog_result:
+        changed = backlog_result.removed_count if not dry_run else len(backlog_result.completed_titles)
+        print(f"  Backlog: {changed} Einträge {'würden entfernt' if dry_run else 'entfernt'}")
     print("─" * 50 + "\n")
     if dry_run:
         print_ok("Dry-Run abgeschlossen. Für echte Änderungen erneut mit --apply starten.")
