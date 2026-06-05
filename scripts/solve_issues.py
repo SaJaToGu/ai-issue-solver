@@ -88,6 +88,10 @@ from solver_reporting import (  # noqa: F401 (re-exports used by tests/batch)
     write_run_report,
     write_worker_diagnostics,
 )
+from repo_type_detection import (
+    detect_repository_type,
+    get_validation_commands,
+)
 from solver_run_resources import (  # noqa: F401 (re-exports used by tests)
     LOCKS_ROOT,
     LOCK_STALE_SECONDS,
@@ -1293,9 +1297,15 @@ def build_worker_command(
         return build_aider_command(model, model_name, safe_prompt, repo_path, file_targets)
 
 
-def run_worker_command(cmd: list, repo_dir: str, env: dict,
-                       run_report: RunReport | None = None,
-                       verbosity: str = "normal") -> WorkerRunResult:
+def run_worker_command(
+    cmd: list,
+    repo_dir: str,
+    env: dict,
+    run_report: RunReport | None = None,
+    verbosity: str = "normal",
+    repo_type: Optional[str] = None,
+    dominant_language: Optional[str] = None,
+) -> WorkerRunResult:
     """Fuehrt den KI-Worker aus, zeigt verdichteten Output und haelt Rohdaten fest."""
     try:
         process = subprocess.Popen(
@@ -1347,6 +1357,12 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict,
     if verbosity != "quiet":
         print_worker_suppression_summary(suppressed_lines)
 
+    # Speichere Repository-Typ und dominante Sprache im Run-Report
+    if run_report and repo_type:
+        run_report.repo_type = repo_type
+        run_report.dominant_language = dominant_language
+        run_report.validation_commands = get_validation_commands(repo_type, dominant_language)
+    
     return WorkerRunResult(
         returncode=process.wait(),
         output="".join(output_parts),
