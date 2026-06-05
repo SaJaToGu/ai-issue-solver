@@ -1924,6 +1924,83 @@ def render_repo_summary_section(runs: list[DashboardRun]) -> str:
 """
 
 
+def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: Path,
+                     generated_at: datetime | None = None,
+                     allow_shutdown: bool = False,
+                     refresh_seconds: int | None = None,
+                     unstarted_issues: list[DashboardIssue] | None = None,
+                     active_tab: str = "overview") -> str:
+    runs = [
+        fallback_lifecycle_for_run(run)
+        if run.category == "successful" and not run.lifecycle_label
+        else run
+        for run in runs
+    ]
+    generated_at = generated_at or datetime.now()
+    counts = {category: 0 for category in STATUS_ORDER}
+    for run in runs:
+        counts[run.category] = counts.get(run.category, 0) + 1
+
+    rows = "\n".join(render_run_row(run, owner, output_path) for run in runs)
+    if not rows:
+        rows = (
+            '<tr><td colspan="13" class="empty">'
+            "Keine Run-Reports unter reports/runs/ gefunden."
+            "</td></tr>"
+        )
+
+    cards = "\n".join(
+        f'<section class="metric metric-{category}">'
+        f'<span>{escape(STATUS_LABELS[category])}</span>'
+        f'<strong>{counts.get(category, 0)}</strong>'
+        "</section>"
+        for category in STATUS_ORDER
+    )
+    repo_summary_section = render_repo_summary_section(runs)
+    unstarted_section = render_unstarted_issues_section(unstarted_issues or [])
+
+    refresh_meta = ""
+    refresh_label = ""
+    if refresh_seconds and refresh_seconds > 0:
+        refresh_meta = f'<meta http-equiv="refresh" content="{int(refresh_seconds)}">'
+        refresh_label = f'<span class="refresh-label">Auto-refresh: {int(refresh_seconds)}s</span>'
+
+    shutdown_button = ""
+    shutdown_script = ""
+    if allow_shutdown:
+        shutdown_button = (
+            '<button class="shutdown-button" type="button" onclick="shutdownServer()">'
+            'Dashboard-Server beenden'
+            '</button>'
+        )
+        shutdown_script = """
+  <script>
+    async function shutdownServer() {
+      const button = document.querySelector('.shutdown-button');
+      if (button) {
+        button.disabled = true;
+        button.textContent = 'Server wird beendet...';
+      }
+      try {
+        await fetch('/__shutdown__', { method: 'POST' });
+        const notice = document.querySelector('.shutdown-notice');
+        if (notice) {
+          notice.textContent = 'Dashboard-Server wurde beendet. Dieses Fenster kann offen bleiben.';
+        }
+      } catch (error) {
+        const notice = document.querySelector('.shutdown-notice');
+        if (notice) {
+          notice.textContent = 'Server konnte nicht per Button beendet werden. Terminal mit Ctrl+C stoppen.';
+        }
+        if (button) {
+          button.disabled = false;
+          button.textContent = 'Dashboard-Server beenden';
+        }
+      }
+    }
+  </script>
+"""
+
     return f"""<!doctype html>
 <html lang="de">
 <head>
