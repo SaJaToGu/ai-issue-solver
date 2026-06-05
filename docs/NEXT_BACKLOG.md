@@ -549,3 +549,178 @@ Suggested scope:
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+## 22. Research backlog shaping frameworks before turning ideas into issues
+
+Labels: `research`, `workflow`, `backlog`, `quality`
+
+Priority: `1`
+
+The project needs a deliberate shaping layer between raw ideas and generated
+GitHub issues. We are moving bottom-up from concrete observations and
+experiments, but we need structure so interesting ideas do not immediately
+become oversized implementation issues. Before changing the backlog generator
+or dashboard workflow, research established approaches and recommend a small
+set of candidate structures that fit `ai-issue-solver`.
+
+Context:
+- raw ideas, initiatives, discovery work, ready implementation issues, and
+  generated GitHub issues are currently too close together
+- `NEXT_BACKLOG.md` should remain useful, but not every idea should become a
+  GitHub issue automatically
+- the dashboard/PWA will likely need to show ideas, shaped candidates, ready
+  issues, generated issues, and run history as different workflow states
+- strategic ideas such as reusing old laptops as coding worker nodes should be
+  researched against existing distributed-computing, home-lab, CI-runner, and
+  agent-runner solutions before we design our own implementation
+
+Suggested scope:
+- research and compare established product/workflow structures for the path
+  from idea to executable issue, including at least:
+  - Dual-Track Agile / Discovery and Delivery
+  - Opportunity Solution Tree
+  - GIST planning: Goals, Ideas, Steps, Tasks
+  - Backlog Refinement and Definition of Ready
+  - RICE or similar lightweight prioritisation/scoring methods
+  - Shape Up pitches, appetite, bets, and cycles if applicable
+- research structurally similar open-source or platform projects that are close
+  to this project's domain, including at least OpenCode, Codex, OpenRouter, and
+  other AI coding, model-routing, agent-orchestration, or provider-integration
+  projects
+- create a standardised comparison report for each researched approach:
+  - purpose and core workflow
+  - where raw ideas live
+  - how ideas become candidates
+  - how candidates become ready implementation work
+  - prioritisation model
+  - evidence or confidence signals
+  - fit for solo/mobile use
+  - fit for AI-assisted issue generation
+  - fit for dashboard/PWA representation
+  - risks, overhead, and failure modes
+- create an evidence log for project assumptions and lessons learned, for
+  example Aider currently being a weak fit for this workflow, MiniMax looking
+  promising for some R work, or Mistral Medium being a good cost/performance
+  default
+- define how often subjective provider/model assessments should be challenged
+  again using fresh benchmark runs, new public information, and recent local
+  solver outcomes
+- propose a lightweight model/provider knowledge base that records strengths,
+  weaknesses, cost tier, interface stability, task fit, last-reviewed date, and
+  evidence source for each model or provider interface
+- include internet research as one input for model preselection, but keep local
+  benchmark results and project-specific failures visible so recommendations do
+  not rely only on public claims
+- research comparable systems for reusing old hardware or distributed worker
+  capacity, including:
+  - self-hosted GitHub Actions runners
+  - Buildkite/GitLab/Jenkins style worker agents
+  - home-lab orchestration patterns
+  - distributed CI queues
+  - agent runner or coding-worker orchestration projects
+  - lightweight SSH-based job dispatch patterns
+- produce a recommended backlog state model for this project, for example:
+  `idea -> opportunity -> solution candidate -> discovery spike -> ready issue
+  -> generated GitHub issue -> solver run -> PR/rework/done`
+- define which states are allowed to generate GitHub issues automatically and
+  which states must remain research/shaping only
+- propose a small schema for `NEXT_BACKLOG.md` entries, including fields such as
+  `type`, `state`, `priority`, `confidence`, `evidence`, `dependencies`,
+  `generate_issue`, and `source`
+- propose dashboard views for the shaped backlog, including mobile-first
+  handling of idea inbox, candidates, ready issues, and generated GitHub issues
+- keep this issue as research and recommendation only; do not implement the
+  backlog generator or dashboard changes in the same PR
+
+Deliverables:
+- one markdown report under `docs/` comparing the researched frameworks
+- one recommended state model for `ai-issue-solver`
+- one proposed `NEXT_BACKLOG.md` item template
+- a list of follow-up implementation issues that can be generated separately
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 23. Define label taxonomy and agent-role mapping for issues and files
+
+Labels: `workflow`, `quality`, `github`, `automation`
+
+Priority: `1`
+
+The project needs a consistent label taxonomy so issues can be grouped,
+filtered, assigned to process roles, and selected for separate solver or
+research workflows. Existing issues should be classified without losing their
+overlapping nature. The taxonomy should also map labels to existing files and
+modules so future changes can be routed to the right agent role and workflow
+phase.
+
+Context:
+- labels are already useful for grouping, but they are not yet structured as a
+  deliberate multi-dimensional taxonomy
+- issues often overlap, for example dashboard + workflow + cost or research +
+  backlog + provider
+- role-based agents are emerging as a target architecture:
+  - `agent/triage` for GitHub/API classification and issue routing
+  - `agent/supervisor` for running process monitoring and targeted cancellation
+  - `agent/cost` for budget and cost aggregation from reports
+  - `agent/research` for structured research reports and evidence logs
+  - `agent/planner` for shaping ideas into ready issues
+  - `agent/solver` for implementation work through coding CLIs/models
+  - `agent/reviewer` for PR review, rework detection, and follow-up tasks
+- labels should help split future development by agent responsibility, not just
+  by feature area
+
+Suggested scope:
+- define the label dimensions:
+  - `theme/*` for business or workflow themes, for example dashboard, model,
+    cost, provider, workflow, backlog, supervisor, distributed-workers, github,
+    quality, research, codex
+  - `area/*` for technical modules or locations, for example pwa, reports,
+    runs, prs, issues, labels, model-selection, provider-interface, budget,
+    worker-node, opencode, openrouter, mistral, minimax, anthropic
+  - `kind/*` for type of work, for example research, spike, feature, refactor,
+    bug, process, docs
+  - `state/*` for workflow state, for example needs-shaping, ready,
+    in-progress, rework, blocked, superseded
+  - `priority/*` for explicit priority labels, matching the numeric backlog
+    priority where practical
+  - `agent/*` for responsible process role, for example triage, supervisor,
+    cost, research, planner, solver, reviewer
+- map existing GitHub issues into the new taxonomy, preserving multiple labels
+  where an issue spans several themes or agents
+- propose label mappings for existing files and modules, for example:
+  - dashboard/status files -> `theme/dashboard`, `area/pwa`,
+    `agent/solver`, possibly `agent/cost` or `agent/supervisor`
+  - run reports and summaries -> `theme/workflow`, `area/reports`,
+    `agent/supervisor`, `agent/cost`
+  - provider adapters and model selection -> `theme/provider`, `theme/model`,
+    `area/provider-interface`, `area/model-selection`, `agent/solver`,
+    `agent/cost`
+  - backlog generator and cleanup -> `theme/backlog`, `area/issues`,
+    `agent/planner`, `agent/triage`
+  - PR/rework handling -> `theme/workflow`, `area/prs`, `agent/reviewer`
+- identify existing large or cross-cutting issues that should be split by agent
+  responsibility, for example separating research, planning, solving, review,
+  cost, and supervision work into distinct follow-up issues
+- define how `create_backlog_issues.py` should preserve or create the new labels
+  from `NEXT_BACKLOG.md`
+- define how the dashboard should group and filter by label dimensions without
+  forcing every issue into a single hierarchy
+- propose a migration plan for adding missing labels in GitHub without creating
+  noise or rewriting unrelated issue history
+- keep this issue focused on taxonomy, mapping, and migration planning; do not
+  implement dashboard UI or solver behaviour changes in the same PR
+
+Deliverables:
+- a markdown label taxonomy document under `docs/`
+- a proposed mapping table from existing labels to new label dimensions
+- a proposed file/module-to-label mapping table
+- a list of existing issues that should be relabelled
+- a list of large issues that should be split by agent responsibility
+- follow-up implementation issues for generator, dashboard, and process
+  integration
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
