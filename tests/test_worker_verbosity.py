@@ -96,6 +96,22 @@ class HeartbeatPhaseTests(unittest.TestCase):
         self.assertEqual(health["phase"], "worker_running")
         self.assertEqual(health["status"], "running")
 
+    def test_process_metadata_written_to_health_json(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = self._make_report(tmpdir)
+            write_run_health(
+                report,
+                status="running",
+                phase="worker_running",
+                worker_pid=12345,
+            )
+            health = json.loads(Path(tmpdir, "health.json").read_text())
+        self.assertIn("process", health)
+        self.assertGreater(health["process"]["runner_pid"], 0)
+        self.assertGreater(health["process"]["parent_pid"], 0)
+        self.assertEqual(health["process"]["worker_pid"], 12345)
+
     def test_phase_defaults_to_empty_string(self):
         import json
         with tempfile.TemporaryDirectory() as tmpdir:

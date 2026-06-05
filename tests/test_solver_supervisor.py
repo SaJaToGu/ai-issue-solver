@@ -97,6 +97,7 @@ model: opencode
                     "last_activity_at": "2026-06-05T16:59:30",
                     "last_report_update_at": "2026-06-05T16:59:31",
                     "output_tail": "still working",
+                    "process": {"worker_pid": 12345},
                 },
             )
 
@@ -106,6 +107,7 @@ model: opencode
         self.assertEqual(runs[0].repo, "demo")
         self.assertEqual(runs[0].issue, "7")
         self.assertEqual(runs[0].phase, "worker_running")
+        self.assertEqual(runs[0].worker_pid, "12345")
         self.assertEqual(runs[0].health_status, "healthy")
         self.assertEqual(runs[0].output_tail, "still working")
 

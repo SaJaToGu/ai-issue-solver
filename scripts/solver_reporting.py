@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -313,7 +314,8 @@ def print_opencode_runtime_diagnostics(diagnostics: OpenCodeRuntimeDiagnostics) 
 def write_run_health(report: RunReport, output: str = "",
                      last_activity_at: datetime | None = None,
                      status: str = "running",
-                     phase: str = "") -> None:
+                     phase: str = "",
+                     worker_pid: int | None = None) -> None:
     """Speichert leichte Health-Daten, ohne den eigentlichen Summary-Report umzubauen."""
     last_activity_at = last_activity_at or datetime.now()
     tail = format_worker_output_tail(output)
@@ -324,6 +326,11 @@ def write_run_health(report: RunReport, output: str = "",
         "last_activity_at": last_activity_at.isoformat(timespec="seconds"),
         "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
         "output_tail": tail,
+        "process": {
+            "runner_pid": os.getpid(),
+            "parent_pid": os.getppid(),
+            "worker_pid": worker_pid,
+        },
         "opencode_runtime": {
             "wal_failure": opencode_diagnostics.wal_failure,
             "edit_loop": opencode_diagnostics.edit_loop,

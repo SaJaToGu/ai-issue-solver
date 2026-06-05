@@ -325,6 +325,13 @@ def _run_subprocess(
     output_parts = []
     suppressed_lines = 0
     last_activity_at = datetime.now()
+    if run_report:
+        write_run_health(
+            run_report,
+            status="running",
+            phase="worker_running",
+            worker_pid=process.pid,
+        )
 
     if process.stdout:
         for line in process.stdout:
@@ -335,14 +342,14 @@ def _run_subprocess(
                 last_activity_at = datetime.now()
                 if run_report:
                     write_run_health(run_report, "".join(output_parts), last_activity_at,
-                                     phase="worker_running")
+                                     phase="worker_running", worker_pid=process.pid)
             elif verbosity == "normal":
                 if should_surface_worker_line(line):
                     print(f"        | {line}", end="")
                     last_activity_at = datetime.now()
                     if run_report:
                         write_run_health(run_report, "".join(output_parts), last_activity_at,
-                                         phase="worker_running")
+                                         phase="worker_running", worker_pid=process.pid)
                 else:
                     suppressed_lines += 1
             else:
@@ -351,7 +358,7 @@ def _run_subprocess(
                     last_activity_at = datetime.now()
                     if run_report:
                         write_run_health(run_report, "".join(output_parts), last_activity_at,
-                                         phase="worker_running")
+                                         phase="worker_running", worker_pid=process.pid)
                 else:
                     suppressed_lines += 1
         process.stdout.close()
