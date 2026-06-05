@@ -2170,6 +2170,18 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             run_report=run_report,
             **adapter_kwargs,
         )
+        
+        # Modellauswahl-Metadaten im Report speichern (falls vorhanden)
+        model_selection_metadata = None
+        if args.auto_model:
+            from model_selection import select_model_for_issue
+            issue = client.get_single_issue(repo, number)
+            if issue:
+                model_selection_metadata = select_model_for_issue(
+                    issue=issue,
+                    repo_type="python",  # TODO: Dynamisch ermitteln
+                    max_cost_tier=args.max_cost,
+                )
 
         diagnostic_outputs = list(adapter_diagnostics.all_outputs)
         rate_limit_deferred_note = adapter_diagnostics.rate_limit_note or None
@@ -2392,21 +2404,22 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 status=status,
                 base_branch=base_branch,
             )
-        if run_report:
-            write_resource_diagnostics_to_report(
-                run_report.path, run_resources, resource_diagnostics
-            )
-            write_run_report(
-                run_report,
-                status,
-                worker_result=diagnostic_result,
-                pr_url=pr.get("html_url") if pr else None,
-                preserved_worktree_path=preserved_worktree,
-                base_branch=base_branch,
-                git_change_summary=git_change_summary,
-                vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
-                resource_diagnostics=resource_diagnostics,
-            )
+            if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    pr_url=pr.get("html_url") if pr else None,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
+                    model_selection_metadata=model_selection_metadata,
+                )
         return bool(pr)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -2450,6 +2463,17 @@ def main():
             "'claude-sonnet-4-20250514', 'gpt-4o', 'deepseek-coder:6.7b', "
             "'openrouter/openai/gpt-4o-mini')"
         )
+    )
+    parser.add_argument(
+        "--auto-model",
+        action="store_true",
+        help="Modell automatisch basierend auf Issue-Typ, Risiko und Kosten auswählen"
+    )
+    parser.add_argument(
+        "--max-cost",
+        choices=["cheap", "medium", "expensive"],
+        default="expensive",
+        help="Maximales Kosten-Tier für die automatische Modellauswahl (Standard: expensive)"
     )
     parser.add_argument(
         "--diagnostic",
@@ -2583,9 +2607,43 @@ def main():
         print("   → Mehr Infos: docs/SETUP_AIDER.md")
         sys.exit(1)
 
-     # Modell-Name
-    model_config = MODEL_CONFIGS[args.model]
-    model_name = args.model_name or model_config.get("default_model_name", "")
+     # Modellauswahl
+    if args.auto_model:
+        from model_selection import select_model_for_issue
+        # Hole das Issue für die Analyse
+        issue = client.get_single_issue(args.repo, args.issue) if args.issue and args.repo else None
+        if not issue:
+            print_err("--auto-model erfordert --repo und --issue")
+            sys.exit(1)
+        # Wähle Modell automatisch aus
+        model_selection = select_model_for_issue(
+            issue=issue,
+            repo_type="python",  # TODO: Repo-Typ dynamisch ermitteln
+            max_cost_tier=args.max_cost,
+        )
+        print(f"   🔍 Automatische Modellauswahl: {model_selection['model']}")
+        print(f"      Grund: {model_selection['reason']}")
+        print(f"      Kategorie: {model_selection['category']} (Risiko: {model_selection['risk']})")
+        print(f"      Kosten-Tier: {model_selection['cost_tier']}")
+        
+        # Mappe das ausgewählte Modell auf die bestehende MODEL_CONFIGS-Struktur
+        # TODO: Erweitere MODEL_CONFIGS für alle unterstützten Modelle
+        if "mistral" in model_selection["model"]:
+            args.model = "mistral"
+            args.model_name = model_selection["model"]
+        elif "claude" in model_selection["model"]:
+            args.model = "claude"
+            args.model_name = model_selection["model"]
+        elif "gpt" in model_selection["model"]:
+            args.model = "openai"
+            args.model_name = model_selection["model"]
+        else:
+            print_err(f"Automatisch ausgewähltes Modell wird nicht unterstützt: {model_selection['model']}")
+            sys.exit(1)
+    else:
+        # Manuelle Modellauswahl
+        model_config = MODEL_CONFIGS[args.model]
+        model_name = args.model_name or model_config.get("default_model_name", "")
 
     env_key = model_config.get("env_key")
     if env_key and args.dry_run and is_placeholder_value(cfg.get(env_key)):
@@ -2599,9 +2657,14 @@ def main():
     if args.dry_run:
         print_warn("DRY-RUN Modus aktiv\n")
 
-    print_step(1, f"Modell: {model_config['display_name']}")
-    if model_name:
-        print(f"   Modell-Name: {model_name}")
+    if args.auto_model:
+        print_step(1, f"Modell (automatisch): {MODEL_CONFIGS[args.model]['display_name']}")
+        print(f"   Modell-Name: {args.model_name}")
+        print(f"   Kosten-Tier: {args.max_cost}")
+    else:
+        print_step(1, f"Modell: {model_config['display_name']}")
+        if model_name:
+            print(f"   Modell-Name: {model_name}")
 
     # Repos ermitteln
     if args.repo:
@@ -2609,6 +2672,11 @@ def main():
     else:
         all_repos = client.get_repos()
         repos = [r["name"] for r in all_repos if not r.get("archived")]
+        
+    # Modellauswahl-Logik für Batch-Modus (TODO: Erweitern)
+    if args.auto_model and not args.issue:
+        print_warn("--auto-model erfordert --issue; nutze --model für Batch-Modus")
+        sys.exit(1)
 
     print_step(2, f"Suche offene Issues in {len(repos)} Repo(s)")
 
