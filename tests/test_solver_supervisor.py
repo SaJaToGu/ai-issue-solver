@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 
@@ -14,7 +15,11 @@ from solver_supervisor import (  # noqa: E402
     classify_run_health,
     filter_active_runs,
     format_run_line,
+    format_dry_run_stop,
+    process_tree,
     read_supervisor_runs,
+    run_stop_dry_run,
+    select_runs,
 )
 
 
@@ -157,6 +162,94 @@ model: opencode
         self.assertIn("demo", line)
         self.assertIn("#9", line)
         self.assertIn("clone", line)
+
+    def test_select_runs_filters_by_repo_and_issue(self):
+        now = datetime(2026, 6, 5, 17, 0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir)
+            self.write_run(
+                runs_dir,
+                "run-1",
+                summary="status: started\nrepo: demo\nissue: 9\n",
+                health={"last_report_update_at": "2026-06-05T16:59:00"},
+            )
+            self.write_run(
+                runs_dir,
+                "run-2",
+                summary="status: started\nrepo: other\nissue: 9\n",
+                health={"last_report_update_at": "2026-06-05T16:59:00"},
+            )
+            runs = read_supervisor_runs(runs_dir, now=now, stale_seconds=120)
+
+        selected = select_runs(runs, repo="demo", issue="9")
+
+        self.assertEqual([run.run_id for run in selected], ["run-1"])
+
+    def test_process_tree_collects_children_without_signals(self):
+        def fake_children(pid):
+            return {
+                10: [11, 12],
+                11: [13],
+                12: [],
+                13: [],
+            }.get(pid, [])
+
+        with patch("solver_supervisor.direct_child_pids", side_effect=fake_children):
+            self.assertEqual(process_tree([10]), [10, 11, 12, 13])
+
+    def test_format_dry_run_stop_includes_process_tree(self):
+        now = datetime(2026, 6, 5, 17, 0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir)
+            self.write_run(
+                runs_dir,
+                "run-1",
+                summary="status: started\nrepo: demo\nissue: 9\n",
+                health={
+                    "last_report_update_at": "2026-06-05T16:59:00",
+                    "process": {"runner_pid": 10, "worker_pid": 20},
+                },
+            )
+            run = read_supervisor_runs(runs_dir, now=now, stale_seconds=120)[0]
+
+        with patch("solver_supervisor.process_tree", return_value=[10, 20, 21]):
+            lines = format_dry_run_stop(run)
+
+        text = "\n".join(lines)
+        self.assertIn("DRY-RUN stop target: run-1", text)
+        self.assertIn("worker_pid: 20", text)
+        self.assertIn("process_tree: 10, 20, 21", text)
+        self.assertIn("no signal sent", text)
+
+    def test_stop_without_dry_run_is_rejected(self):
+        class Args:
+            runs_dir = ""
+            stale_seconds = 120
+            run_id = "run-1"
+            repo = None
+            issue = None
+            worker_pid = None
+            dry_run = False
+
+        now = datetime(2026, 6, 5, 17, 0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir)
+            self.write_run(
+                runs_dir,
+                "run-1",
+                summary="status: started\nrepo: demo\nissue: 9\n",
+                health={"last_report_update_at": "2026-06-05T16:59:00"},
+            )
+            args = Args()
+            args.runs_dir = str(runs_dir)
+
+            with patch("solver_supervisor.datetime") as fake_datetime, \
+                 patch("solver_supervisor.print_warn"):
+                fake_datetime.now.return_value = now
+                fake_datetime.strptime = datetime.strptime
+                result = run_stop_dry_run(args)
+
+        self.assertEqual(result, 2)
 
 
 if __name__ == "__main__":

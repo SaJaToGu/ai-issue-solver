@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -55,6 +56,8 @@ class SupervisorRun:
     model: str
     status: str
     phase: str
+    runner_pid: str
+    parent_pid: str
     worker_pid: str
     last_activity_at: datetime | None
     last_report_update_at: datetime | None
@@ -160,6 +163,14 @@ def read_supervisor_runs(
                 model=_string_value(metadata, "model") or summary.get("model", ""),
                 status=status,
                 phase=phase,
+                runner_pid=_string_value(
+                    health.get("process", {}) if isinstance(health.get("process"), dict) else {},
+                    "runner_pid",
+                ),
+                parent_pid=_string_value(
+                    health.get("process", {}) if isinstance(health.get("process"), dict) else {},
+                    "parent_pid",
+                ),
                 worker_pid=_string_value(
                     health.get("process", {}) if isinstance(health.get("process"), dict) else {},
                     "worker_pid",
@@ -176,6 +187,94 @@ def read_supervisor_runs(
 
 def filter_active_runs(runs: Iterable[SupervisorRun]) -> list[SupervisorRun]:
     return [run for run in runs if run.is_active]
+
+
+def _pid_from_text(value: str) -> int | None:
+    try:
+        pid = int(value)
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def direct_child_pids(pid: int) -> list[int]:
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if result.returncode not in {0, 1}:
+        return []
+    children = []
+    for line in result.stdout.splitlines():
+        child_pid = _pid_from_text(line.strip())
+        if child_pid is not None:
+            children.append(child_pid)
+    return children
+
+
+def process_tree(root_pids: Iterable[int]) -> list[int]:
+    seen: set[int] = set()
+    pending = [pid for pid in root_pids if pid > 0]
+    while pending:
+        pid = pending.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        pending.extend(child for child in direct_child_pids(pid) if child not in seen)
+    return sorted(seen)
+
+
+def run_root_pids(run: SupervisorRun) -> list[int]:
+    pids = []
+    for value in (run.worker_pid, run.runner_pid):
+        pid = _pid_from_text(value)
+        if pid is not None and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def select_runs(
+    runs: Iterable[SupervisorRun],
+    run_id: str | None = None,
+    repo: str | None = None,
+    issue: str | None = None,
+    worker_pid: str | None = None,
+) -> list[SupervisorRun]:
+    selected = []
+    for run in runs:
+        if run_id and run.run_id != run_id:
+            continue
+        if repo and run.repo != repo:
+            continue
+        if issue and run.issue != issue:
+            continue
+        if worker_pid and run.worker_pid != worker_pid:
+            continue
+        selected.append(run)
+    return selected
+
+
+def format_dry_run_stop(run: SupervisorRun) -> list[str]:
+    root_pids = run_root_pids(run)
+    tree = process_tree(root_pids)
+    issue = f"#{run.issue}" if run.issue else "-"
+    lines = [
+        f"DRY-RUN stop target: {run.run_id}",
+        f"  repo: {run.repo or '-'}",
+        f"  issue: {issue}",
+        f"  phase: {run.phase or '-'}",
+        f"  status: {run.status or '-'}",
+        f"  worker_pid: {run.worker_pid or '-'}",
+        f"  runner_pid: {run.runner_pid or '-'}",
+        f"  process_tree: {', '.join(str(pid) for pid in tree) if tree else '(none known)'}",
+        "  action: no signal sent",
+    ]
+    return lines
 
 
 def format_run_line(run: SupervisorRun) -> str:
@@ -203,23 +302,67 @@ def print_status(runs: list[SupervisorRun], active_only: bool) -> None:
     print(f"{len(selected)} run(s) shown.")
 
 
+def run_stop_dry_run(args: argparse.Namespace) -> int:
+    runs = read_supervisor_runs(Path(args.runs_dir), stale_seconds=args.stale_seconds)
+    selected = select_runs(
+        runs,
+        run_id=args.run_id,
+        repo=args.repo,
+        issue=str(args.issue) if args.issue is not None else None,
+        worker_pid=str(args.worker_pid) if args.worker_pid is not None else None,
+    )
+    if not selected:
+        print_warn("No matching solver run found.")
+        return 1
+    if len(selected) > 1:
+        print_warn(f"{len(selected)} matching runs found; add --run-id or --worker-pid.")
+        for run in selected:
+            print(format_run_line(run))
+        return 1
+    if not args.dry_run:
+        print_warn("Stop is not implemented in this read-only slice. Re-run with --dry-run.")
+        return 2
+    for line in format_dry_run_stop(selected[0]):
+        print(line)
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read-only solver supervisor status")
-    parser.add_argument("command", choices=["status"], help="Supervisor command")
-    parser.add_argument("--runs-dir", default=str(RUN_REPORTS_ROOT), help="Run report directory")
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    status_parser = subparsers.add_parser("status", help="Show solver run status")
+    status_parser.add_argument("--runs-dir", default=str(RUN_REPORTS_ROOT), help="Run report directory")
+    status_parser.add_argument(
         "--stale-seconds",
         type=int,
         default=DEFAULT_STALE_SECONDS,
         help=f"Seconds without health updates before a run is stale (default: {DEFAULT_STALE_SECONDS})",
     )
-    parser.add_argument("--all", action="store_true", help="Show terminal runs too")
+    status_parser.add_argument("--all", action="store_true", help="Show terminal runs too")
+
+    stop_parser = subparsers.add_parser("stop", help="Preview targeted stop selection")
+    stop_parser.add_argument("--runs-dir", default=str(RUN_REPORTS_ROOT), help="Run report directory")
+    stop_parser.add_argument("--run-id", help="Exact run report directory name")
+    stop_parser.add_argument("--repo", help="Repository name")
+    stop_parser.add_argument("--issue", type=int, help="Issue number")
+    stop_parser.add_argument("--worker-pid", type=int, help="Worker process id from health.json")
+    stop_parser.add_argument("--dry-run", action="store_true", help="Preview target process tree only")
+    stop_parser.add_argument(
+        "--stale-seconds",
+        type=int,
+        default=DEFAULT_STALE_SECONDS,
+        help=f"Seconds without health updates before a run is stale (default: {DEFAULT_STALE_SECONDS})",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     print_banner("SOLVER SUPERVISOR")
+    if args.command == "stop":
+        return run_stop_dry_run(args)
+
     print_step(1, f"Reading runs from {args.runs_dir}")
     runs = read_supervisor_runs(Path(args.runs_dir), stale_seconds=args.stale_seconds)
     print_status(runs, active_only=not args.all)
