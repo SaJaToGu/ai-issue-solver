@@ -109,6 +109,11 @@ Labels that map issues to specific agent roles for automated routing.
 | `setup` | `kind/feature` |
 | `workflow` | `theme/workflow` |
 | `analysis` | `theme/research`, `kind/analysis` |
+| `dashboard` | `theme/dashboard` |
+| `provider` | `theme/provider` |
+| `research` | `theme/research` |
+| `opencode` | `area/opencode` |
+| `sandbox` | `theme/codex` |
 
 ## File/Module to Label Mapping
 
