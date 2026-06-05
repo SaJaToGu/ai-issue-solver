@@ -33,16 +33,84 @@ from utils import (
 
 
 DEFAULT_LABELS = {
-    "analysis": {"color": "1d76db", "description": "Repository analysis and findings"},
-    "automation": {"color": "5319e7", "description": "Automation and worker behavior"},
-    "codex": {"color": "5319e7", "description": "Codex worker integration"},
-    "documentation": {"color": "0075ca", "description": "Documentation improvements"},
-    "github": {"color": "24292f", "description": "GitHub API and workflow"},
-    "good-first-issue": {"color": "7057ff", "description": "Good first issue"},
-    "quality": {"color": "0e8a16", "description": "Quality improvements"},
-    "safety": {"color": "d93f0b", "description": "Safety and confirmation behavior"},
-    "setup": {"color": "fbca04", "description": "Setup and configuration"},
-    "workflow": {"color": "c5def5", "description": "Project workflow"},
+    # Theme labels
+    "theme/dashboard": {"color": "006b75", "description": "Dashboard UI/UX and data visualization"},
+    "theme/model": {"color": "006b75", "description": "Model selection and provider integration"},
+    "theme/cost": {"color": "006b75", "description": "Budget tracking and cost analysis"},
+    "theme/provider": {"color": "006b75", "description": "Provider-specific features and APIs"},
+    "theme/workflow": {"color": "006b75", "description": "Workflow automation and process"},
+    "theme/backlog": {"color": "006b75", "description": "Backlog management and prioritization"},
+    "theme/supervisor": {"color": "006b75", "description": "Process monitoring and job management"},
+    "theme/distributed-workers": {"color": "006b75", "description": "Worker distribution and scaling"},
+    "theme/github": {"color": "006b75", "description": "GitHub API and integration"},
+    "theme/quality": {"color": "006b75", "description": "Code quality and testing"},
+    "theme/research": {"color": "006b75", "description": "Research tasks and evidence collection"},
+    "theme/codex": {"color": "006b75", "description": "Codex-specific features and sandboxing"},
+    
+    # Area labels
+    "area/pwa": {"color": "1d76db", "description": "Progressive Web App (dashboard front-end)"},
+    "area/reports": {"color": "1d76db", "description": "Run reports and analytics"},
+    "area/runs": {"color": "1d76db", "description": "Solver runs and job execution"},
+    "area/prs": {"color": "1d76db", "description": "Pull request handling and workflow"},
+    "area/issues": {"color": "1d76db", "description": "Issue lifecycle and management"},
+    "area/labels": {"color": "1d76db", "description": "Label taxonomy and classification"},
+    "area/model-selection": {"color": "1d76db", "description": "Model selection logic and policies"},
+    "area/provider-interface": {"color": "1d76db", "description": "Provider abstraction layer"},
+    "area/budget": {"color": "1d76db", "description": "Budget tracking and cost controls"},
+    "area/worker-node": {"color": "1d76db", "description": "Worker node management"},
+    "area/opencode": {"color": "1d76db", "description": "OpenCode CLI integration"},
+    "area/openrouter": {"color": "1d76db", "description": "OpenRouter API integration"},
+    "area/mistral": {"color": "1d76db", "description": "Mistral provider integration"},
+    "area/minimax": {"color": "1d76db", "description": "MiniMax provider integration"},
+    "area/anthropic": {"color": "1d76db", "description": "Anthropic (Claude) provider integration"},
+    
+    # Kind labels
+    "kind/feature": {"color": "0e8a16", "description": "New functionality"},
+    "kind/bug": {"color": "d73a4a", "description": "Bug fixes"},
+    "kind/refactor": {"color": "006b75", "description": "Code refactoring"},
+    "kind/docs": {"color": "0075ca", "description": "Documentation updates"},
+    "kind/test": {"color": "c5def5", "description": "Test coverage and validation"},
+    "kind/analysis": {"color": "1d76db", "description": "Data analysis and metrics"},
+    "kind/automation": {"color": "5319e7", "description": "Automation scripts"},
+    "kind/research": {"color": "5319e7", "description": "Research tasks"},
+    "kind/cleanup": {"color": "fbca04", "description": "Code cleanup and maintenance"},
+    
+    # State labels
+    "state/backlog": {"color": "ededed", "description": "Issue is in the backlog"},
+    "state/ready": {"color": "c2e0c6", "description": "Issue is ready for implementation"},
+    "state/in-progress": {"color": "c5def5", "description": "Issue is actively being worked on"},
+    "state/blocked": {"color": "d93f0b", "description": "Issue is blocked"},
+    "state/review": {"color": "fbca04", "description": "Issue is under review"},
+    "state/on-hold": {"color": "ededed", "description": "Issue is temporarily paused"},
+    "state/duplicate": {"color": "cfd3d7", "description": "Issue is a duplicate"},
+    "state/wontfix": {"color": "000000", "description": "Issue will not be addressed"},
+    
+    # Priority labels
+    "priority/1-critical": {"color": "d93f0b", "description": "Critical priority"},
+    "priority/2-high": {"color": "d73a4a", "description": "High priority"},
+    "priority/3-medium": {"color": "fbca04", "description": "Medium priority"},
+    "priority/4-low": {"color": "0e8a16", "description": "Low priority"},
+    
+    # Agent labels
+    "agent/triage": {"color": "5319e7", "description": "Initial classification and routing"},
+    "agent/supervisor": {"color": "5319e7", "description": "Process monitoring and job management"},
+    "agent/cost": {"color": "5319e7", "description": "Budget tracking and cost analysis"},
+    "agent/research": {"color": "5319e7", "description": "Research and evidence collection"},
+    "agent/planner": {"color": "5319e7", "description": "Backlog shaping and issue planning"},
+    "agent/solver": {"color": "5319e7", "description": "Implementation and coding work"},
+    "agent/reviewer": {"color": "5319e7", "description": "PR review and quality assurance"},
+    
+    # Legacy labels (mapped to new taxonomy)
+    "automation": {"color": "5319e7", "description": "Automation and worker behavior (legacy)"},
+    "quality": {"color": "0e8a16", "description": "Quality improvements (legacy)"},
+    "codex": {"color": "5319e7", "description": "Codex worker integration (legacy)"},
+    "documentation": {"color": "0075ca", "description": "Documentation improvements (legacy)"},
+    "github": {"color": "24292f", "description": "GitHub API and workflow (legacy)"},
+    "good-first-issue": {"color": "7057ff", "description": "Good first issue (legacy)"},
+    "safety": {"color": "d93f0b", "description": "Safety and confirmation behavior (legacy)"},
+    "setup": {"color": "fbca04", "description": "Setup and configuration (legacy)"},
+    "workflow": {"color": "c5def5", "description": "Project workflow (legacy)"},
+    "analysis": {"color": "1d76db", "description": "Repository analysis and findings (legacy)"},
 }
 
 
@@ -251,10 +319,17 @@ def main() -> int:
             skipped += 1
             continue
 
-        for label in issue["labels"]:
-            client.ensure_label(args.repo, label)
+    for label in issue["labels"]:
+        # Map legacy labels to new taxonomy
+        mapped_labels = LABEL_MAPPING.get(label, [label])
+        for new_label in mapped_labels:
+            client.ensure_label(args.repo, new_label)
 
-        url = client.create_issue(args.repo, issue["title"], issue["body"], issue["labels"])
+        # Map legacy labels to new taxonomy for issue creation
+        mapped_labels = []
+        for label in issue["labels"]:
+            mapped_labels.extend(LABEL_MAPPING.get(label, [label]))
+        url = client.create_issue(args.repo, issue["title"], issue["body"], mapped_labels)
         print_ok(f"{issue['title']} -> {url}")
         created += 1
 
