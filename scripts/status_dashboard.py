@@ -200,6 +200,13 @@ class DashboardRun:
     lifecycle_state: str = ""
     lifecycle_needs_attention: bool = False
     lifecycle_note: str = ""
+    requested_model: str = ""
+    actual_model: str = ""
+    fallback_source: str = ""
+    duration: str = ""
+    test_command: str = ""
+    test_result: str = ""
+    no_change_classification: str = ""
 
 
 @dataclass(frozen=True)
@@ -680,6 +687,13 @@ def read_runs(runs_dir: Path,
                 note=fields.get("note") or fields.get("cleanup_note", ""),
                 git_diff_stat=fields.get("git_diff_stat", ""),
                 output_tail=output_tail,
+                requested_model=fields.get("requested_model", ""),
+                actual_model=fields.get("actual_model", ""),
+                fallback_source=fields.get("fallback_source", ""),
+                duration=fields.get("duration", ""),
+                test_command=fields.get("test_command", ""),
+                test_result=fields.get("test_result", ""),
+                no_change_classification=fields.get("no_change_classification", ""),
             )
         )
     return runs
@@ -1455,20 +1469,20 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
     
     # Provider Scorecard
     scorecard_parts = []
-    if run.get("requested_model"):
-        scorecard_parts.append(f"Requested Model: <code>{escape(run.get('requested_model', '-'))}</code>")
-    if run.get("actual_model"):
-        scorecard_parts.append(f"Actual Model: <code>{escape(run.get('actual_model', '-'))}</code>")
-    if run.get("fallback_source"):
-        scorecard_parts.append(f"Fallback Source: <code>{escape(run.get('fallback_source', '-'))}</code>")
-    if run.get("duration"):
-        scorecard_parts.append(f"Duration: <code>{escape(str(run.get('duration', '-')))}</code> seconds")
-    if run.get("test_command"):
-        scorecard_parts.append(f"Test Command: <code>{escape(run.get('test_command', '-'))}</code>")
-    if run.get("test_result"):
-        scorecard_parts.append(f"Test Result: <code>{escape(run.get('test_result', '-'))}</code>")
-    if run.get("no_change_classification"):
-        scorecard_parts.append(f"No-Change Classification: <code>{escape(run.get('no_change_classification', '-'))}</code>")
+    if run.requested_model:
+        scorecard_parts.append(f"Requested Model: <code>{escape(run.requested_model)}</code>")
+    if run.actual_model:
+        scorecard_parts.append(f"Actual Model: <code>{escape(run.actual_model)}</code>")
+    if run.fallback_source:
+        scorecard_parts.append(f"Fallback Source: <code>{escape(run.fallback_source)}</code>")
+    if run.duration:
+        scorecard_parts.append(f"Duration: <code>{escape(run.duration)}</code> seconds")
+    if run.test_command:
+        scorecard_parts.append(f"Test Command: <code>{escape(run.test_command)}</code>")
+    if run.test_result:
+        scorecard_parts.append(f"Test Result: <code>{escape(run.test_result)}</code>")
+    if run.no_change_classification:
+        scorecard_parts.append(f"No-Change Classification: <code>{escape(run.no_change_classification)}</code>")
     
     scorecard = f"<div class=\"scorecard\">{'<br>'.join(scorecard_parts)}</div>" if scorecard_parts else ""
     
