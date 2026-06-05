@@ -269,6 +269,37 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 20. Include exact provider model name in generated PR summaries
+
+Labels: `automation`, `quality`, `workflow`, `provider`
+
+Priority: `1`
+
+Generated pull request bodies should identify both the worker adapter and the
+exact provider model used for the run. Showing only `OpenCode CLI` is not
+enough when OpenCode can run Mistral, MiniMax, Claude, DeepSeek, Qwen, or other
+providers.
+
+Suggested scope:
+- update generated PR bodies so the "Used model" section includes the adapter
+  and the effective model name, for example `OpenCode CLI` plus
+  `mistral/mistral-medium-latest`
+- include fallback model information when a fallback worker/model was used
+- keep existing adapter display names for readability, but never hide the
+  concrete model identifier when it is known
+- include the same exact model information in run reports and summaries if any
+  field still only stores the adapter display name
+- add tests for PR body rendering with:
+  - adapter only
+  - adapter plus model name
+  - OpenCode plus provider model name
+  - fallback worker/model
+- avoid exposing API keys, provider auth files, prompts, or other secrets
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 6. Support low-code and non-code repositories without Python assumptions
 
 Labels: `automation`, `quality`, `workflow`, `analysis`
