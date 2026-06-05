@@ -227,6 +227,48 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 19. Add structured rework workflow with sub-issues and separate PRs
+
+Labels: `automation`, `workflow`, `quality`, `github`
+
+Priority: `1`
+
+When a generated PR needs rework, the solver should avoid turning one branch
+into a mixed correction pile. Rework should be tracked explicitly, split into
+clear sub-tasks, and implemented through separate PRs when the changes are
+independent enough to review and merge safely.
+
+Suggested scope:
+- detect rework situations such as user review feedback, failed checks,
+  behavior that looks unchanged, partial implementation, superseded approach, or
+  a PR that should be closed in favor of a better path
+- create or update a GitHub issue with a checklist of concrete rework
+  sub-tasks instead of hiding the plan only in chat or run logs
+- link each sub-task to the related original issue, PR, run report, failing
+  check, and user observation
+- support one PR per sub-task when the work is separable, for example:
+  - validation/test repair
+  - implementation correction
+  - documentation or backlog cleanup
+  - dashboard/reporting follow-up
+  - closing or replacing a superseded PR
+- keep a single PR only when the rework is tiny, tightly coupled, and easier to
+  review as one change
+- make solver scripts avoid reusing a messy failed branch unless explicitly
+  requested; prefer a fresh branch from the base branch with preserved context
+- add run-report and dashboard fields for `rework_of`, `rework_reason`,
+  `subtask_id`, `supersedes_pr`, and `follow_up_issue`
+- add commands or script modes to generate the rework issue/checklist from a PR,
+  failed run, or user review note
+- add tests for rework issue creation, checklist parsing, separate PR
+  recommendation, superseded PR handling, and tiny-rework single-PR fallback
+- do not read or expose secret files such as `.env`, provider auth files, API
+  keys, or GitHub tokens
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 6. Support low-code and non-code repositories without Python assumptions
 
 Labels: `automation`, `quality`, `workflow`, `analysis`
