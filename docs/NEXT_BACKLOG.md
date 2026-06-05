@@ -104,6 +104,58 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 16. Use GitHub repository intelligence before local repo type detection
+
+Labels: `automation`, `analysis`, `quality`, `workflow`, `github`
+
+Priority: `1`
+
+The solver should use GitHub's existing repository intelligence before falling
+back to local repo type detection. GitHub already exposes language shares,
+repository metadata, topics, file trees, workflows, issues, PRs, and checks. We
+should avoid rebuilding a large Linguist-like detector locally.
+
+Context:
+- PR #211 attempted to solve #188 by adding a large local
+  `repo_type_detection.py` implementation.
+- That approach passed CI after a small fix, but it duplicated GitHub data and
+  increased maintenance surface.
+- We are GitHub-first in practice; generic/non-GitHub support can remain a
+  fallback abstraction.
+
+Suggested scope:
+- add a `RepoProfileProvider` abstraction
+- implement `GitHubRepoProfileProvider` as the primary provider
+- keep a thin `LocalRepoProfileProvider` fallback for offline, non-GitHub, or
+  already-checked-out repositories
+- use GitHub REST data first:
+  - `/repos/{owner}/{repo}/languages` for language byte shares and dominant
+    language
+  - repo metadata for default branch, archived/private state, size, and
+    description
+  - topics for explicit project signals
+  - recursive git tree or contents API for marker files
+  - workflows/actions metadata for validation hints
+  - existing PR/check/issue state to avoid duplicate work
+- use local marker heuristics only for details GitHub does not provide, for
+  example `DESCRIPTION`, `renv.lock`, `app.R`, `inst/shiny/app.R`,
+  `pyproject.toml`, and `package.json`
+- expose a structured `RepoProfile` in run reports:
+  - `dominant_language`
+  - `language_percentages`
+  - `repo_kind`
+  - `framework_hints`
+  - `test_hints`
+  - `recommended_worker`
+  - `python_required`
+- make #188 solvable without assuming Python is mandatory
+- do not read or expose secret files such as `.env`, provider auth files, or
+  API keys
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 6. Support low-code and non-code repositories without Python assumptions
 
 Labels: `automation`, `quality`, `workflow`, `analysis`
