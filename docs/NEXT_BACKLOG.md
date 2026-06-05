@@ -156,6 +156,39 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 17. Add workflow control for backlog and PR queue congestion
+
+Labels: `automation`, `workflow`, `dashboard`, `quality`
+
+Priority: `1`
+
+The solver should detect and surface workflow congestion before starting more
+automated work. Congestion includes too many open PRs, open issues that already
+have PRs, stale generated branches, unresolved red checks, superseded
+approaches, and backlog items that were converted into issues but not cleaned
+up.
+
+Suggested scope:
+- detect open PR count, red PR count, green-but-unreviewed PR count, and stale
+  PR age
+- map open PRs back to issues and backlog entries
+- warn before starting new solver runs when unresolved PRs exceed a
+  configurable threshold
+- recommend the next workflow action: review, merge, close, rebase, rerun,
+  create follow-up, or clean backlog
+- add a process status section to the dashboard and overnight summary
+- show backlog entries that already have matching issues or merged/closed issues
+- make generated solver runs avoid issues that already have open PRs unless the
+  user explicitly asks for a retry or alternative model comparison
+- add tests for clean workflow, PR congestion, stale generated branches, and
+  duplicate issue/PR situations
+- do not read or expose secret files such as `.env`, provider auth files, or
+  API keys
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 6. Support low-code and non-code repositories without Python assumptions
 
 Labels: `automation`, `quality`, `workflow`, `analysis`
