@@ -42,6 +42,11 @@ LABEL_MAPPING = {
     "setup": ["kind/feature"],
     "workflow": ["theme/workflow"],
     "analysis": ["theme/research", "kind/analysis"],
+    "dashboard": ["theme/dashboard"],
+    "provider": ["theme/provider"],
+    "research": ["theme/research"],
+    "opencode": ["area/opencode"],
+    "sandbox": ["theme/codex"],  # theme/codex passt besser als area/sandbox
 }
 
 class GitHubClient:
