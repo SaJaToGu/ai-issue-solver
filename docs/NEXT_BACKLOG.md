@@ -189,6 +189,44 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 18. Harden Codex sandbox and escalated-command workflow handling
+
+Labels: `automation`, `workflow`, `codex`, `sandbox`, `quality`
+
+Priority: `1`
+
+Codex runs can behave differently inside the app sandbox than the same commands
+run directly in the user's terminal. We have seen GitHub API DNS failures from
+Python inside the sandbox while the terminal worked, `.git` write operations
+blocked by sandbox permissions, and commands such as `git pull`, `git switch`,
+or GitHub checks needing escalated execution. The solver workflow should make
+these differences explicit, diagnosable, and recoverable.
+
+Suggested scope:
+- add a Codex environment preflight that checks GitHub API access through both
+  `gh` and Python `requests`
+- detect sandbox-related DNS/network failures and recommend or request
+  escalated execution instead of retrying blindly
+- detect `.git` write permission failures such as blocked `FETCH_HEAD` or
+  `index.lock` creation and surface a clear recovery hint
+- record whether commands ran sandboxed or escalated in run reports and
+  overnight summaries
+- add a safe command classification for common workflow operations such as
+  `git switch`, `git pull --ff-only`, `gh pr checks`, `gh run view`, and
+  `gh issue create`
+- avoid broad approvals; keep suggested escalation prefix rules narrow and
+  task-specific
+- make Codex-specific limitations visible in the dashboard process status
+  section once workflow congestion reporting exists
+- add tests for sandbox DNS failure classification, `.git` permission failure
+  handling, and escalated-command recommendation text
+- do not read or expose secrets such as `.env`, provider auth files, API keys,
+  or GitHub tokens
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 6. Support low-code and non-code repositories without Python assumptions
 
 Labels: `automation`, `quality`, `workflow`, `analysis`
