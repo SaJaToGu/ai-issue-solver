@@ -203,7 +203,7 @@ class DashboardRun:
     lifecycle_state: str = ""
     lifecycle_needs_attention: bool = False
     lifecycle_note: str = ""
-    
+
     # Neue Felder für Kosten, Laufzeit und Priorisierung
     runtime_seconds: int | None = None
     cost_estimate: float | None = None
@@ -245,7 +245,7 @@ class RepoSummary:
     archived: int
     unknown: int
     needs_attention: int
-    
+
     # Neue Felder für Kosten und Laufzeit
     total_runtime_seconds: int = 0
     total_cost_estimate: float = 0.0
@@ -672,14 +672,14 @@ def read_runs(runs_dir: Path,
         actual_model = fields.get("actual_model", "")
         if fallback_from and actual_model:
             model = f"{actual_model} (Fallback von {fallback_from})"
-            
+
         # Neue Felder für Laufzeit, Kosten und Priorisierung
         runtime_seconds = int(fields.get("runtime_seconds", 0)) if fields.get("runtime_seconds") else None
         cost_estimate = float(fields.get("cost_estimate", 0.0)) if fields.get("cost_estimate") else None
         cost_confidence = fields.get("cost_confidence", "unavailable")
         priority = int(fields.get("priority", 0)) if fields.get("priority") else None
         provider = fields.get("provider", "")
-        
+
         runs.append(
             DashboardRun(
                 path=run_dir,
@@ -1399,7 +1399,7 @@ def compute_repo_summaries(runs: list[DashboardRun]) -> list[RepoSummary]:
         total_runs = stats["total"]
         avg_runtime = stats["total_runtime_seconds"] / total_runs if total_runs > 0 else 0
         avg_cost = stats["total_cost_estimate"] / total_runs if total_runs > 0 else 0.0
-        
+
         summaries.append(
             RepoSummary(
                 name=repo_name,
@@ -1445,7 +1445,7 @@ def render_issue_cell(run: DashboardRun) -> str:
 def render_model_comparison_rows(runs: list[DashboardRun]) -> str:
     """Generiert die Zeilen für den Modellvergleich."""
     model_stats = {}
-    
+
     for run in runs:
         model = run.model
         if model not in model_stats:
@@ -1458,10 +1458,10 @@ def render_model_comparison_rows(runs: list[DashboardRun]) -> str:
                 "runtime_seconds": [],
                 "cost_estimate": [],
             }
-        
+
         stats = model_stats[model]
         stats["total"] += 1
-        
+
         if run.category == "successful":
             stats["successful"] += 1
             if run.status.startswith("pr_created"):
@@ -1470,12 +1470,12 @@ def render_model_comparison_rows(runs: list[DashboardRun]) -> str:
             stats["noop"] += 1
         elif run.category == "failed":
             stats["failed"] += 1
-        
+
         if run.runtime_seconds:
             stats["runtime_seconds"].append(run.runtime_seconds)
         if run.cost_estimate:
             stats["cost_estimate"].append(run.cost_estimate)
-    
+
     rows = []
     for model, stats in model_stats.items():
         total = stats["total"]
@@ -1483,16 +1483,16 @@ def render_model_comparison_rows(runs: list[DashboardRun]) -> str:
         pr_created = stats["pr_created"]
         noop = stats["noop"]
         failed = stats["failed"]
-        
+
         success_rate = (successful / total * 100) if total > 0 else 0
         pr_rate = (pr_created / total * 100) if total > 0 else 0
         noop_rate = (noop / total * 100) if total > 0 else 0
         fail_rate = (failed / total * 100) if total > 0 else 0
-        
+
         median_runtime = sorted(stats["runtime_seconds"])[len(stats["runtime_seconds"]) // 2] if stats["runtime_seconds"] else 0
-        
+
         avg_cost_per_success = sum(stats["cost_estimate"]) / successful if successful > 0 and stats["cost_estimate"] else 0
-        
+
         rows.append(f"""
         <tr>
           <td>{escape(model)}</td>
@@ -1504,7 +1504,7 @@ def render_model_comparison_rows(runs: list[DashboardRun]) -> str:
           <td>${avg_cost_per_success:.2f}</td>
         </tr>
         """)
-    
+
     return "\n".join(rows)
 
 
@@ -1519,7 +1519,7 @@ def render_backlog_rows(issues: list[DashboardIssue]) -> str:
             priority_badge = '<span class="priority-badge priority-medium">Mittel</span>'
         elif issue.priority == 3:
             priority_badge = '<span class="priority-badge priority-low">Niedrig</span>'
-        
+
         rows.append(f"""
         <tr>
           <td>{priority_badge}</td>
@@ -1535,14 +1535,14 @@ def render_backlog_rows(issues: list[DashboardIssue]) -> str:
           </td>
         </tr>
         """)
-    
+
     return "\n".join(rows)
 
 
 def render_charts_script(runs: list[DashboardRun]) -> str:
     """Generiert das JavaScript für die Diagramme."""
     model_stats = {}
-    
+
     for run in runs:
         model = run.model
         if model not in model_stats:
@@ -1552,25 +1552,25 @@ def render_charts_script(runs: list[DashboardRun]) -> str:
                 "runtime_seconds": [],
                 "cost_estimate": [],
             }
-        
+
         stats = model_stats[model]
         if run.category == "successful":
             stats["successful"] += 1
         elif run.category == "failed":
             stats["failed"] += 1
-        
+
         if run.runtime_seconds:
             stats["runtime_seconds"].append(run.runtime_seconds)
         if run.cost_estimate:
             stats["cost_estimate"].append(run.cost_estimate)
-    
+
     # Daten für Erfolgsquote-Diagramm
     success_data = {}
     for model, stats in model_stats.items():
         total = stats["successful"] + stats["failed"]
         success_rate = (stats["successful"] / total * 100) if total > 0 else 0
         success_data[model] = success_rate
-    
+
     # Daten für Kosten- und Laufzeit-Diagramm
     cost_runtime_data = []
     for model, stats in model_stats.items():
@@ -1581,7 +1581,7 @@ def render_charts_script(runs: list[DashboardRun]) -> str:
             "runtime": avg_runtime,
             "cost": avg_cost
         })
-    
+
     return f"""
     // Erfolgsquote-Diagramm
     const successCtx = document.getElementById('successRateChart').getContext('2d');
@@ -1607,7 +1607,7 @@ def render_charts_script(runs: list[DashboardRun]) -> str:
         }}
       }}
     }});
-    
+
     // Kosten- und Laufzeit-Diagramm
     const costRuntimeCtx = document.getElementById('costRuntimeChart').getContext('2d');
     new Chart(costRuntimeCtx, {{
@@ -1706,11 +1706,11 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         note_parts.append(f"Recovery-Worktree: <code>{escape(run.preserved_worktree)}</code>")
     note = f"<div class=\"note\">{'<br>'.join(note_parts)}</div>" if note_parts else ""
     last_activity = escape(format_datetime(run.last_activity_at))
-    
+
     # Neue Felder für Laufzeit und Kosten
     runtime_display = escape(str(run.runtime_seconds) + "s" if run.runtime_seconds else "-")
     cost_display = escape(f"${run.cost_estimate:.2f} ({run.cost_confidence})" if run.cost_estimate else "-")
-    
+
     # Prioritätsanzeige
     priority_badge = ""
     if run.priority == 1:
@@ -1719,7 +1719,7 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         priority_badge = '<span class="priority-badge priority-medium">Mittel</span>'
     elif run.priority == 3:
         priority_badge = '<span class="priority-badge priority-low">Niedrig</span>'
-    
+
     return "\n".join([
         "<tr>",
         f'  <td><span class="badge badge-{escape(run.category)}">{escape(STATUS_LABELS[run.category])}</span></td>',
@@ -1799,7 +1799,7 @@ def render_unstarted_issue_row(issue: DashboardIssue) -> str:
         render_command_block(dry_run_command, "Dry-run"),
         render_command_block(start_command, "Start"),
     ])
-    
+
     # Prioritätsbadge hinzufügen
     priority_badge = ""
     if issue.priority == 1:
@@ -1808,7 +1808,7 @@ def render_unstarted_issue_row(issue: DashboardIssue) -> str:
         priority_badge = '<span class="priority-badge priority-medium">Mittel</span>'
     elif issue.priority == 3:
         priority_badge = '<span class="priority-badge priority-low">Niedrig</span>'
-    
+
     return "\n".join([
         "<tr>",
         '  <td><span class="badge badge-queued">Open</span></td>',
@@ -2355,14 +2355,14 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     function switchTab(tabId) {{
       const tabs = document.querySelectorAll('.tab');
       tabs.forEach(tab => tab.classList.remove('active'));
-      
+
       const tabContents = document.querySelectorAll('.tab-content');
       tabContents.forEach(content => content.classList.remove('active'));
-      
+
       document.getElementById(tabId).classList.add('active');
       event.currentTarget.classList.add('active');
     }}
-    
+
     // Initialisiere Diagramme
     document.addEventListener('DOMContentLoaded', function() {{
       {render_charts_script(runs)}
