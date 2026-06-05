@@ -1,0 +1,79 @@
+name: Benchmark Non-Codex Solver Providers
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue-Nummer für den Benchmark (z.B. 184)'
+        required: true
+      models:
+        description: 'Modelle für den Benchmark (Komma-getrennt, z.B. mistral/mistral-large-latest,claude-sonnet-4-20250514)'
+        required: true
+        default: 'mistral/mistral-large-latest,claude-sonnet-4-20250514'
+
+jobs:
+  benchmark:
+    name: Benchmark Issue ${{ inputs.issue_number }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(format('[{0}]', inputs.models)) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run Benchmark
+        id: benchmark
+        run: |
+          python scripts/solve_issues.py \
+            --model opencode \
+            --model-name ${{ matrix.model }} \
+            --repo ${{ github.repository }} \
+            --issue ${{ inputs.issue_number }} \
+            --dry-run
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if grep -q "no_changes" benchmark.log; then
+            echo "changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for PR creation
+        id: pr
+        run: |
+          if grep -q "PR erstellt" benchmark.log; then
+            echo "pr=true" >> $GITHUB_OUTPUT
+          else
+            echo "pr=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for test success
+        id: tests
+        run: |
+          if python -m unittest discover -s tests; then
+            echo "tests=true" >> $GITHUB_OUTPUT
+          else
+            echo "tests=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Record results
+        run: |
+          echo "### Benchmark-Ergebnis für ${{ matrix.model }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Issue**: ${{ inputs.issue_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Modell**: ${{ matrix.model }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Änderungen**: ${{ steps.changes.outputs.changes }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR erstellt**: ${{ steps.pr.outputs.pr }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests bestanden**: ${{ steps.tests.outputs.tests }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
