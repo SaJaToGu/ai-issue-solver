@@ -1,0 +1,21 @@
+# R-specific ignores
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# renv
+renv/
+!renv/activate.R
+
+# testthat
+tests/testthat/_snaps
+
+# Documentation
+docs/*.html
+docs/*.pdf
+
+# Temporary files
+*.tmp
+*.bak
+*.swp

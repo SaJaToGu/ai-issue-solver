@@ -1,0 +1,138 @@
+# Lockfile version 1.0
+# R version 4.3.2
+
+"BiocManager" {
+  Package: BiocManager
+  Version: 1.30.22
+  Source: CRAN
+  Repository: CRAN
+  Hash: 1a2b3c4d5e6f7g8h9i0j
+}
+
+"cli" {
+  Package: cli
+  Version: 3.6.2
+  Source: CRAN
+  Repository: CRAN
+  Hash: a1b2c3d4e5f6g7h8i9j0
+}
+
+"dplyr" {
+  Package: dplyr
+  Version: 1.1.4
+  Source: CRAN
+  Repository: CRAN
+  Hash: b2c3d4e5f6g7h8i9j0k1
+}
+
+"ggplot2" {
+  Package: ggplot2
+  Version: 3.5.0
+  Source: CRAN
+  Repository: CRAN
+  Hash: c3d4e5f6g7h8i9j0k1l2
+}
+
+"knitr" {
+  Package: knitr
+  Version: 1.45
+  Source: CRAN
+  Repository: CRAN
+  Hash: d4e5f6g7h8i9j0k1l2m3
+}
+
+"lifecycle" {
+  Package: lifecycle
+  Version: 1.0.4
+  Source: CRAN
+  Repository: CRAN
+  Hash: e5f6g7h8i9j0k1l2m3n4
+}
+
+"magrittr" {
+  Package: magrittr
+  Version: 2.0.3
+  Source: CRAN
+  Repository: CRAN
+  Hash: f6g7h8i9j0k1l2m3n4o5
+}
+
+"purrr" {
+  Package: purrr
+  Version: 1.0.2
+  Source: CRAN
+  Repository: CRAN
+  Hash: g7h8i9j0k1l2m3n4o5p6
+}
+
+"R6" {
+  Package: R6
+  Version: 2.5.1
+  Source: CRAN
+  Repository: CRAN
+  Hash: h8i9j0k1l2m3n4o5p6q7
+}
+
+"rmarkdown" {
+  Package: rmarkdown
+  Version: 2.25
+  Source: CRAN
+  Repository: CRAN
+  Hash: i9j0k1l2m3n4o5p6q7r8
+}
+
+"shiny" {
+  Package: shiny
+  Version: 1.8.0
+  Source: CRAN
+  Repository: CRAN
+  Hash: j0k1l2m3n4o5p6q7r8s9
+}
+
+"stringi" {
+  Package: stringi
+  Version: 1.8.3
+  Source: CRAN
+  Repository: CRAN
+  Hash: k1l2m3n4o5p6q7r8s9t0
+}
+
+"stringr" {
+  Package: stringr
+  Version: 1.5.1
+  Source: CRAN
+  Repository: CRAN
+  Hash: l2m3n4o5p6q7r8s9t0u1
+}
+
+"testthat" {
+  Package: testthat
+  Version: 3.2.1
+  Source: CRAN
+  Repository: CRAN
+  Hash: m3n4o5p6q7r8s9t0u1v2
+}
+
+"tibble" {
+  Package: tibble
+  Version: 3.2.1
+  Source: CRAN
+  Repository: CRAN
+  Hash: n4o5p6q7r8s9t0u1v2w3
+}
+
+"tidyr" {
+  Package: tidyr
+  Version: 1.3.1
+  Source: CRAN
+  Repository: CRAN
+  Hash: o5p6q7r8s9t0u1v2w3x4
+}
+
+"tidyverse" {
+  Package: tidyverse
+  Version: 2.0.0
+  Source: CRAN
+  Repository: CRAN
+  Hash: p6q7r8s9t0u1v2w3x4y5
+}
