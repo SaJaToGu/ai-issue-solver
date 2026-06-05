@@ -5,6 +5,7 @@ Dieses Modul analysiert die Dateistruktur eines Repositories, um den Typ (z. B. 
 """
 
 from __future__ import annotations
+from dataclasses import dataclass
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
