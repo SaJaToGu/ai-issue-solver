@@ -300,6 +300,51 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+## 21. Add solver process supervisor for monitoring and targeted cancellation
+
+Labels: `automation`, `workflow`, `dashboard`, `quality`
+
+Priority: `1`
+
+Running solver jobs should not require Codex to manually inspect process lists,
+tail health files, infer stuck states, and kill individual processes. The
+project should provide a small supervisor command or daemon that tracks active
+solver runs, reports their health, and can stop exactly the intended job by
+run id, issue number, repo, branch, or worker pid.
+
+Suggested scope:
+- add a solver process registry that records run id, repo, issue, branch,
+  worker adapter, model name, pid tree, start time, latest health timestamp,
+  run report path, and current phase
+- provide a command such as `scripts/solver_supervisor.py status` to list
+  active jobs with stale/healthy/unhealthy classification
+- provide targeted stop commands such as `stop --run-id`, `stop --issue`,
+  `stop --repo`, or `stop --pid`, with a dry-run mode that shows the exact
+  process tree before sending signals
+- use graceful termination first, then configurable escalation only for the
+  selected process tree; never kill unrelated solver, dashboard, terminal, or
+  user processes
+- detect repeated test loops, repeated edit failures, no-health-update windows,
+  WAL/database failures, network stalls, and worker output inactivity
+- preserve or copy the active worktree before terminating an unhealthy job when
+  there are local changes
+- write a structured cancellation reason to the run report and overnight
+  summary
+- surface active job status and stop recommendations in the dashboard, ideally
+  with copyable commands rather than requiring Codex to run process monitoring
+  manually
+- integrate with `solve_issues.py`, `solve_issues_batch.py`, and
+  `run_overnight.py` without requiring a separate terminal watcher for normal
+  runs
+- add tests for registry writes, stale detection, process tree selection,
+  dry-run stop output, preservation-before-stop, and unrelated-process safety
+- do not read or expose secret files such as `.env`, provider auth files, API
+  keys, or GitHub tokens
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
 ## 6. Support low-code and non-code repositories without Python assumptions
 
 Labels: `automation`, `quality`, `workflow`, `analysis`
