@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Read-only supervisor status for solver run reports.
+
+This first supervisor slice intentionally does not inspect or stop OS
+processes. It reports active-looking solver runs from existing report files so
+operators can see stale jobs without manual tail/ps work.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable
+
+sys.path.insert(0, str(Path(__file__).parent))
+from solver_reporting import RUN_REPORTS_ROOT  # noqa: E402
+from status_dashboard import parse_created_at, parse_datetime_value, parse_summary  # noqa: E402
+from utils import print_banner, print_ok, print_step, print_warn  # noqa: E402
+
+
+RUNNING_STATUSES = {"started", "running", "queued"}
+TERMINAL_STATUSES = {
+    "archived",
+    "cleanup_noop",
+    "cleanup_successful",
+    "clone_failed",
+    "failed",
+    "no_changes",
+    "nonzero_without_changes",
+    "pr_created",
+    "pr_created_from_existing_branch",
+    "pr_created_with_warning",
+    "pr_failed",
+    "push_failed",
+    "rate_limit_deferred",
+    "skip_existing_pr",
+    "skip_merged_pr",
+    "validation_failed",
+    "worker_validation_failed",
+}
+DEFAULT_STALE_SECONDS = 15 * 60
+
+
+@dataclass(frozen=True)
+class SupervisorRun:
+    run_id: str
+    run_dir: Path
+    repo: str
+    issue: str
+    branch: str
+    model: str
+    status: str
+    phase: str
+    last_activity_at: datetime | None
+    last_report_update_at: datetime | None
+    health_status: str
+    health_reason: str
+    output_tail: str
+
+    @property
+    def is_active(self) -> bool:
+        return self.status in RUNNING_STATUSES or self.health_status in {"healthy", "stale"}
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _summary_fields(run_dir: Path) -> dict[str, str]:
+    summary_path = run_dir / "summary.txt"
+    if not summary_path.exists():
+        return {}
+    try:
+        return parse_summary(summary_path)
+    except OSError:
+        return {}
+
+
+def _string_value(data: dict, key: str) -> str:
+    value = data.get(key, "")
+    return "" if value is None else str(value)
+
+
+def _latest_datetime(*values: datetime | None) -> datetime | None:
+    parsed = [value for value in values if value is not None]
+    return max(parsed) if parsed else None
+
+
+def classify_run_health(
+    status: str,
+    phase: str,
+    last_seen: datetime | None,
+    now: datetime,
+    stale_seconds: int,
+) -> tuple[str, str]:
+    if status in TERMINAL_STATUSES:
+        return "finished", "terminal status"
+    if last_seen is None:
+        return "unknown", "no health timestamp"
+
+    age_seconds = int((now - last_seen).total_seconds())
+    if age_seconds > stale_seconds:
+        return "stale", f"no update for {age_seconds}s"
+    if phase:
+        return "healthy", f"phase {phase}"
+    return "healthy", "recent update"
+
+
+def read_supervisor_runs(
+    runs_dir: Path = RUN_REPORTS_ROOT,
+    now: datetime | None = None,
+    stale_seconds: int = DEFAULT_STALE_SECONDS,
+) -> list[SupervisorRun]:
+    now = now or datetime.now()
+    if not runs_dir.exists():
+        return []
+
+    runs: list[SupervisorRun] = []
+    for run_dir in sorted((path for path in runs_dir.iterdir() if path.is_dir()), reverse=True):
+        summary = _summary_fields(run_dir)
+        metadata = _read_json(run_dir / "metadata.json")
+        health = _read_json(run_dir / "health.json")
+
+        status = _string_value(metadata, "status") or summary.get("status", "")
+        phase = _string_value(health, "phase")
+        health_status = _string_value(health, "status")
+        if health_status and health_status not in RUNNING_STATUSES and not status:
+            status = health_status
+
+        last_activity = parse_datetime_value(
+            _string_value(health, "last_activity_at")
+            or _string_value(metadata, "last_activity_at")
+            or summary.get("last_activity_at", "")
+        )
+        last_report_update = parse_datetime_value(
+            _string_value(health, "last_report_update_at")
+            or _string_value(metadata, "last_report_update_at")
+            or summary.get("last_report_update_at", "")
+        )
+        last_seen = _latest_datetime(last_activity, last_report_update, parse_created_at(run_dir.name))
+        run_health, reason = classify_run_health(status, phase, last_seen, now, stale_seconds)
+
+        runs.append(
+            SupervisorRun(
+                run_id=run_dir.name,
+                run_dir=run_dir,
+                repo=_string_value(metadata, "repo") or summary.get("repo", ""),
+                issue=_string_value(metadata, "issue_number")
+                or _string_value(metadata, "issue")
+                or summary.get("issue", ""),
+                branch=_string_value(metadata, "branch") or summary.get("branch", ""),
+                model=_string_value(metadata, "model") or summary.get("model", ""),
+                status=status,
+                phase=phase,
+                last_activity_at=last_activity,
+                last_report_update_at=last_report_update,
+                health_status=run_health,
+                health_reason=reason,
+                output_tail=_string_value(health, "output_tail"),
+            )
+        )
+    return runs
+
+
+def filter_active_runs(runs: Iterable[SupervisorRun]) -> list[SupervisorRun]:
+    return [run for run in runs if run.is_active]
+
+
+def format_run_line(run: SupervisorRun) -> str:
+    issue = f"#{run.issue}" if run.issue else "-"
+    return (
+        f"{run.health_status:<8} {run.repo or '-':<22} {issue:<8} "
+        f"{run.phase or '-':<18} {run.status or '-':<18} {run.model or '-':<24} "
+        f"{run.run_id}"
+    )
+
+
+def print_status(runs: list[SupervisorRun], active_only: bool) -> None:
+    selected = filter_active_runs(runs) if active_only else runs
+    if not selected:
+        print_ok("No matching solver runs found.")
+        return
+
+    print("Health   Repo                   Issue    Phase              Status             Model                    Run")
+    print("-" * 128)
+    for run in selected:
+        print(format_run_line(run))
+        if run.health_status in {"stale", "unknown"}:
+            print(f"         reason: {run.health_reason}; report: {run.run_dir}")
+    print()
+    print(f"{len(selected)} run(s) shown.")
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Read-only solver supervisor status")
+    parser.add_argument("command", choices=["status"], help="Supervisor command")
+    parser.add_argument("--runs-dir", default=str(RUN_REPORTS_ROOT), help="Run report directory")
+    parser.add_argument(
+        "--stale-seconds",
+        type=int,
+        default=DEFAULT_STALE_SECONDS,
+        help=f"Seconds without health updates before a run is stale (default: {DEFAULT_STALE_SECONDS})",
+    )
+    parser.add_argument("--all", action="store_true", help="Show terminal runs too")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    print_banner("SOLVER SUPERVISOR")
+    print_step(1, f"Reading runs from {args.runs_dir}")
+    runs = read_supervisor_runs(Path(args.runs_dir), stale_seconds=args.stale_seconds)
+    print_status(runs, active_only=not args.all)
+    if any(run.health_status == "stale" for run in filter_active_runs(runs)):
+        print_warn("Stale runs detected. This read-only command does not stop processes yet.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
