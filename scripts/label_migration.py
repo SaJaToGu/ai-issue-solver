@@ -49,6 +49,11 @@ LABEL_MAPPING = {
     "sandbox": ["theme/codex"],  # theme/codex passt besser als area/sandbox
 }
 
+# Mapping for specific unlabeled issues by issue number
+UNLABELED_ISSUE_MAPPING = {
+    213: ["theme/github", "theme/workflow", "area/issues", "kind/feature", "agent/triage"],
+}
+
 class GitHubClient:
     BASE = "https://api.github.com"
 
@@ -132,18 +137,29 @@ class GitHubClient:
         raise_for_github_response(created, f"Label erstellen: {name}")
 
 
-def migrate_issue_labels(issue: dict, mapping: dict[str, list[str]]) -> list[str]:
-    """Migrate an issue's labels to the new taxonomy."""
+def migrate_issue_labels(issue: dict, mapping: dict[str, list[str]], unlabeled_mapping: dict[int, list[str]]) -> list[str]:
+    """Migrate an issue's labels to the new taxonomy.
+    
+    Args:
+        issue: GitHub issue dictionary
+        mapping: Dictionary mapping old labels to new labels
+        unlabeled_mapping: Dictionary mapping issue numbers to labels for unlabeled issues
+    """
     old_labels = [label["name"] for label in issue.get("labels", [])]
     new_labels = []
-    
+
+    # Handle unlabeled issues first
+    if not old_labels and issue["number"] in unlabeled_mapping:
+        new_labels.extend(unlabeled_mapping[issue["number"]])
+
+    # Migrate existing labels
     for label in old_labels:
         if label in mapping:
             new_labels.extend(mapping[label])
         else:
             # Keep unmapped labels as-is
             new_labels.append(label)
-    
+
     # Deduplicate while preserving order
     seen = set()
     deduped = []
@@ -151,7 +167,7 @@ def migrate_issue_labels(issue: dict, mapping: dict[str, list[str]]) -> list[str
         if label not in seen:
             seen.add(label)
             deduped.append(label)
-    
+
     return deduped
 
 
@@ -215,7 +231,9 @@ def main() -> int:
     all_new_labels = set()
     for mapping in LABEL_MAPPING.values():
         all_new_labels.update(mapping)
-    
+    for mapping in UNLABELED_ISSUE_MAPPING.values():
+        all_new_labels.update(mapping)
+
     for label in sorted(all_new_labels):
         client.ensure_label(args.repo, label)
 
@@ -223,7 +241,7 @@ def main() -> int:
     skipped = 0
 
     for issue in issues:
-        new_labels = migrate_issue_labels(issue, LABEL_MAPPING)
+        new_labels = migrate_issue_labels(issue, LABEL_MAPPING, UNLABELED_ISSUE_MAPPING)
         print_issue_migration_preview(issue, new_labels)
 
         if not real_migrate:
