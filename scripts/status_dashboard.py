@@ -1814,8 +1814,9 @@ def render_unstarted_issue_row(issue: DashboardIssue) -> str:
         '  <td><span class="badge badge-queued">Open</span></td>',
         f"  <td>{updated}</td>",
         f"  <td>{escape(issue.repo or '-')}</td>",
-        f"  <td><div class=\"issue-number\">{priority_badge}#{escape(issue.number)}</div>"
+        f"  <td><div class=\"issue-number\">#{escape(issue.number)}</div>"
         f"<div class=\"issue-title\">{escape(issue.title)}</div></td>",
+        f"  <td>{priority_badge or '-'}</td>",
         f"  <td><code>{escape(provider)}</code></td>",
         f"  <td><code>{escape(cluster)}</code><div class=\"note\">Konfliktrisiko: {escape(risk)}</div></td>",
         f"  <td>{escape(issue.state or 'open')}</td>",
