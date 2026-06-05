@@ -55,6 +55,7 @@ class SupervisorRun:
     model: str
     status: str
     phase: str
+    worker_pid: str
     last_activity_at: datetime | None
     last_report_update_at: datetime | None
     health_status: str
@@ -159,6 +160,10 @@ def read_supervisor_runs(
                 model=_string_value(metadata, "model") or summary.get("model", ""),
                 status=status,
                 phase=phase,
+                worker_pid=_string_value(
+                    health.get("process", {}) if isinstance(health.get("process"), dict) else {},
+                    "worker_pid",
+                ),
                 last_activity_at=last_activity,
                 last_report_update_at=last_report_update,
                 health_status=run_health,
@@ -178,7 +183,7 @@ def format_run_line(run: SupervisorRun) -> str:
     return (
         f"{run.health_status:<8} {run.repo or '-':<22} {issue:<8} "
         f"{run.phase or '-':<18} {run.status or '-':<18} {run.model or '-':<24} "
-        f"{run.run_id}"
+        f"{run.worker_pid or '-':<8} {run.run_id}"
     )
 
 
@@ -188,7 +193,7 @@ def print_status(runs: list[SupervisorRun], active_only: bool) -> None:
         print_ok("No matching solver runs found.")
         return
 
-    print("Health   Repo                   Issue    Phase              Status             Model                    Run")
+    print("Health   Repo                   Issue    Phase              Status             Model                    Worker   Run")
     print("-" * 128)
     for run in selected:
         print(format_run_line(run))
