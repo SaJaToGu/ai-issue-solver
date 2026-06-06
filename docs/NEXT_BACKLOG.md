@@ -724,3 +724,191 @@ Deliverables:
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+## 24. Trigger the solver automatically via GitHub Actions when an issue is labeled
+
+Labels: `automation`, `workflow`, `github`
+
+Priority: `1`
+
+Inspired by OpenHands, which demonstrated that an AI coding agent can be
+triggered directly from GitHub events without requiring a local machine to be
+running. OpenHands uses a similar label-based dispatch model to start solver
+runs on GitHub-hosted infrastructure.
+
+Currently the solver must be started manually on the local machine. This is a
+break in the workflow: the issue exists on GitHub, but the fix has to be
+triggered locally. A GitHub Actions workflow that automatically triggers the
+solver when a defined label is applied closes this gap and brings the project
+closer to how git-bob and OpenHands work.
+
+Suggested scope:
+- add `.github/workflows/solve-on-label.yml` that triggers on
+  `issues: [labeled]`
+- when the label is `ai-solve`, check out the repo, install dependencies, and
+  run `solve_issues.py` with the labeled issue number
+- remove the `ai-solve` label after the solver run completes, regardless of
+  outcome
+- store API keys as GitHub Secrets, never hardcoded in the workflow
+- give the runner write access only to its own fork branch, not to the base
+  branch
+- do not forward secrets to the AI worker beyond what `solve_issues.py`
+  already handles
+- support optional label variants as a follow-up: `ai-solve-claude` for an
+  explicit Claude run, `ai-analyze` to run `analyze_repos.py` only,
+  `ai-cleanup` to run `post_merge_cleanup.py`
+- optionally restrict the workflow to label setters defined in CODEOWNERS
+- do not expose API keys, provider auth files, or GitHub tokens in logs or
+  run reports
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 25. Decompose oversized issues into sub-issues automatically
+
+Labels: `automation`, `workflow`, `github`, `quality`
+
+Priority: `2`
+
+When an issue is too large or vague, the solver often fails or produces a
+large, hard-to-review PR. The better strategy: the solver recognises when an
+issue should be split and creates concrete sub-issues instead of attempting a
+monolithic fix.
+
+Suggested scope:
+- add complexity heuristics to `solve_issues.py` that flag an issue as too
+  large: body longer than ~1500 characters, more than three distinct file areas
+  mentioned, labels such as `epic`, `large`, or `refactor`, the AI worker
+  explicitly stating that multiple steps are needed, or no clear `Touches:`
+  hint in the body
+- add a `--decompose` flag that sends the issue to the AI with a prompt asking
+  for 3–5 concrete, independently solvable sub-issues returned as JSON
+- add an `--auto-decompose` flag that applies the same logic automatically when
+  complexity heuristics are triggered
+- create sub-issues via the GitHub Issues API with title
+  `[Sub] <parent-title> — Part N`, a body describing the sub-task with
+  `Parent: #<number>` reference, and labels `ai-sub-issue` and `ai-solve`
+- add a comment to the parent issue linking all generated sub-issues
+- add tests for complexity heuristic thresholds, sub-issue JSON parsing, and
+  parent-issue comment creation
+- do not expose API keys, provider auth files, or GitHub tokens in sub-issue
+  bodies or comments
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 26. Run tests after each solver fix and include the result in the PR body
+
+Labels: `automation`, `quality`, `workflow`
+
+Priority: `2`
+
+Inspired by OpenHands and SWE-agent, both of which validate fixes internally
+before creating a PR. This entry applies the same principle using the existing
+test setup instead of requiring external infrastructure.
+
+Tests already run as a preflight check before the solver. But after the fix is
+committed, there is currently no check whether the new code still passes the
+test suite. A solver that fixes a bug but breaks another test lands in the PR
+undetected. The AI branch should be tested after the commit and the result
+should flow into the run report and PR body.
+
+Suggested scope:
+- add a `--post-solve-tests` flag to `solve_issues.py` that runs the test
+  suite on the AI branch after a successful commit
+- accept a `--test-command` override, defaulting to the existing preflight test
+  command
+- measure a baseline from the preflight run and compare outcomes: all green,
+  unchanged, or new failures
+- create the PR as a normal PR when all tests pass, with a warning note when
+  results are unchanged, and as a draft PR with an explicit failure block when
+  new failures appear
+- include a compact test-delta table in `summary.txt` and the PR body, for
+  example: passed before / passed after / delta
+- feed the test delta into the provider scorecard so cross-model comparisons
+  can show which model breaks the fewest tests
+- add tests for each outcome: all green, unchanged, new failures, and draft PR
+  creation
+- do not expose API keys, provider auth files, or full test output in the PR
+  body
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 27. Document RepoLens: what it is and why Docker isolation is used
+
+Labels: `docs`, `quality`
+
+Priority: `3`
+
+The README describes a complex Docker wrapper for RepoLens with `--network
+none`, a separate report mount, and explicit exclusion of GitHub write
+credentials. For any new contributor — and for the project maintainer returning
+after a few months — it is unclear: what is RepoLens, why does it need
+isolation, and is it an external tool, an internal script, or a commercial
+service?
+
+Suggested scope:
+- add `docs/REPOLENS.md` explaining what RepoLens does, why network isolation
+  is useful, and how to embed it safely in the workflow without needing to
+  understand the Docker wrapper code
+- cover: what RepoLens analyses (security, performance, code quality, finding
+  types and severities), why `--network none` is used, how the report mount
+  separates the analysis agent from the deployment agent, and the principle of
+  least privilege
+- include a minimal quick-start example: scan a repo, read the report, import
+  findings as issues
+- add a security model section clarifying what RepoLens is and is not allowed
+  to see, and why
+- optionally add inline `--help` output to `run_repolens_docker.sh` that
+  surfaces the security rationale directly when the script is run, not only in
+  the documentation
+- do not expose API keys, provider auth files, or GitHub tokens in the
+  documentation
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 28. Track solver success rate with a benchmark script
+
+Labels: `automation`, `quality`, `workflow`, `provider`
+
+Priority: `2`
+
+Inspired by SWE-Bench, which made it possible to compare AI coding agents on
+a standardised benchmark. The goal here is a lightweight internal equivalent:
+a `benchmark_solver.py` script that aggregates run reports into a comparable
+success-rate view per model, provider, and issue type — without requiring an
+external evaluation harness.
+
+The test-delta data from entry #26 (post-solve test validation) is the primary
+input for cross-model comparisons.
+
+Suggested scope:
+- add `scripts/benchmark_solver.py` that reads run reports from `reports/runs/`
+  and aggregates outcomes by provider, model, repo, issue label, and task type
+- track per-run fields: PR created, tests passed, no-change, validation failed,
+  runtime, and estimated cost
+- group runs by same-issue comparison groups so several model attempts on the
+  same issue can be compared directly
+- compute per-model metrics: PR-created rate, test-pass rate, no-change rate,
+  failure rate, median runtime, and estimated cost per successful PR
+- consume the test-delta table from `summary.txt` (added in #26) as a
+  structured quality signal — which model broke the fewest tests
+- output a compact scorecard to stdout and optionally write a JSON report for
+  dashboard integration
+- integrate scorecard output into the status dashboard as a model comparison
+  tab (coordinate with dashboard work in #7)
+- support filtering by repo, model, date range, and issue label
+- add tests for scorecard aggregation, missing fields, single-run groups, and
+  same-issue comparison output
+- do not expose API keys, provider auth files, or raw prompts in benchmark
+  output
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
