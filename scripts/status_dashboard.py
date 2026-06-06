@@ -223,6 +223,12 @@ class DashboardRun:
     provider_scorecard_test_result: str = ""
     provider_scorecard_no_change: bool = False
     provider_scorecard_fallback_used: bool = False
+    
+    # Kosteninformationen
+    provider_scorecard_estimated_cost: float | None = None
+    provider_scorecard_cost_currency: str | None = None
+    provider_scorecard_cost_confidence: str | None = None
+    provider_scorecard_cost_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1390,11 +1396,12 @@ def format_provider_scorecard(run: DashboardRun) -> list[str]:
             run.provider_scorecard_requested_model,
             run.provider_scorecard_actual_model,
             run.provider_scorecard_duration_seconds,
-            run.provider_scorecard_fallback_used
+            run.provider_scorecard_fallback_used,
+            run.provider_scorecard_estimated_cost
         ]
     ):
         return lines
-    
+
     lines.append("Provider Scorecard:")
     if run.provider_scorecard_requested_model:
         lines.append(f"  Requested: {run.provider_scorecard_requested_model}")
@@ -1414,6 +1421,18 @@ def format_provider_scorecard(run: DashboardRun) -> list[str]:
         lines.append("  No Change: ✓")
     if run.provider_scorecard_test_result:
         lines.append(f"  Test: {run.provider_scorecard_test_result}")
+    
+    # Kosteninformationen anzeigen
+    if run.provider_scorecard_estimated_cost is not None:
+        cost_line = f"  Cost: {run.provider_scorecard_estimated_cost}"
+        if run.provider_scorecard_cost_currency:
+            cost_line += f" {run.provider_scorecard_cost_currency}"
+        if run.provider_scorecard_cost_confidence:
+            cost_line += f" ({run.provider_scorecard_cost_confidence} confidence)"
+        if run.provider_scorecard_cost_source:
+            cost_line += f" via {run.provider_scorecard_cost_source}"
+        lines.append(cost_line)
+    
     return lines
 
 

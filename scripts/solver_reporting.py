@@ -101,6 +101,12 @@ class ProviderScorecard:
     test_result: str | None = None
     no_change: bool | None = None
     fallback_used: bool = False
+    
+    # Kosteninformationen
+    estimated_cost: float | None = None
+    cost_currency: str | None = None
+    cost_confidence: str | None = None  # z.B. "low", "medium", "high", "unavailable"
+    cost_source: str | None = None  # z.B. "provider_api", "estimated", "manual"
 
 
 @dataclass(frozen=True)
@@ -528,6 +534,12 @@ def create_provider_scorecard(
         test_result=test_result,
         no_change=status in {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr"},
         fallback_used=fallback_used,
+        
+        # Kosteninformationen aus model_selection_metadata extrahieren
+        estimated_cost=model_selection_metadata.get('estimated_cost') if model_selection_metadata else None,
+        cost_currency=model_selection_metadata.get('cost_currency') if model_selection_metadata else None,
+        cost_confidence=model_selection_metadata.get('cost_confidence') if model_selection_metadata else None,
+        cost_source=model_selection_metadata.get('cost_source') if model_selection_metadata else None,
     )
 
 
@@ -595,7 +607,7 @@ def write_run_report(report: RunReport, status: str,
             },
             "resource_diagnostics": resource_diag_dict,
             "model_selection": model_selection_metadata or {},
-            "provider_scorecard": {
+             "provider_scorecard": {
                 "requested_model": scorecard.requested_model,
                 "actual_model": scorecard.actual_model,
                 "fallback_source": scorecard.fallback_source,
@@ -607,6 +619,10 @@ def write_run_report(report: RunReport, status: str,
                 "test_result": scorecard.test_result,
                 "no_change": scorecard.no_change,
                 "fallback_used": scorecard.fallback_used,
+                "estimated_cost": scorecard.estimated_cost,
+                "cost_currency": scorecard.cost_currency,
+                "cost_confidence": scorecard.cost_confidence,
+                "cost_source": scorecard.cost_source,
             },
         }
         (report.path / "metadata.json").write_text(
@@ -639,6 +655,10 @@ def write_run_report(report: RunReport, status: str,
             f"provider_scorecard_test_result: {scorecard.test_result or ''}",
             f"provider_scorecard_no_change: {scorecard.no_change}",
             f"provider_scorecard_fallback_used: {scorecard.fallback_used}",
+            f"provider_scorecard_estimated_cost: {scorecard.estimated_cost or ''}",
+            f"provider_scorecard_cost_currency: {scorecard.cost_currency or ''}",
+            f"provider_scorecard_cost_confidence: {scorecard.cost_confidence or ''}",
+            f"provider_scorecard_cost_source: {scorecard.cost_source or ''}",
         ]
 
         # Modellauswahl-Metadaten hinzufügen
