@@ -152,6 +152,42 @@ class GitHubClient:
         raise_for_github_response(resp, "Issues prüfen")
         return any(item.get("title") == title for item in resp.json())
 
+    def normalize_title(self, title: str) -> str:
+        """Normalisiert einen Titel für den Vergleich: lowercase, ohne Leerzeichen und Sonderzeichen."""
+        import re
+        return re.sub(r'[^a-z0-9]', '', title.lower())
+
+    def find_matching_issue(self, repo: str, title: str) -> dict | None:
+        """Findet ein bestehendes Issue mit exaktem oder normalisiertem Titel."""
+        normalized_title = self.normalize_title(title)
+        issues_url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
+        page = 1
+
+        while True:
+            resp = self.session.get(
+                issues_url,
+                params={"state": "all", "per_page": 100, "page": page},
+            )
+            raise_for_github_response(resp, "Issues prüfen")
+            items = resp.json()
+            if not items:
+                break
+
+            for item in items:
+                if "pull_request" in item:
+                    continue
+                item_title = item.get("title", "")
+                if item_title == title:
+                    return item
+                if self.normalize_title(item_title) == normalized_title:
+                    return item
+
+            if len(items) < 100:
+                break
+            page += 1
+
+        return None
+
     def get_issues_by_title(self, repo: str, titles: list[str]) -> dict[str, dict]:
         wanted = set(titles)
         found: dict[str, dict] = {}
@@ -258,6 +294,17 @@ def main() -> int:
         action="store_true",
         help="Bestätigt bewusst, dass echte GitHub-Issues erstellt werden dürfen",
     )
+    parser.add_argument(
+        "--only-new",
+        action="store_true",
+        help="Nur neue Issues erstellen (Standard: true)",
+        default=True,
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Erzwingt die Erstellung von Issues, auch wenn sie bereits existieren",
+    )
     args = parser.parse_args()
 
     real_create = args.apply and args.confirm_create
@@ -287,6 +334,7 @@ def main() -> int:
         if args.apply:
             print("   → --apply ist gesetzt, für echte Issues fehlt zusätzlich --confirm-create")
         print("   → Für echte Issues: python scripts/create_backlog_issues.py --apply --confirm-create")
+        print("   → Optionen: --only-new (Standard), --force (erzwingt Erstellung)")
         return 0
 
     config = load_env()
@@ -300,25 +348,55 @@ def main() -> int:
 
     client = GitHubClient(token, owner)
 
-    print_step(2, f"Erstelle Issues in {owner}/{args.repo}")
+    print_step(2, f"Prüfe bestehende Issues in {owner}/{args.repo}")
+    new_issues = []
+    existing_open = []
+    existing_closed = []
+
+    for issue in issues:
+        matching_issue = client.find_matching_issue(args.repo, issue["title"])
+        if matching_issue:
+            if matching_issue.get("state") == "open":
+                existing_open.append((issue["title"], matching_issue["number"]))
+            else:
+                existing_closed.append((issue["title"], matching_issue["number"]))
+        else:
+            new_issues.append(issue)
+
+    # Filter based on flags
+    if args.only_new:
+        issues_to_create = new_issues
+    elif args.force:
+        issues_to_create = issues
+    else:
+        issues_to_create = new_issues
+
+    print_step(3, f"Erstelle Issues in {owner}/{args.repo}")
     created = 0
     skipped = 0
 
-    # Check for closed issues still in backlog
-    github_issues = client.get_issues_by_title(args.repo, [issue["title"] for issue in issues])
-    closed_in_backlog = find_closed_issues_in_backlog(issues, github_issues)
-    if closed_in_backlog:
+    # Warn about closed issues still in backlog
+    if existing_closed:
         print_warn("Geschlossene Issues im Backlog gefunden:")
-        for title in closed_in_backlog:
-            print_warn(f"   - {title}")
+        for title, number in existing_closed:
+            print_warn(f"   - {title} (GitHub #{number})")
         print_warn("Bitte bereinige das Backlog mit scripts/cleanup_backlog.py")
 
-    for issue in issues:
-        if client.issue_exists(args.repo, issue["title"]):
-            print_warn(f"Bereits vorhanden: {issue['title']}")
-            skipped += 1
-            continue
+    # Show dry-run summary
+    if not real_create:
+        print()
+        print_warn("DRY-RUN: Keine echten GitHub-Issues wurden erstellt.")
+        print(f"   → Würde erstellen: {len(issues_to_create)}")
+        print(f"   → Bereits vorhanden (offen): {len(existing_open)}")
+        print(f"   → Bereits vorhanden (geschlossen): {len(existing_closed)}")
+        if args.only_new:
+            print("   → --only-new: Nur neue Issues werden vorgeschlagen")
+        if args.force:
+            print("   → --force: Alle Issues würden erstellt (auch bestehende)")
+        return 0
 
+    # Create issues
+    for issue in issues_to_create:
         # Map legacy labels to new taxonomy and ensure they exist
         mapped_labels = []
         for label in issue["labels"]:
@@ -330,9 +408,16 @@ def main() -> int:
         print_ok(f"{issue['title']} -> {url}")
         created += 1
 
-    print_step(3, "Fertig")
+    # Log skipped issues
+    for title, number in existing_open:
+        print_warn(f"Übersprungen (bereits offen): {title} (GitHub #{number})")
+        skipped += 1
+
+    print_step(4, "Fertig")
     print(f"   Erstellt: {created}")
     print(f"   Übersprungen: {skipped}")
+    if existing_closed:
+        print(f"   Geschlossen (nicht erstellt): {len(existing_closed)}")
     return 0
 
 
