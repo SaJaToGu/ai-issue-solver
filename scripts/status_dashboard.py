@@ -210,6 +210,19 @@ class DashboardRun:
     cost_confidence: str = "unavailable"
     priority: int | None = None
     provider: str = ""
+    
+    # Provider-Scorecard Felder
+    provider_scorecard_requested_model: str = ""
+    provider_scorecard_actual_model: str = ""
+    provider_scorecard_fallback_source: str = ""
+    provider_scorecard_duration_seconds: int | None = None
+    provider_scorecard_worker_exit_code: int | None = None
+    provider_scorecard_run_status: str = ""
+    provider_scorecard_pr_url: str = ""
+    provider_scorecard_test_command: str = ""
+    provider_scorecard_test_result: str = ""
+    provider_scorecard_no_change: bool = False
+    provider_scorecard_fallback_used: bool = False
 
 
 @dataclass(frozen=True)
@@ -251,6 +264,13 @@ class RepoSummary:
     total_cost_estimate: float = 0.0
     avg_runtime_seconds: float = 0.0
     avg_cost_estimate: float = 0.0
+    
+    # Provider-Scorecard Felder
+    total_provider_duration: int = 0
+    avg_provider_duration_seconds: float = 0.0
+    fallback_rate: float = 0.0
+    no_change_rate: float = 0.0
+    pr_rate: float = 0.0
 
 
 class DashboardGitHubClient:
@@ -679,6 +699,19 @@ def read_runs(runs_dir: Path,
         cost_confidence = fields.get("cost_confidence", "unavailable")
         priority = int(fields.get("priority", 0)) if fields.get("priority") else None
         provider = fields.get("provider", "")
+        
+        # Provider-Scorecard Felder
+        provider_scorecard_requested_model = fields.get("provider_scorecard_requested_model", "")
+        provider_scorecard_actual_model = fields.get("provider_scorecard_actual_model", "")
+        provider_scorecard_fallback_source = fields.get("provider_scorecard_fallback_source", "")
+        provider_scorecard_duration_seconds = int(fields.get("provider_scorecard_duration_seconds", 0)) if fields.get("provider_scorecard_duration_seconds") else None
+        provider_scorecard_worker_exit_code = int(fields.get("provider_scorecard_worker_exit_code", 0)) if fields.get("provider_scorecard_worker_exit_code") else None
+        provider_scorecard_run_status = fields.get("provider_scorecard_run_status", "")
+        provider_scorecard_pr_url = fields.get("provider_scorecard_pr_url", "")
+        provider_scorecard_test_command = fields.get("provider_scorecard_test_command", "")
+        provider_scorecard_test_result = fields.get("provider_scorecard_test_result", "")
+        provider_scorecard_no_change = fields.get("provider_scorecard_no_change", "").lower() in ("true", "1", "yes")
+        provider_scorecard_fallback_used = fields.get("provider_scorecard_fallback_used", "").lower() in ("true", "1", "yes")
 
         runs.append(
             DashboardRun(
@@ -709,6 +742,17 @@ def read_runs(runs_dir: Path,
                 cost_confidence=cost_confidence,
                 priority=priority,
                 provider=provider,
+                provider_scorecard_requested_model=provider_scorecard_requested_model,
+                provider_scorecard_actual_model=provider_scorecard_actual_model,
+                provider_scorecard_fallback_source=provider_scorecard_fallback_source,
+                provider_scorecard_duration_seconds=provider_scorecard_duration_seconds,
+                provider_scorecard_worker_exit_code=provider_scorecard_worker_exit_code,
+                provider_scorecard_run_status=provider_scorecard_run_status,
+                provider_scorecard_pr_url=provider_scorecard_pr_url,
+                provider_scorecard_test_command=provider_scorecard_test_command,
+                provider_scorecard_test_result=provider_scorecard_test_result,
+                provider_scorecard_no_change=provider_scorecard_no_change,
+                provider_scorecard_fallback_used=provider_scorecard_fallback_used,
             )
         )
     return runs
@@ -1338,6 +1382,41 @@ def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: 
     return GitHubEnrichmentResult(enriched_runs, used_github=True, used_cache=False)
 
 
+def format_provider_scorecard(run: DashboardRun) -> list[str]:
+    """Formatiert die Provider-Scorecard für die Anzeige."""
+    lines = []
+    if not any(
+        field for field in [
+            run.provider_scorecard_requested_model,
+            run.provider_scorecard_actual_model,
+            run.provider_scorecard_duration_seconds,
+            run.provider_scorecard_fallback_used
+        ]
+    ):
+        return lines
+    
+    lines.append("Provider Scorecard:")
+    if run.provider_scorecard_requested_model:
+        lines.append(f"  Requested: {run.provider_scorecard_requested_model}")
+    if run.provider_scorecard_actual_model:
+        lines.append(f"  Actual: {run.provider_scorecard_actual_model}")
+    if run.provider_scorecard_fallback_used:
+        lines.append(f"  Fallback: {run.provider_scorecard_fallback_source or 'unknown'} (used)")
+    elif run.provider_scorecard_fallback_source:
+        lines.append(f"  Fallback: {run.provider_scorecard_fallback_source} (not used)")
+    if run.provider_scorecard_duration_seconds:
+        lines.append(f"  Duration: {run.provider_scorecard_duration_seconds}s")
+    if run.provider_scorecard_worker_exit_code is not None:
+        lines.append(f"  Exit Code: {run.provider_scorecard_worker_exit_code}")
+    if run.provider_scorecard_run_status:
+        lines.append(f"  Status: {run.provider_scorecard_run_status}")
+    if run.provider_scorecard_no_change:
+        lines.append("  No Change: ✓")
+    if run.provider_scorecard_test_result:
+        lines.append(f"  Test: {run.provider_scorecard_test_result}")
+    return lines
+
+
 def format_datetime(value: datetime | None) -> str:
     if not value:
         return "unbekannt"
@@ -1392,6 +1471,25 @@ def compute_repo_summaries(runs: list[DashboardRun]) -> list[RepoSummary]:
             stats["total_runtime_seconds"] += run.runtime_seconds
         if run.cost_estimate:
             stats["total_cost_estimate"] += run.cost_estimate
+        
+        # Provider-Scorecard Statistiken
+        if run.provider_scorecard_duration_seconds:
+            stats.setdefault("total_provider_duration", 0)
+            stats["total_provider_duration"] += run.provider_scorecard_duration_seconds
+            stats.setdefault("provider_runs", 0)
+            stats["provider_runs"] += 1
+            
+            if run.provider_scorecard_fallback_used:
+                stats.setdefault("fallback_runs", 0)
+                stats["fallback_runs"] += 1
+            
+            if run.provider_scorecard_no_change:
+                stats.setdefault("no_change_runs", 0)
+                stats["no_change_runs"] += 1
+            
+            if run.pr_url:
+                stats.setdefault("pr_runs", 0)
+                stats["pr_runs"] += 1
 
     # Konvertiere zu RepoSummary-Objekten und sortiere nach Namen
     summaries = []
@@ -1399,6 +1497,18 @@ def compute_repo_summaries(runs: list[DashboardRun]) -> list[RepoSummary]:
         total_runs = stats["total"]
         avg_runtime = stats["total_runtime_seconds"] / total_runs if total_runs > 0 else 0
         avg_cost = stats["total_cost_estimate"] / total_runs if total_runs > 0 else 0.0
+        
+        # Provider-Scorecard Statistiken
+        avg_provider_duration = 0
+        fallback_rate = 0.0
+        no_change_rate = 0.0
+        pr_rate = 0.0
+        
+        if "provider_runs" in stats and stats["provider_runs"] > 0:
+            avg_provider_duration = stats["total_provider_duration"] / stats["provider_runs"]
+            fallback_rate = (stats.get("fallback_runs", 0) / stats["provider_runs"]) * 100
+            no_change_rate = (stats.get("no_change_runs", 0) / stats["provider_runs"]) * 100
+            pr_rate = (stats.get("pr_runs", 0) / stats["provider_runs"]) * 100
 
         summaries.append(
             RepoSummary(
@@ -1419,6 +1529,12 @@ def compute_repo_summaries(runs: list[DashboardRun]) -> list[RepoSummary]:
                 total_cost_estimate=stats["total_cost_estimate"],
                 avg_runtime_seconds=avg_runtime,
                 avg_cost_estimate=avg_cost,
+                # Provider-Scorecard Felder
+                total_provider_duration=stats.get("total_provider_duration", 0),
+                avg_provider_duration_seconds=avg_provider_duration,
+                fallback_rate=fallback_rate,
+                no_change_rate=no_change_rate,
+                pr_rate=pr_rate,
             )
         )
 

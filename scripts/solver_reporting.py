@@ -88,6 +88,22 @@ OPENCODE_EDIT_FAILURE_REPEAT_THRESHOLD = 3
 
 
 @dataclass(frozen=True)
+class ProviderScorecard:
+    """Strukturierte Bewertung eines Provider-Modells für einen Solver-Run."""
+    requested_model: str
+    actual_model: str
+    fallback_source: str | None = None
+    duration_seconds: float | None = None
+    worker_exit_code: int | None = None
+    run_status: str | None = None
+    pr_url: str | None = None
+    test_command: str | None = None
+    test_result: str | None = None
+    no_change: bool | None = None
+    fallback_used: bool = False
+
+
+@dataclass(frozen=True)
 class RunReport:
     path: Path
     repo: str
@@ -460,16 +476,55 @@ def preserve_worker_worktree(repo_dir: str, report: RunReport, owner: str, repo:
     return destination
 
 
+def create_provider_scorecard(
+    report: RunReport,
+    status: str,
+    worker_result=None,
+    pr_url: str | None = None,
+    model_selection_metadata: dict | None = None,
+    test_command: str | None = None,
+    test_result: str | None = None,
+) -> ProviderScorecard:
+    """Erstellt eine Provider-Scorecard für den Run."""
+    fallback_source = model_selection_metadata.get('fallback_from') if model_selection_metadata else None
+    fallback_used = bool(fallback_source)
+    
+    # Kompatibilität mit WorkerRunResult und anderen Worker-Typen
+    duration_seconds = None
+    if worker_result and hasattr(worker_result, 'duration_seconds'):
+        duration_seconds = worker_result.duration_seconds
+    elif worker_result and hasattr(worker_result, 'duration'):
+        duration_seconds = worker_result.duration
+    
+    worker_exit_code = worker_result.returncode if worker_result else None
+    
+    return ProviderScorecard(
+        requested_model=model_selection_metadata.get('model', report.model) if model_selection_metadata else report.model,
+        actual_model=report.model,
+        fallback_source=fallback_source,
+        duration_seconds=duration_seconds,
+        worker_exit_code=worker_exit_code,
+        run_status=status,
+        pr_url=pr_url,
+        test_command=test_command,
+        test_result=test_result,
+        no_change=status in {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr"},
+        fallback_used=fallback_used,
+    )
+
+
 def write_run_report(report: RunReport, status: str,
-                     worker_result=None,
-                     pr_url: str | None = None,
-                     note: str | None = None,
-                     preserved_worktree_path: Path | str | None = None,
-                     base_branch: str | None = None,
-                     git_change_summary: list[str] | None = None,
-                     vibe_log_snippet: str | None = None,
-                     resource_diagnostics=None,
-                     model_selection_metadata: dict | None = None) -> Path | None:
+                      worker_result=None,
+                      pr_url: str | None = None,
+                      note: str | None = None,
+                      preserved_worktree_path: Path | str | None = None,
+                      base_branch: str | None = None,
+                      git_change_summary: list[str] | None = None,
+                      vibe_log_snippet: str | None = None,
+                      resource_diagnostics=None,
+                      model_selection_metadata: dict | None = None,
+                      test_command: str | None = None,
+                      test_result: str | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -489,6 +544,11 @@ def write_run_report(report: RunReport, status: str,
             (report.path / "worker-output.log").write_text(worker_output, encoding="utf-8")
         if output_tail:
             (report.path / "output-tail.log").write_text(output_tail + "\n", encoding="utf-8")
+
+        # Provider-Scorecard erstellen
+        scorecard = create_provider_scorecard(
+            report, status, worker_result, pr_url, model_selection_metadata, test_command, test_result
+        )
 
         metadata = {
             "status": status,
@@ -517,6 +577,19 @@ def write_run_report(report: RunReport, status: str,
             },
             "resource_diagnostics": resource_diag_dict,
             "model_selection": model_selection_metadata or {},
+            "provider_scorecard": {
+                "requested_model": scorecard.requested_model,
+                "actual_model": scorecard.actual_model,
+                "fallback_source": scorecard.fallback_source,
+                "duration_seconds": scorecard.duration_seconds,
+                "worker_exit_code": scorecard.worker_exit_code,
+                "run_status": scorecard.run_status,
+                "pr_url": scorecard.pr_url,
+                "test_command": scorecard.test_command,
+                "test_result": scorecard.test_result,
+                "no_change": scorecard.no_change,
+                "fallback_used": scorecard.fallback_used,
+            },
         }
         (report.path / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -537,6 +610,17 @@ def write_run_report(report: RunReport, status: str,
             f"last_report_update_at: {datetime.now().isoformat(timespec='seconds')}",
             f"pr_url: {pr_value}",
             f"preserved_worktree: {preserved_value}",
+            f"provider_scorecard_requested_model: {scorecard.requested_model}",
+            f"provider_scorecard_actual_model: {scorecard.actual_model}",
+            f"provider_scorecard_fallback_source: {scorecard.fallback_source or ''}",
+            f"provider_scorecard_duration_seconds: {scorecard.duration_seconds or ''}",
+            f"provider_scorecard_worker_exit_code: {scorecard.worker_exit_code or ''}",
+            f"provider_scorecard_run_status: {scorecard.run_status or ''}",
+            f"provider_scorecard_pr_url: {scorecard.pr_url or ''}",
+            f"provider_scorecard_test_command: {scorecard.test_command or ''}",
+            f"provider_scorecard_test_result: {scorecard.test_result or ''}",
+            f"provider_scorecard_no_change: {scorecard.no_change or ''}",
+            f"provider_scorecard_fallback_used: {scorecard.fallback_used}",
         ]
         
         # Modellauswahl-Metadaten hinzufügen
@@ -587,14 +671,24 @@ def write_run_report(report: RunReport, status: str,
 
 
 def write_worker_diagnostics(result, repo: str, issue_number: int,
-                             model: str, branch: str = "",
-                             issue_title: str = "",
-                             pr_url: str | None = None,
-                             status: str = "worker_finished") -> Path | None:
+                              model: str, branch: str = "",
+                              issue_title: str = "",
+                              pr_url: str | None = None,
+                              status: str = "worker_finished",
+                              model_selection_metadata: dict | None = None,
+                              test_command: str | None = None,
+                              test_result: str | None = None) -> Path | None:
     report = create_run_report(repo, issue_number, branch, model, issue_title=issue_title)
     if not report:
         return None
-    return write_run_report(report, status, worker_result=result, pr_url=pr_url)
+    return write_run_report(
+        report, status, 
+        worker_result=result, 
+        pr_url=pr_url,
+        model_selection_metadata=model_selection_metadata,
+        test_command=test_command,
+        test_result=test_result
+    )
 
 
 def cleanup_preserved_worktrees(root: Path = PRESERVED_WORKTREES_ROOT,
