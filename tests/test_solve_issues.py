@@ -1,6 +1,7 @@
 import contextlib
 from datetime import datetime
 import io
+import inspect
 import json
 import os
 import subprocess
@@ -417,6 +418,11 @@ class BranchRecoveryTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertIn("Recovery:", printed.getvalue())
         self.assertIn("Geplanter Issue-Branch: ai/fix-issue-7", printed.getvalue())
+
+    def test_solve_issue_does_not_reference_cli_args_global(self):
+        source = inspect.getsource(solve_issue)
+
+        self.assertNotIn("args.", source)
 
     def test_create_issue_pull_request_does_not_close_issue_when_pr_creation_fails(self):
         class FailingPrClient:

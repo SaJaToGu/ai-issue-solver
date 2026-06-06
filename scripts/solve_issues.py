@@ -1916,7 +1916,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 close_issues: bool,
                 defer_codex_rate_limit: bool = False,
                 run_report_dir: Path | str | None = None,
-                verbosity: str = "normal") -> bool:
+                verbosity: str = "normal",
+                auto_model: bool = False,
+                max_cost: str = "expensive") -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -2173,15 +2175,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         
         # Modellauswahl-Metadaten im Report speichern (falls vorhanden)
         model_selection_metadata = None
-        if args.auto_model:
+        if auto_model:
             from model_selection import select_model_for_issue
-            issue = client.get_single_issue(repo, number)
-            if issue:
-                model_selection_metadata = select_model_for_issue(
-                    issue=issue,
-                    repo_type="python",  # TODO: Dynamisch ermitteln
-                    max_cost_tier=args.max_cost,
-                )
+            model_selection_metadata = select_model_for_issue(
+                issue=issue,
+                repo_type="python",  # TODO: Dynamisch ermitteln
+                max_cost_tier=max_cost,
+            )
 
         diagnostic_outputs = list(adapter_diagnostics.all_outputs)
         rate_limit_deferred_note = adapter_diagnostics.rate_limit_note or None
@@ -2640,10 +2640,9 @@ def main():
         else:
             print_err(f"Automatisch ausgewähltes Modell wird nicht unterstützt: {model_selection['model']}")
             sys.exit(1)
-    else:
-        # Manuelle Modellauswahl
-        model_config = MODEL_CONFIGS[args.model]
-        model_name = args.model_name or model_config.get("default_model_name", "")
+
+    model_config = MODEL_CONFIGS[args.model]
+    model_name = args.model_name or model_config.get("default_model_name", "")
 
     env_key = model_config.get("env_key")
     if env_key and args.dry_run and is_placeholder_value(cfg.get(env_key)):
@@ -2720,6 +2719,8 @@ def main():
                 defer_codex_rate_limit=args.defer_codex_rate_limit,
                 run_report_dir=args.run_report_dir,
                 verbosity=args.verbosity,
+                auto_model=args.auto_model,
+                max_cost=args.max_cost,
             )
             if ok:
                 solved += 1

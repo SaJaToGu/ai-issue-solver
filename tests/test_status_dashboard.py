@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 
@@ -22,6 +23,7 @@ from status_dashboard import (  # noqa: E402
     read_runs,
     render_dashboard,
     render_repo_summary_section,
+    main as status_dashboard_main,
     write_dashboard,
 )
 
@@ -892,6 +894,24 @@ pr_url: https://github.com/other-owner/demo/pull/47
         self.assertIn('http-equiv="refresh"', html)
         self.assertIn('content="10"', html)
         self.assertIn("Auto-refresh: 10s", html)
+
+    def test_main_generates_dashboard_with_default_cli_options(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            output_path = Path(tmpdir) / "status.html"
+            argv = [
+                "status_dashboard.py",
+                "--runs-dir",
+                str(runs_dir),
+                "--output",
+                str(output_path),
+            ]
+
+            with patch.object(sys, "argv", argv):
+                exit_code = status_dashboard_main()
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(output_path.exists())
 
     def test_read_runs_marks_running_run_unhealthy_after_timeout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
