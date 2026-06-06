@@ -912,3 +912,47 @@ Suggested scope:
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+## 29. Skip existing GitHub issues in the backlog issue generator
+
+Labels: `automation`, `workflow`, `github`, `quality`
+
+Priority: `1`
+
+The backlog issue generator (`create_backlog_issues.py`) currently proposes to
+create all backlog entries as new issues, including entries that already have a
+corresponding open or closed GitHub issue. This makes the dry-run output
+misleading and the `--apply` flag unsafe to use without manual filtering. The
+generator must detect duplicates before creating anything.
+
+Context:
+- in practice, new issues have been created manually with `gh issue create`
+  to avoid accidental duplicates, which defeats the purpose of the generator
+- the dry-run for 21 backlog entries showed all 21 as "would create", even
+  though most already existed as GitHub issues
+- the generator needs to match backlog titles against existing issues and only
+  propose entries that have no matching issue yet
+
+Suggested scope:
+- before proposing or creating an issue, fetch the list of open and closed
+  GitHub issues for the target repo and match each backlog entry title against
+  existing issue titles using exact match and a normalised fuzzy match
+  (lowercase, punctuation-stripped)
+- skip backlog entries where a matching open issue already exists; log a clear
+  "already exists as #NNN" line for each skipped entry
+- optionally warn (but still skip) when a matching closed or merged issue is
+  found, in case the backlog entry needs to be cleaned up
+- add a `--only-new` flag (or make this the default) so the generator never
+  proposes entries that already have a GitHub issue
+- add a `--force` flag to override duplicate detection for explicit re-creation
+  (e.g. after a closed issue was invalidated and the work is starting fresh)
+- update the dry-run summary to clearly distinguish: new (would create),
+  skipped (already exists), and unknown (no match found but title is ambiguous)
+- add tests for exact-match detection, normalised fuzzy match, open vs closed
+  issue handling, and the `--force` override
+- do not expose API keys, provider auth files, or GitHub tokens in generator
+  output
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
