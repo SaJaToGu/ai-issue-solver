@@ -2507,6 +2507,13 @@ def main() -> int:
     owner = args.owner or config.get("GITHUB_USER")
     runs_dir = Path(args.runs_dir)
     output_path = Path(args.output)
+    allow_shutdown = False
+    refresh_seconds = None
+    github_enrich = args.github_enrich
+    github_token = config.get("GITHUB_TOKEN")
+    github_cache_path = Path(args.github_cache)
+    github_cache_ttl_seconds = args.github_cache_ttl_seconds
+    active_tab = args.tab
     if args.health_timeout_minutes < 1:
         print("Fehler: --health-timeout-minutes muss mindestens 1 sein", file=sys.stderr)
         return 2
