@@ -35,6 +35,10 @@ def test_provider_scorecard_creation():
         test_result="passed",
         no_change=False,
         fallback_used=True,
+        estimated_cost=0.15,
+        cost_currency="USD",
+        cost_confidence="high",
+        cost_source="provider_api",
     )
 
     assert scorecard.requested_model == "mistral/mistral-large-latest"
@@ -48,6 +52,32 @@ def test_provider_scorecard_creation():
     assert scorecard.test_result == "passed"
     assert scorecard.no_change is False
     assert scorecard.fallback_used is True
+    assert scorecard.estimated_cost == 0.15
+    assert scorecard.cost_currency == "USD"
+    assert scorecard.cost_confidence == "high"
+    assert scorecard.cost_source == "provider_api"
+
+
+def test_provider_scorecard_missing_costs():
+    """Testet die Erstellung einer Provider-Scorecard mit fehlenden Kosteninformationen."""
+    scorecard = ProviderScorecard(
+        requested_model="mistral/mistral-large-latest",
+        actual_model="mistral/mistral-medium-latest",
+        fallback_source="rate_limit",
+        duration_seconds=120.5,
+        worker_exit_code=0,
+        run_status="pr_created",
+        pr_url="https://github.com/owner/repo/pull/123",
+        test_command="pytest",
+        test_result="passed",
+        no_change=False,
+        fallback_used=True,
+    )
+
+    assert scorecard.estimated_cost is None
+    assert scorecard.cost_currency is None
+    assert scorecard.cost_confidence is None
+    assert scorecard.cost_source is None
 
 
 def test_create_provider_scorecard():
@@ -62,6 +92,11 @@ def test_create_provider_scorecard():
         "reason": "rate_limit"
     }
 
+    model_selection["estimated_cost"] = 0.15
+    model_selection["cost_currency"] = "USD"
+    model_selection["cost_confidence"] = "high"
+    model_selection["cost_source"] = "provider_api"
+    
     scorecard = create_provider_scorecard(
         report=Mock(model="mistral/mistral-medium-latest"),
         status="pr_created",
@@ -82,6 +117,10 @@ def test_create_provider_scorecard():
     assert scorecard.test_command == "pytest tests/"
     assert scorecard.test_result == "all tests passed"
     assert scorecard.fallback_used is True
+    assert scorecard.estimated_cost == 0.15
+    assert scorecard.cost_currency == "USD"
+    assert scorecard.cost_confidence == "high"
+    assert scorecard.cost_source == "provider_api"
 
 
 def test_create_provider_scorecard_no_fallback():
@@ -104,6 +143,10 @@ def test_create_provider_scorecard_no_fallback():
     assert scorecard.actual_model == "anthropic/claude-sonnet-4-6"
     assert scorecard.fallback_source is None
     assert scorecard.fallback_used is False
+    assert scorecard.estimated_cost is None
+    assert scorecard.cost_currency is None
+    assert scorecard.cost_confidence is None
+    assert scorecard.cost_source is None
 
 
 def test_create_provider_scorecard_no_change():
@@ -121,6 +164,10 @@ def test_create_provider_scorecard_no_change():
     assert scorecard.no_change is True
     assert scorecard.duration_seconds is None
     assert scorecard.worker_exit_code is None
+    assert scorecard.estimated_cost is None
+    assert scorecard.cost_currency is None
+    assert scorecard.cost_confidence is None
+    assert scorecard.cost_source is None
 
 
 def test_write_run_report_with_scorecard():
@@ -146,8 +193,12 @@ def test_write_run_report_with_scorecard():
         mock_worker.output = "Test output"
         mock_worker.last_activity_at = datetime.now()
 
-        # Model Selection Metadata
+        # Model Selection Metadata mit Kosteninformationen
         model_selection = {
+            "estimated_cost": 0.15,
+            "cost_currency": "USD",
+            "cost_confidence": "high",
+            "cost_source": "provider_api",
             "model": "mistral/mistral-large-latest",
             "fallback_from": "anthropic/claude-sonnet-4-6",
             "reason": "rate_limit"
