@@ -2098,7 +2098,6 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     write_run_report(run_report, "checkout_failed",
                                      resource_diagnostics=resource_diagnostics)
                 return False
-            git_change_summary = []
             if branch_has_changes_against_base(repo_dir, base_branch):
                 git_status = git_status_porcelain(repo_dir)
                 git_change_summary = format_git_change_summary(repo_dir, git_status)
@@ -2106,47 +2105,47 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
                     "erstelle fehlenden PR."
                 )
-        pr = create_issue_pull_request(
-            client=client,
-            repo=repo,
-            number=number,
-            title=title,
-            model=model,
-            config=config,
-            branch_name=branch_name,
-            base_branch=base_branch,
-            close_issues=close_issues,
-            model_name=model_name,
-            dry_run=dry_run,
-        )
-        status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
-        if not pr and run_report and should_preserve_worktree(
-            status,
-            repo_dir,
-            base_branch,
-            changes_exist=True,
-        ):
-            preserved_worktree = preserve_worker_worktree(
-                repo_dir=repo_dir,
-                report=run_report,
-                owner=config["owner"],
-                repo=repo,
-                issue_number=number,
-                branch=branch_name,
-                status=status,
-                base_branch=base_branch,
-            )
-        if run_report:
-            write_run_report(
-                run_report,
-                status,
-                pr_url=pr.get("html_url") if pr else None,
-                preserved_worktree_path=preserved_worktree,
-                base_branch=base_branch,
-                git_change_summary=git_change_summary,
-                resource_diagnostics=resource_diagnostics,
-            )
-            return bool(pr)
+                pr = create_issue_pull_request(
+                    client=client,
+                    repo=repo,
+                    number=number,
+                    title=title,
+                    model=model,
+                    config=config,
+                    branch_name=branch_name,
+                    base_branch=base_branch,
+                    close_issues=close_issues,
+                    model_name=model_name,
+                    dry_run=dry_run,
+                )
+                status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
+                if not pr and run_report and should_preserve_worktree(
+                    status,
+                    repo_dir,
+                    base_branch,
+                    changes_exist=True,
+                ):
+                    preserved_worktree = preserve_worker_worktree(
+                        repo_dir=repo_dir,
+                        report=run_report,
+                        owner=config["owner"],
+                        repo=repo,
+                        issue_number=number,
+                        branch=branch_name,
+                        status=status,
+                        base_branch=base_branch,
+                    )
+                if run_report:
+                    write_run_report(
+                        run_report,
+                        status,
+                        pr_url=pr.get("html_url") if pr else None,
+                        preserved_worktree_path=preserved_worktree,
+                        base_branch=base_branch,
+                        git_change_summary=git_change_summary,
+                        resource_diagnostics=resource_diagnostics,
+                    )
+                return bool(pr)
         elif not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
             if run_report:
