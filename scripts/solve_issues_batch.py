@@ -678,7 +678,7 @@ def run_issue_job_with_optional_fallback(
     )
     if queued_report:
         annotate_fallback_run_report(
-            queued_report.path, args.model, args.fallback_model
+            queued_report.path, args.model, f"{args.fallback_model}/{args.fallback_model_name}" if args.fallback_model_name else args.fallback_model
         )
     return replace(
         fallback_result,

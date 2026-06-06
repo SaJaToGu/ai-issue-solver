@@ -106,46 +106,46 @@ from solver_run_resources import (  # noqa: F401 (re-exports used by tests)
 def ensure_solver_directories() -> tuple[Path, Path]:
     """
     Erstellt und verwaltet solver-lokale Verzeichnisse für XDG_STATE_HOME und XDG_CACHE_HOME.
-    
+
     Falls XDG_*_HOME-Umgebungsvariablen nicht gesetzt sind, werden solver-lokale Verzeichnisse
     unter einem temporären Präfix (z. B. /tmp/opencode/state bzw. /tmp/opencode/cache) erstellt.
-    
+
     Returns:
         Tuple[Path, Path]: Pfade zu (state_dir, cache_dir)
     """
     # Temporäres Verzeichnis für solver-lokale Daten (beschreibbar und plattformneutral)
     solver_base = Path(tempfile.gettempdir()) / "ai-issue-solver" / "opencode"
     solver_base.mkdir(parents=True, exist_ok=True)
-    
+
     # XDG_STATE_HOME (für Zustandsdateien wie Chat-History, Authentifizierung)
     xdg_state_home = os.getenv("XDG_STATE_HOME")
     if xdg_state_home:
         state_dir = Path(xdg_state_home) / "opencode"
     else:
         state_dir = solver_base / "state"
-    
+
     # XDG_CACHE_HOME (für Cache-Dateien wie Modelle, temporäre Daten)
     xdg_cache_home = os.getenv("XDG_CACHE_HOME")
     if xdg_cache_home:
         cache_dir = Path(xdg_cache_home) / "opencode"
     else:
         cache_dir = solver_base / "cache"
-    
+
     # Verzeichnisse erstellen, falls nicht vorhanden
     state_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
     (cache_dir / "tmp").mkdir(parents=True, exist_ok=True)
-    
+
     return state_dir, cache_dir
 
 
 def prepare_opencode_worker_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """
     Bereitet die Umgebung für OpenCode vor, inklusive solver-lokalem Cache.
-    
+
     Args:
         base_env: Basis-Umgebung, falls vorhanden. Standardmäßig wird os.environ verwendet.
-    
+
     Returns:
         dict[str, str]: Angepasste Umgebung mit solver-lokalem Cache-Pfad.
     """
@@ -1001,7 +1001,7 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
     targets = file_targets if file_targets is not None else infer_aider_targets(prompt, repo_path)
 
     aider = find_aider_executable() or "aider"
-    
+
     # Solver-lokale Pfade für Chat- und Input-History verwenden
     state_dir, _ = ensure_solver_directories()
     chat_history_file = state_dir / "aider.chat.history.md"
@@ -1861,7 +1861,19 @@ def print_branch_recovery_plan(plan: BranchRecoveryPlan) -> None:
 
 
 def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
-                        model: str, close_issues: bool) -> str:
+                         model: str, model_name: str | None = None, close_issues: bool = True,
+                         fallback_from: str | None = None) -> str:
+    display_name = MODEL_CONFIGS[model]['display_name']
+    effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
+
+    # Konkreten Modellnamen anhängen, falls nicht bereits im Display-Namen enthalten
+    if effective_model_name and effective_model_name not in display_name:
+        display_name = f"{display_name} ({effective_model_name})"
+
+    # Fallback-Informationen hinzufügen, falls zutreffend
+    if fallback_from:
+        display_name = f"{display_name} (Fallback von {fallback_from})"
+
     return f"""## 🤖 AI-generierter Fix für Issue #{number}
 
 Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_owner}/ai-issue-solver) erstellt.
@@ -1870,7 +1882,7 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 {"Closes" if close_issues else "Refs"} #{number}: {title}
 
 ### Verwendetes Modell
-`{MODEL_CONFIGS[model]['display_name']}`
+`{display_name}`
 
 ### Änderungen
 *(bitte vor dem Merge reviewen)*
@@ -1881,13 +1893,15 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 
 
 def create_issue_pull_request(client: GitHubClient, repo: str, number: int, title: str,
-                              model: str, config: dict, branch_name: str,
-                              base_branch: str, close_issues: bool,
-                              dry_run: bool = False) -> dict | None:
+                               model: str, config: dict, branch_name: str,
+                               base_branch: str, close_issues: bool,
+                               model_name: str | None = None,
+                               fallback_from: str | None = None,
+                               dry_run: bool = False) -> dict | None:
     pr = client.create_pull_request(
         repo=repo,
         title=f"[AI] Fix: {title}",
-        body=build_issue_pr_body(config["owner"], repo, number, title, model, close_issues),
+        body=build_issue_pr_body(config["owner"], repo, number, title, model, model_name, close_issues, fallback_from),
         head=branch_name,
         base=base_branch,
         dry_run=dry_run,
@@ -1896,10 +1910,17 @@ def create_issue_pull_request(client: GitHubClient, repo: str, number: int, titl
         print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
 
     if close_issues and pr:
+        display_name = MODEL_CONFIGS[model]['display_name']
+        effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
+        if effective_model_name and effective_model_name not in display_name:
+            display_name = f"{display_name} ({effective_model_name})"
+        if fallback_from:
+            display_name = f"{display_name} (Fallback von {fallback_from})"
+
         close_comment = (
             "✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\n"
             f"PR: {pr.get('html_url', '?') if pr else '(kein PR)'}\n"
-            f"Modell: {MODEL_CONFIGS[model]['display_name']}"
+            f"Modell: {display_name}"
         )
         client.close_issue_with_comment(repo, number, close_comment)
 
@@ -2084,46 +2105,47 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
                     "erstelle fehlenden PR."
                 )
-                pr = create_issue_pull_request(
-                    client=client,
-                    repo=repo,
-                    number=number,
-                    title=title,
-                    model=model,
-                    config=config,
-                    branch_name=branch_name,
-                    base_branch=base_branch,
-                    close_issues=close_issues,
-                    dry_run=dry_run,
-                )
-                status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
-                if not pr and run_report and should_preserve_worktree(
-                    status,
-                    repo_dir,
-                    base_branch,
-                    changes_exist=True,
-                ):
-                    preserved_worktree = preserve_worker_worktree(
-                        repo_dir=repo_dir,
-                        report=run_report,
-                        owner=config["owner"],
-                        repo=repo,
-                        issue_number=number,
-                        branch=branch_name,
-                        status=status,
-                        base_branch=base_branch,
-                    )
-                if run_report:
-                    write_run_report(
-                        run_report,
-                        status,
-                        pr_url=pr.get("html_url") if pr else None,
-                        preserved_worktree_path=preserved_worktree,
-                        base_branch=base_branch,
-                        git_change_summary=git_change_summary,
-                        resource_diagnostics=resource_diagnostics,
-                    )
-                return bool(pr)
+        pr = create_issue_pull_request(
+            client=client,
+            repo=repo,
+            number=number,
+            title=title,
+            model=model,
+            config=config,
+            branch_name=branch_name,
+            base_branch=base_branch,
+            close_issues=close_issues,
+            model_name=model_name,
+            dry_run=dry_run,
+        )
+        status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
+        if not pr and run_report and should_preserve_worktree(
+            status,
+            repo_dir,
+            base_branch,
+            changes_exist=True,
+        ):
+            preserved_worktree = preserve_worker_worktree(
+                repo_dir=repo_dir,
+                report=run_report,
+                owner=config["owner"],
+                repo=repo,
+                issue_number=number,
+                branch=branch_name,
+                status=status,
+                base_branch=base_branch,
+            )
+        if run_report:
+            write_run_report(
+                run_report,
+                status,
+                pr_url=pr.get("html_url") if pr else None,
+                preserved_worktree_path=preserved_worktree,
+                base_branch=base_branch,
+                git_change_summary=git_change_summary,
+                resource_diagnostics=resource_diagnostics,
+            )
+            return bool(pr)
         elif not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
             if run_report:
@@ -2172,7 +2194,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             run_report=run_report,
             **adapter_kwargs,
         )
-        
+
         # Modellauswahl-Metadaten im Report speichern (falls vorhanden)
         model_selection_metadata = None
         if auto_model:
@@ -2379,6 +2401,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             branch_name=branch_name,
             base_branch=base_branch,
             close_issues=close_issues,
+            model_name=effective_model_name,
+            fallback_from=model_selection_metadata.get('fallback_from') if model_selection_metadata else None,
             dry_run=dry_run,
         )
         # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
@@ -2567,7 +2591,7 @@ def main():
 
     # Config laden
     cfg = load_env()
-    
+
     # Preflight-Checks durchfuehren
     if args.repo:
         token, user = preflight_checks(cfg, args.repo, args.issue)
@@ -2625,7 +2649,7 @@ def main():
         print(f"      Grund: {model_selection['reason']}")
         print(f"      Kategorie: {model_selection['category']} (Risiko: {model_selection['risk']})")
         print(f"      Kosten-Tier: {model_selection['cost_tier']}")
-        
+
         # Mappe das ausgewählte Modell auf die bestehende MODEL_CONFIGS-Struktur
         # TODO: Erweitere MODEL_CONFIGS für alle unterstützten Modelle
         if "mistral" in model_selection["model"]:
@@ -2671,7 +2695,7 @@ def main():
     else:
         all_repos = client.get_repos()
         repos = [r["name"] for r in all_repos if not r.get("archived")]
-        
+
     # Modellauswahl-Logik für Batch-Modus (TODO: Erweitern)
     if args.auto_model and not args.issue:
         print_warn("--auto-model erfordert --issue; nutze --model für Batch-Modus")
