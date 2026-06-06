@@ -319,16 +319,13 @@ def main() -> int:
             skipped += 1
             continue
 
-    for label in issue["labels"]:
-        # Map legacy labels to new taxonomy
-        mapped_labels = LABEL_MAPPING.get(label, [label])
-        for new_label in mapped_labels:
-            client.ensure_label(args.repo, new_label)
-
-        # Map legacy labels to new taxonomy for issue creation
+        # Map legacy labels to new taxonomy and ensure they exist
         mapped_labels = []
         for label in issue["labels"]:
-            mapped_labels.extend(LABEL_MAPPING.get(label, [label]))
+            for new_label in LABEL_MAPPING.get(label, [label]):
+                client.ensure_label(args.repo, new_label)
+                mapped_labels.append(new_label)
+
         url = client.create_issue(args.repo, issue["title"], issue["body"], mapped_labels)
         print_ok(f"{issue['title']} -> {url}")
         created += 1

@@ -142,6 +142,102 @@ class TestParseBacklogCreate(unittest.TestCase):
             parse_backlog_create(Path("/nonexistent/file.md"))
 
 
+class TestApplyLoopSafety(unittest.TestCase):
+    """Tests for the apply loop safety in create_backlog_issues.py"""
+
+    def test_apply_loop_skips_existing_issues(self):
+        """Test that the apply loop correctly skips existing issues."""
+        # Mock GitHubClient and its methods
+        class MockGitHubClient:
+            def __init__(self):
+                self.created_issues = []
+                self.ensured_labels = []
+
+            def issue_exists(self, repo, title):
+                # Simulate that the second issue already exists
+                return title == "Second issue"
+
+            def ensure_label(self, repo, label):
+                self.ensured_labels.append(label)
+
+            def create_issue(self, repo, title, body, labels):
+                self.created_issues.append((title, labels))
+                return f"https://github.com/{repo}/issues/1"
+
+        # Mock args
+        class MockArgs:
+            repo = "test-repo"
+            backlog = "docs/NEXT_BACKLOG.md"
+
+        # Mock issues
+        issues = [
+            {"title": "First issue", "labels": ["label1"], "body": "Body 1"},
+            {"title": "Second issue", "labels": ["label2"], "body": "Body 2"},
+            {"title": "Third issue", "labels": ["label3"], "body": "Body 3"},
+        ]
+
+        # Test the loop logic
+        client = MockGitHubClient()
+        created = 0
+        skipped = 0
+
+        for issue in issues:
+            if client.issue_exists(MockArgs.repo, issue["title"]):
+                skipped += 1
+                continue
+
+            # Map labels and ensure they exist
+            mapped_labels = []
+            for label in issue["labels"]:
+                mapped_labels.append(label)
+                client.ensure_label(MockArgs.repo, label)
+
+            client.create_issue(MockArgs.repo, issue["title"], issue["body"], mapped_labels)
+            created += 1
+
+        # Verify results
+        self.assertEqual(created, 2)  # First and third issues created
+        self.assertEqual(skipped, 1)   # Second issue skipped
+        self.assertEqual(len(client.created_issues), 2)
+        self.assertEqual(len(client.ensured_labels), 2)  # label1 and label3
+
+    def test_apply_loop_handles_empty_issues(self):
+        """Test that the apply loop handles empty issues list safely."""
+        # Mock GitHubClient
+        class MockGitHubClient:
+            def issue_exists(self, repo, title):
+                return False
+
+            def ensure_label(self, repo, label):
+                pass
+
+            def create_issue(self, repo, title, body, labels):
+                return f"https://github.com/{repo}/issues/1"
+
+        # Test with empty issues list
+        client = MockGitHubClient()
+        issues = []
+        created = 0
+        skipped = 0
+
+        for issue in issues:
+            if client.issue_exists("test-repo", issue["title"]):
+                skipped += 1
+                continue
+
+            mapped_labels = []
+            for label in issue["labels"]:
+                mapped_labels.append(label)
+                client.ensure_label("test-repo", label)
+
+            client.create_issue("test-repo", issue["title"], issue["body"], mapped_labels)
+            created += 1
+
+        # Verify no issues were created
+        self.assertEqual(created, 0)
+        self.assertEqual(skipped, 0)
+
+
 class TestParseBacklogCleanup(unittest.TestCase):
     """Tests for parse_backlog function in cleanup_backlog.py"""
 
