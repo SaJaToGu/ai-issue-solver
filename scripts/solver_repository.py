@@ -17,7 +17,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from utils import print_warn
+from scripts.utils import print_warn
 
 
 @dataclass(frozen=True)

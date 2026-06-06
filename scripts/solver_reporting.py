@@ -23,8 +23,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from utils import clean_path_candidate, print_warn
-from solver_repository import (
+from scripts.utils import clean_path_candidate, print_warn
+from scripts.solver_repository import (
     branch_has_changes_against_base,
     git_output,
     git_status_porcelain,
@@ -488,19 +488,37 @@ def create_provider_scorecard(
     """Erstellt eine Provider-Scorecard für den Run."""
     fallback_source = model_selection_metadata.get('fallback_from') if model_selection_metadata else None
     fallback_used = bool(fallback_source)
-    
+
     # Kompatibilität mit WorkerRunResult und anderen Worker-Typen
     duration_seconds = None
     if worker_result and hasattr(worker_result, 'duration_seconds'):
         duration_seconds = worker_result.duration_seconds
     elif worker_result and hasattr(worker_result, 'duration'):
         duration_seconds = worker_result.duration
-    
+
     worker_exit_code = worker_result.returncode if worker_result else None
-    
+
+    # Modellinformationen aufbereiten
+    requested_model = model_selection_metadata.get('model', report.model) if model_selection_metadata else report.model
+    actual_model = report.model
+
+    # Konkreten Modellnamen anhängen, falls vorhanden
+    if model_selection_metadata and 'model_name' in model_selection_metadata:
+        effective_model_name = model_selection_metadata['model_name']
+        if effective_model_name and effective_model_name not in actual_model:
+            actual_model = f"{actual_model} ({effective_model_name})"
+    elif hasattr(report, 'model_name') and report.model_name:
+        effective_model_name = report.model_name
+        if effective_model_name and effective_model_name not in actual_model:
+            actual_model = f"{actual_model} ({effective_model_name})"
+
+    # Fallback-Informationen hinzufügen
+    if fallback_source and fallback_used:
+        actual_model = f"{actual_model} (Fallback von {fallback_source})"
+
     return ProviderScorecard(
-        requested_model=model_selection_metadata.get('model', report.model) if model_selection_metadata else report.model,
-        actual_model=report.model,
+        requested_model=requested_model,
+        actual_model=actual_model,
         fallback_source=fallback_source,
         duration_seconds=duration_seconds,
         worker_exit_code=worker_exit_code,
@@ -619,10 +637,10 @@ def write_run_report(report: RunReport, status: str,
             f"provider_scorecard_pr_url: {scorecard.pr_url or ''}",
             f"provider_scorecard_test_command: {scorecard.test_command or ''}",
             f"provider_scorecard_test_result: {scorecard.test_result or ''}",
-            f"provider_scorecard_no_change: {scorecard.no_change or ''}",
+            f"provider_scorecard_no_change: {scorecard.no_change}",
             f"provider_scorecard_fallback_used: {scorecard.fallback_used}",
         ]
-        
+
         # Modellauswahl-Metadaten hinzufügen
         if model_selection_metadata:
             summary_lines.extend([
@@ -682,8 +700,8 @@ def write_worker_diagnostics(result, repo: str, issue_number: int,
     if not report:
         return None
     return write_run_report(
-        report, status, 
-        worker_result=result, 
+        report, status,
+        worker_result=result,
         pr_url=pr_url,
         model_selection_metadata=model_selection_metadata,
         test_command=test_command,
