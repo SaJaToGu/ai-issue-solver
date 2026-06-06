@@ -16,10 +16,16 @@ Options:
   --network MODE       Docker network mode (default: none)
   --cpus VALUE         Optional Docker CPU limit, e.g. 2
   --memory VALUE       Optional Docker memory limit, e.g. 4g
-  -h, --help           Show this help
+  --help               Show this help
 
-The project is mounted read-only at /project. The report directory is mounted
-writable at /reports. No .env file or GitHub write token is passed through.
+Security Model:
+  • Project mounted READ-ONLY at /project
+  • Reports written to isolated /reports directory
+  • NO network access (--network none)
+  • NO .env files or GitHub tokens passed through
+  • Container removed after run (--rm)
+
+For details see docs/REPOLENS.md
 USAGE
 }
 
