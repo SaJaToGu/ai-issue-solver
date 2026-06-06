@@ -2098,6 +2098,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     write_run_report(run_report, "checkout_failed",
                                      resource_diagnostics=resource_diagnostics)
                 return False
+            git_change_summary = []
             if branch_has_changes_against_base(repo_dir, base_branch):
                 git_status = git_status_porcelain(repo_dir)
                 git_change_summary = format_git_change_summary(repo_dir, git_status)
