@@ -27,6 +27,14 @@ from utils import (
 )
 
 
+FREE_OPencode_MODELS = [
+    "opencode/deepseek-v4-flash-free",
+    "opencode/mimo-v2.5-free",
+    "opencode/minimax-m3-free",
+    "opencode/nemotron-3-ultra-free",
+]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Benchmark für nicht-Codex-Solver-Provider auf einer Issue"
@@ -39,8 +47,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--models",
-        required=True,
-        help="Modelle für den Benchmark (Komma-getrennt, z.B. mistral/mistral-large-latest,claude-sonnet-4-20250514)",
+        help="Modelle für den Benchmark (Komma-getrennt, z.B. mistral/mistral-large-latest,claude-sonnet-4-20250514). Ohne --models werden alle freien OpenCode-Modelle verwendet.",
     )
     parser.add_argument(
         "--dry-run",
@@ -52,11 +59,21 @@ def parse_args() -> argparse.Namespace:
 
 def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False) -> dict:
     """Führt den Benchmark für die angegebenen Modelle aus."""
+    # OPENCODE_SERVER_PASSWORD wird von OpenCode Desktop gesetzt und verhindert,
+    # dass `opencode run` eine neue Session startet. Vor dem Subprozess entfernen,
+    # da solve_issues.py die Umgebung vom Parent erbt.
+    os.environ.pop("OPENCODE_SERVER_PASSWORD", None)
     results = {}
-    repo = os.getenv("GITHUB_REPOSITORY", "ai-issue-solver/opencode")
+    full_repo = os.environ.get("GITHUB_REPOSITORY") or "SaJaToGu/ai-issue-solver"
+    repo = full_repo.split("/", 1)[1] if "/" in full_repo else full_repo
 
     for model in models:
-        print_step(f"Benchmark für Modell: {model}")
+        print(f"\n--- Benchmark für Modell: {model} ---")
+        
+        # Jedes Modell bekommt einen eigenen Branch mit Timestamp,
+        # damit Ergebnisse nicht kollidieren und alte Branches ignoriert werden
+        model_slug = model.replace("/", "-").replace(":", "-")[:48]
+        branch_suffix = f"bench/{datetime.now().strftime('%H%M%S')}/{model_slug}"
         
         # Führe solve_issues.py mit dem aktuellen Modell aus
         cmd = [
@@ -66,6 +83,8 @@ def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False) -
             "--model-name", model,
             "--repo", repo,
             "--issue", str(issue_number),
+            "--skip-pr",
+            "--branch-suffix", branch_suffix,
         ]
         if dry_run:
             cmd.append("--dry-run")
@@ -126,7 +145,7 @@ def print_results(results: dict) -> None:
 
 def main() -> int:
     args = parse_args()
-    models = args.models.split(",")
+    models = args.models.split(",") if args.models else FREE_OPencode_MODELS
     
     print_banner("BENCHMARK FÜR NICHT-CODEX-SOLVER")
     print(f"Issue: {args.issue}")

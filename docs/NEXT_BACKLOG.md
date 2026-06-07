@@ -956,3 +956,303 @@ Suggested scope:
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+## 31. Implement agent/triage — automated issue classification and routing
+
+Labels: `kind/automation`, `theme/workflow`, `theme/github`, `agent/triage`
+
+Priority: `2`
+
+The triage agent classifies incoming issues and routes them to the correct
+agent role. Currently `create_backlog_issues.py` creates issues with labels
+from a static list, and `label_migration.py` updates existing issues manually.
+Neither applies the full label taxonomy automatically nor routes issues to an
+agent based on their content and labels. The triage agent closes this gap.
+
+Suggested scope:
+- add a `triage_issue.py` script (or extend `create_backlog_issues.py`) that
+  reads an issue body and title and applies the full multi-dimensional taxonomy:
+  `theme/*`, `area/*`, `kind/*`, `state/*`, `priority/*`, and `agent/*`
+- use keyword matching, file-path hints in the issue body (`Touches:`), and
+  label presence to assign one or more `agent/*` labels automatically
+- produce a dry-run output that shows proposed labels before applying them, and
+  require `--apply` to write labels to GitHub
+- integrate with the backlog generator so new backlog entries get labels at
+  creation time, not as a separate migration step
+- support batch re-triage of existing unlabeled or partially labeled issues via
+  a `--retriage` flag
+- add tests for taxonomy assignment, file-hint routing, `agent/*` label
+  selection, dry-run output, and batch re-triage with already-labeled issues
+- do not read or expose secret files such as `.env`, provider auth files, or
+  API keys
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 32. Implement agent/cost — dedicated cost tracking and budget alert agent
+
+Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `agent/cost`
+
+Priority: `2`
+
+Cost information exists in run reports and the dashboard but is scattered and
+passive. There is no agent that aggregates costs across runs, enforces budget
+ceilings, or proactively recommends cheaper providers when a budget threshold is
+approached. The cost agent makes budget constraints explicit and actionable.
+
+Suggested scope:
+- add a `cost_agent.py` script (or extend `solver_reporting.py`) that reads all
+  run reports in a configurable time window and aggregates cost by provider,
+  model, repo, and issue type
+- support configurable daily and per-run budget ceilings; emit a structured
+  warning when a ceiling would be exceeded before starting a new run
+- surface an escalation recommendation when the cheapest model that historically
+  solves an issue type is not the model currently configured
+- write a structured cost summary to `reports/cost/` after each batch or
+  overnight run, including: total cost, per-model breakdown, budget consumed,
+  remaining budget, and cheapest-model recommendation for the next run
+- add a cost section to the status dashboard that shows the current period
+  spend, per-model breakdown, and budget status at a glance
+- integrate with `solve_issues_batch.py` and `run_overnight.py` so budget
+  warnings appear before new solver jobs are queued
+- add tests for cost aggregation, budget ceiling logic, empty reports,
+  partial cost data, and dashboard rendering with missing or zero-cost runs
+- do not read or expose API keys, provider auth files, or secret files
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 33. Implement agent/research — structured research report framework
+
+Labels: `kind/automation`, `theme/research`, `theme/workflow`, `agent/research`
+
+Priority: `2`
+
+Research work is currently ad-hoc: `analyze_repos.py` exists for repository
+analysis but there is no structured framework for processing `agent/research`
+labeled issues, collecting evidence, or producing comparable research reports.
+Research findings are not logged in a reusable format, so the same questions
+get re-investigated from scratch.
+
+Suggested scope:
+- define a research issue template with fields: research question, scope,
+  deliverables, evidence sources, and success criteria
+- add a `research_agent.py` script that processes issues labeled `agent/research`
+  and produces a structured markdown report under `docs/research/`
+- support at minimum: web search via `gh` and repository inspection via
+  `analyze_repos.py` as evidence sources
+- define an evidence log schema with fields: source, claim, confidence, date,
+  and link; write evidence logs to `docs/research/evidence/`
+- add a `--dry-run` mode that shows which issues would be processed and what
+  evidence sources would be queried without making changes
+- surface research reports and evidence logs in the status dashboard under a
+  Research tab
+- add tests for report template rendering, evidence log schema validation, issue
+  selection by label, and dry-run output
+- do not expose API keys, provider auth files, or secret files in research
+  output or evidence logs
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 34. Implement agent/planner — idea-to-issue shaping pipeline
+
+Labels: `kind/automation`, `theme/backlog`, `theme/workflow`, `agent/planner`
+
+Priority: `2`
+
+The planner agent bridges raw ideas and ready implementation issues. Currently
+`NEXT_BACKLOG.md` entries go directly to `create_backlog_issues.py` with no
+intermediate shaping, scoring, or readiness gate. Ideas and ready issues live
+in the same file with no automated prioritization beyond manually set priority
+numbers. The planner agent introduces a deliberate shaping layer.
+
+Suggested scope:
+- define backlog entry states: `idea`, `candidate`, `shaped`, `ready`,
+  `generated`; add a `state:` field to `NEXT_BACKLOG.md` entries (coordinate
+  with the schema proposed in #22)
+- add a `planner_agent.py` script that reads `NEXT_BACKLOG.md`, scores each
+  entry using configurable criteria (priority, estimated complexity, dependency
+  on open issues, label coverage), and outputs a ranked candidate list
+- only entries in `ready` state should be eligible for `create_backlog_issues.py`
+  to generate GitHub issues; block `idea` and `candidate` entries from automatic
+  issue creation
+- support a `--shape` mode that takes a `candidate` entry and prompts the solver
+  worker to refine its scope, add acceptance criteria, and assign labels before
+  advancing it to `ready`
+- write a daily planning summary to `reports/planning/` with: entry counts per
+  state, top-5 ready candidates, blocked entries, and suggested next action
+- add tests for state transitions, scoring logic, readiness gate enforcement,
+  and planning summary output with missing or malformed entries
+- do not read or expose secret files such as `.env`, provider auth files, or API
+  keys
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 35. Implement agent/reviewer — automated PR review and rework detection
+
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `agent/reviewer`
+
+Priority: `2`
+
+Generated PRs are currently merged after a manual review with no structured
+quality gate from the solver side. The reviewer agent provides an automated
+first-pass review of AI-generated PRs: it checks for correctness signals,
+detects rework indicators, and creates a follow-up issue when the PR should not
+be merged as-is. This is distinct from #19 (rework workflow) and #26
+(post-solve tests), which cover specific sub-tasks the reviewer coordinates.
+
+Suggested scope:
+- add a `reviewer_agent.py` script that, given a PR number, fetches the diff,
+  test results, and run report, and produces a structured review summary
+- define review checks: post-solve test delta (from #26), diff size against
+  issue scope, touched files vs `Touches:` hint, no-change detection, and
+  obvious regression signals such as removed tests or weakened assertions
+- output a verdict: `approve`, `request-changes`, or `needs-rework` with a
+  brief rationale and a checklist of specific concerns
+- when verdict is `needs-rework`, create a GitHub issue using the rework
+  workflow from #19 with the reviewer's checklist as the issue body
+- post the review summary as a PR comment when `--comment` is passed, or print
+  to stdout for manual inspection by default
+- integrate with `solve_issues.py` via a `--auto-review` flag that runs the
+  reviewer after a successful PR is created
+- add tests for each verdict, the rework issue creation flow, PR comment
+  formatting, and edge cases such as empty diff or missing run report
+- do not expose API keys, provider auth files, or secret files in PR comments
+  or review output
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 36. Persist dashboard repo, tab and agent selection in URL parameters
+
+Labels: `kind/feature`, `theme/dashboard`, `theme/quality`, `agent/solver`
+
+Priority: `1`
+
+The dashboard resets to its default view on every auto-refresh or manual reload,
+discarding the user's current repo, tab, and agent selection. Users cannot share
+or bookmark a specific dashboard view. All three selection dimensions must be
+persisted in the URL and restored on load.
+
+Suggested scope:
+- store `repo`, `tab`, and `agent` as `URLSearchParams` query parameters; update
+  them via `history.replaceState` whenever the user changes a selection so the
+  page does not reload
+- on page load, read all three parameters from `location.search` and apply them
+  before rendering; fall back to sensible defaults when a parameter is absent
+- default `tab`: `run-list`; default `agent`: `all`; default `repo`: the repo
+  with currently running jobs (most recently started if multiple repos are active)
+- agent filter: add a selector that filters the visible run rows by worker/model
+  adapter; use `agent=all` to show all rows; implement as a sub-filter within
+  the active tab (Variant C from the requirements doc)
+- ensure the auto-refresh meta tag does not fight the URL state; the restored
+  view after refresh must exactly match what was in the URL — same repo, tab,
+  and agent — with no automatic jump back to run-list
+- update `switchTab`, the repo dropdown, and the new agent selector to all call
+  a shared `updateUrlParams({tab, repo, agent})` helper that keeps the URL in
+  sync
+- add tests for URL parameter read/write, default fallback logic, multi-repo
+  active-job selection, and single-repo auto-selection
+- do not expose API keys, provider auth files, or secret files in dashboard
+  output
+
+Touches: `scripts/status_dashboard.py`, `scripts/serve_dashboard.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 37. Free OpenCode models full integration and evaluation
+
+Labels: `kind/feature`, `theme/workflow`, `agent/solver`, `priority/1`
+
+Priority: `1`
+
+Integrate all free OpenCode models into the project's model framework and
+evaluate them against the current open issue backlog.
+
+Currently only `opencode/mistral-small-2603`, `claude-sonnet-4-20250514`, and
+`gpt-4o` are mentioned in help text; the available free tier models
+(`opencode/deepseek-v4-flash-free`, `opencode/mimo-v2.5-free`,
+`opencode/minimax-m3-free`, `opencode/nemotron-3-ultra-free`) are not
+registered anywhere and users cannot discover or select them easily.
+
+Suggested scope:
+- add default model names to `MODEL_CONFIGS["opencode"]` so that
+  `--model opencode` without `--model-name` picks a sensible default
+- add entries in `STRENGTH_MAP` and `COST_TIERS` in `model_selection.py` for
+  the free OpenCode models so auto-selection can choose them
+- update `benchmark_issues.py` to include the free model list (or make it
+  discover them dynamically via `opencode models`)
+- run a full benchmark sweep against all open issues (ideally the small,
+  low-risk ones first: regression tests, config changes, simple features)
+- report per-model: can it solve the issue, does it create a valid PR, do
+  tests pass, wall-clock time, and estimated token cost
+- if a model consistently fails for a certain class of issues, document the
+  pattern and add a model-selection guard in `model_selection.py`
+- update `model_selection.py` to support the `opencode` provider family,
+  including setting `model` via `--model-name` instead of guessing from
+  substring matches
+- add a `--list-free-models` (or similar) flag to discover available models
+  dynamically via `opencode models` instead of hardcoding them
+
+Touches: `scripts/solve_issues.py`, `scripts/model_selection.py`,
+         `scripts/benchmark_issues.py`, `scripts/solver_run_resources.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+## 38. Parallel Solver Ensemble – mehrere Modelle auf ein Issue, beste Lösung gewinnt
+
+Labels: `kind/feature`, `theme/workflow`, `agent/solver`, `priority/1`
+
+Priority: `1`
+
+Replace the current single-model-per-issue approach with an ensemble that runs
+multiple models on the same issue concurrently, then selects the best result
+and creates a single PR. This serves both production (best possible solution)
+and benchmarking (fair comparison without branch collision).
+
+Key design decisions:
+- each model gets its own branch: `ai/fix-issue-{number}/{sanitized-model-name}`
+- all branches are pushed to the remote; no PR is created per model
+- after all models finish, a "reviewer" step evaluates each result by:
+  - did tests pass? (primary gate)
+  - diff size vs issue scope
+  - touched files vs `Touches:` hint
+  - number of edit/fix iterations the model needed
+  - worker exit code and output signals (WAL failures, edit loops)
+- the best result is promoted: its branch becomes the PR branch, or a new
+  combined branch is created cherry-picking the best parts
+- in benchmark mode (`--benchmark` / `--skip-pr`): evaluation results are
+  logged, no PR is created, no branch is promoted
+- in production mode (`--ensemble`): the best result gets a single PR
+
+Suggested scope:
+- add `--ensemble N` flag to `solve_issues.py` that spawns N model workers for
+  each issue; workers share the same clone but get isolated solver dirs
+- extend branch naming in `solve_issue()` to accept an optional suffix
+  (`model_slug`) so branches don't collide
+- implement the reviewer/evaluation step as a standalone function that takes a
+  list of `DiagnosticResult` and returns a ranked list
+- update `benchmark_issues.py` to be a thin wrapper around `--ensemble --skip-pr`
+- show benchmark results (per-model diffs, test delta, wall-clock time) in the
+  dashboard's model-comparison tab so results are可视 without digging through
+  JSON files
+- add tests for: branch name generation with model suffix, reviewer ranking
+  logic, ensemble dispatch with N workers, skip-pr mode in ensemble context
+
+Touches: `scripts/solve_issues.py`, `scripts/benchmark_issues.py`,
+         `scripts/status_dashboard.py`, `tests/`
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`

@@ -16,6 +16,9 @@ venv/
 reports/*
 !reports/.gitkeep
 
+# Generated benchmark artifacts
+benchmark_results_*.json
+
 # Local editor and OS files
 .codex/
 .vibe/
