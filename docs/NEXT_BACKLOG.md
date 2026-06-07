@@ -29,7 +29,7 @@ python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md --apply --confi
 
 ## 1. Benchmark non-Codex solver providers on tiny safe issues
 
-Labels: `automation`, `quality`, `opencode`, `provider`
+Labels: `kind/automation`, `theme/quality`, `area/opencode`, `theme/provider`
 
 Priority: `1`
 
@@ -62,7 +62,7 @@ Checks:
 
 ## 8. Automate model selection by issue type, expected performance, and cost
 
-Labels: `automation`, `quality`, `provider`, `workflow`
+Labels: `kind/automation`, `theme/quality`, `theme/provider`, `theme/workflow`
 
 Priority: `1`
 
@@ -106,7 +106,7 @@ Checks:
 
 ## 16. Use GitHub repository intelligence before local repo type detection
 
-Labels: `automation`, `analysis`, `quality`, `workflow`, `github`
+Labels: `kind/automation`, `kind/analysis`, `theme/quality`, `theme/workflow`, `theme/github`
 
 Priority: `1`
 
@@ -158,7 +158,7 @@ Checks:
 
 ## 17. Add workflow control for backlog and PR queue congestion
 
-Labels: `automation`, `workflow`, `dashboard`, `quality`
+Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `theme/quality`
 
 Priority: `1`
 
@@ -191,7 +191,7 @@ Checks:
 
 ## 18. Harden Codex sandbox and escalated-command workflow handling
 
-Labels: `automation`, `workflow`, `codex`, `sandbox`, `quality`
+Labels: `kind/automation`, `theme/workflow`, `theme/codex`, `theme/quality`
 
 Priority: `1`
 
@@ -229,7 +229,7 @@ Checks:
 
 ## 19. Add structured rework workflow with sub-issues and separate PRs
 
-Labels: `automation`, `workflow`, `quality`, `github`
+Labels: `kind/automation`, `theme/workflow`, `theme/quality`, `theme/github`
 
 Priority: `1`
 
@@ -271,7 +271,7 @@ Checks:
 
 ## 20. Include exact provider model name in generated PR summaries
 
-Labels: `automation`, `quality`, `workflow`, `provider`
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/provider`
 
 Priority: `1`
 
@@ -302,7 +302,7 @@ Checks:
 
 ## 21. Add solver process supervisor for monitoring and targeted cancellation
 
-Labels: `automation`, `workflow`, `dashboard`, `quality`
+Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `theme/quality`
 
 Priority: `1`
 
@@ -347,7 +347,7 @@ Checks:
 
 ## 6. Support low-code and non-code repositories without Python assumptions
 
-Labels: `automation`, `quality`, `workflow`, `analysis`
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `kind/analysis`
 
 Priority: `2`
 
@@ -377,7 +377,7 @@ Checks:
 
 ## 7. Build dashboard UI for cost, runtime, and backlog prioritization
 
-Labels: `automation`, `quality`, `workflow`, `dashboard`
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/dashboard`
 
 Priority: `1`
 
@@ -425,7 +425,7 @@ Checks:
 
 ## 3. Add provider scorecard to run reports
 
-Labels: `automation`, `quality`, `workflow`
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`
 
 Priority: `2`
 
@@ -450,7 +450,7 @@ Checks:
 
 ## 4. Evaluate best non-Codex model for R-based reproducible Bullwhip Game work
 
-Labels: `automation`, `quality`, `provider`, `research`
+Labels: `kind/automation`, `theme/quality`, `theme/provider`, `theme/research`
 
 Priority: `4`
 
@@ -480,7 +480,7 @@ Checks:
 
 ## 15. Add vertical process quality analysis and periodic workflow retrospective
 
-Labels: `automation`, `quality`, `workflow`, `dashboard`
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/dashboard`
 
 Priority: `2`
 
@@ -524,7 +524,7 @@ Checks:
 
 ## 5. Evaluate mobile-first Claude Code alternative to Codex
 
-Labels: `automation`, `quality`, `provider`, `workflow`
+Labels: `kind/automation`, `theme/quality`, `theme/provider`, `theme/workflow`
 
 Priority: `1`
 
@@ -552,7 +552,7 @@ Checks:
 
 ## 22. Research backlog shaping frameworks before turning ideas into issues
 
-Labels: `research`, `workflow`, `backlog`, `quality`
+Labels: `theme/research`, `theme/workflow`, `theme/backlog`, `theme/quality`
 
 Priority: `1`
 
@@ -644,7 +644,7 @@ Checks:
 
 ## 23. Define label taxonomy and agent-role mapping for issues and files
 
-Labels: `workflow`, `quality`, `github`, `automation`
+Labels: `theme/workflow`, `theme/quality`, `theme/github`, `kind/automation`
 
 Priority: `1`
 
@@ -727,7 +727,7 @@ Checks:
 
 ## 24. Trigger the solver automatically via GitHub Actions when an issue is labeled
 
-Labels: `automation`, `workflow`, `github`
+Labels: `kind/automation`, `theme/workflow`, `theme/github`
 
 Priority: `1`
 
@@ -767,7 +767,7 @@ Checks:
 
 ## 25. Decompose oversized issues into sub-issues automatically
 
-Labels: `automation`, `workflow`, `github`, `quality`
+Labels: `kind/automation`, `theme/workflow`, `theme/github`, `theme/quality`
 
 Priority: `2`
 
@@ -801,7 +801,7 @@ Checks:
 
 ## 26. Run tests after each solver fix and include the result in the PR body
 
-Labels: `automation`, `quality`, `workflow`
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`
 
 Priority: `2`
 
@@ -840,7 +840,7 @@ Checks:
 
 ## 27. Document RepoLens: what it is and why Docker isolation is used
 
-Labels: `docs`, `quality`
+Labels: `kind/docs`, `theme/quality`
 
 Priority: `3`
 
@@ -875,7 +875,7 @@ Checks:
 
 ## 28. Track solver success rate with a benchmark script
 
-Labels: `automation`, `quality`, `workflow`, `provider`
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/provider`
 
 Priority: `2`
 
@@ -915,7 +915,7 @@ Checks:
 
 ## 29. Skip existing GitHub issues in the backlog issue generator
 
-Labels: `automation`, `workflow`, `github`, `quality`
+Labels: `kind/automation`, `theme/workflow`, `theme/github`, `theme/quality`
 
 Priority: `1`
 

@@ -113,6 +113,30 @@ DEFAULT_LABELS = {
     "analysis": {"color": "1d76db", "description": "Repository analysis and findings (legacy)"},
 }
 
+# Maps flat legacy labels from NEXT_BACKLOG.md to the new taxonomy.
+# Source of truth: docs/label_taxonomy.md
+LABEL_MAPPING: dict[str, list[str]] = {
+    "automation":      ["kind/automation"],
+    "quality":         ["theme/quality"],
+    "workflow":        ["theme/workflow"],
+    "github":          ["theme/github"],
+    "provider":        ["theme/provider"],
+    "research":        ["theme/research", "kind/research"],
+    "dashboard":       ["theme/dashboard"],
+    "opencode":        ["area/opencode"],
+    "sandbox":         ["theme/codex"],
+    "analysis":        ["kind/analysis"],
+    "codex":           ["theme/codex"],
+    "docs":            ["kind/docs"],
+    "documentation":   ["kind/docs"],
+    "bug":             ["kind/bug"],
+    "refactor":        ["kind/refactor"],
+    "backlog":         ["theme/backlog"],
+    "safety":          ["theme/quality"],
+    "setup":           ["kind/feature"],
+    # New-taxonomy labels pass through unchanged
+}
+
 
 class GitHubClient:
     BASE = "https://api.github.com"
