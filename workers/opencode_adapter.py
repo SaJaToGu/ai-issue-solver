@@ -105,6 +105,10 @@ def prepare_opencode_env(base_env: dict[str, str] | None = None) -> dict[str, st
     env.pop("XDG_STATE_HOME", None)
     env["OPENCODE_CACHE_DIR"] = str(cache_dir)
 
+    # OPENCODE_SERVER_PASSWORD wird von OpenCode Desktop gesetzt und verhindert,
+    # dass CLI `opencode run` eine neue Session startet (GitHub issue #24747).
+    env.pop("OPENCODE_SERVER_PASSWORD", None)
+
     # GitHub-Write-Tokens entfernen: OpenCode soll keinen Push-Zugriff haben
     env.pop("GITHUB_TOKEN", None)
     env.pop("GH_TOKEN", None)
