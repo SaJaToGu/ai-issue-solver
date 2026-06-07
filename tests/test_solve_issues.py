@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from solve_issues import (  # noqa: E402
     GitHubClient,
     PullRequestState,
+    WorkerAssessment,
     WorkerRunResult,
     assess_worker_result,
     branch_has_changes_against_base,
@@ -451,6 +452,88 @@ class BranchRecoveryTests(unittest.TestCase):
 
         self.assertIsNone(pr)
         self.assertFalse(client.closed)
+
+    @patch("solve_issues.assess_worker_result",
+           return_value=WorkerAssessment(should_continue=False, has_changes=False, reason="noop"))
+    @patch("solve_issues.format_git_change_summary", return_value=[])
+    @patch("solve_issues.git_status_porcelain", return_value="")
+    @patch("solve_issues.run_worker_command", return_value=WorkerRunResult(0, ""))
+    @patch("solve_issues.build_worker_command", return_value=["echo", "noop"])
+    @patch("solve_issues.branch_has_changes_against_base", return_value=False)
+    @patch("solve_issues.checkout_existing_remote_branch", return_value=True)
+    @patch("solve_issues.clone_repo", return_value=True)
+    def test_reuse_branch_without_changes_does_not_crash(
+        self, mock_clone, mock_checkout, mock_branch_has_changes,
+        mock_build_cmd, mock_run_worker, mock_git_status,
+        mock_format_summary, mock_assess,
+    ):
+        client = self.make_client(branch_exists=True, pull_requests=[])
+        issue = {"number": 7, "title": "Fix recovery", "body": ""}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                result = solve_issue(
+                    client=client,
+                    issue=issue,
+                    repo="demo",
+                    model="codex",
+                    model_name="",
+                    config={"owner": "test-owner", "config": {}},
+                    token="token",
+                    dry_run=False,
+                    base_branch="main",
+                    close_issues=False,
+                    run_report_dir=tmpdir,
+                )
+
+        self.assertFalse(result)
+
+    @patch("solve_issues.write_run_report")
+    @patch("solve_issues.create_issue_pull_request",
+           return_value={"html_url": "https://github.com/test-owner/demo/pull/7"})
+    @patch("solve_issues.format_git_change_summary",
+           return_value=["Git-Änderungsübersicht:", "  README.md | 1 +"])
+    @patch("solve_issues.git_status_porcelain", return_value=" M README.md\n")
+    @patch("solve_issues.branch_has_changes_against_base", return_value=True)
+    @patch("solve_issues.checkout_existing_remote_branch", return_value=True)
+    @patch("solve_issues.clone_repo", return_value=True)
+    def test_reuse_branch_with_changes_writes_git_change_summary(
+        self, mock_clone, mock_checkout, mock_branch_has_changes,
+        mock_git_status, mock_format_summary, mock_create_pr,
+        mock_write_report,
+    ):
+        client = self.make_client(branch_exists=True, pull_requests=[])
+        issue = {"number": 7, "title": "Fix recovery", "body": ""}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                result = solve_issue(
+                    client=client,
+                    issue=issue,
+                    repo="demo",
+                    model="codex",
+                    model_name="",
+                    config={"owner": "test-owner", "config": {}},
+                    token="token",
+                    dry_run=False,
+                    base_branch="main",
+                    close_issues=False,
+                    run_report_dir=tmpdir,
+                )
+
+        self.assertTrue(result)
+        calls = mock_write_report.call_args_list
+        summary_calls = [
+            call for call in calls
+            if "git_change_summary" in call[1]
+        ]
+        self.assertEqual(len(summary_calls), 1)
+        self.assertEqual(
+            summary_calls[0][1]["git_change_summary"],
+            ["Git-Änderungsübersicht:", "  README.md | 1 +"],
+        )
 
 
 class WorkerAssessmentTests(unittest.TestCase):
