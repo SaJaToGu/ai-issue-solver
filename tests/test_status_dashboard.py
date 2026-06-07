@@ -895,6 +895,12 @@ pr_url: https://github.com/other-owner/demo/pull/47
         self.assertIn('content="10"', html)
         self.assertIn("Auto-refresh: 10s", html)
 
+    def test_render_dashboard_contains_all_tab_ids(self):
+        """Alle 5 Tab-Content-IDs müssen im gerenderten HTML vorhanden sein."""
+        html = render_dashboard([], None, Path("reports/status-dashboard.html"))
+        for tab_id in ("overview", "model-comparison", "backlog", "run-list", "diagnostics"):
+            self.assertIn(f'id="{tab_id}"', html)
+
     def test_main_generates_dashboard_with_default_cli_options(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runs_dir = Path(tmpdir) / "runs"
