@@ -1798,6 +1798,25 @@ def render_lifecycle_cell(run: DashboardRun) -> str:
     )
 
 
+AGENT_KEYWORDS: list[tuple[str, str]] = [
+    ("research",   ["evaluate", "research", "analyse", "analyse", "benchmark", "evidence"]),
+    ("planner",    ["plan", "backlog", "priorit", "cleanup", "backlog"]),
+    ("cost",       ["cost", "budget", "provider scorecard"]),
+    ("supervisor", ["supervisor", "health", "monitor", "heartbeat"]),
+    ("reviewer",   ["review", "quality"]),
+    ("triage",     ["triage", "classify", "label", "route"]),
+]
+
+
+def agent_for_issue(title: str) -> str:
+    """Ermittelt den Agent aus dem Issue-Titel via Keyword-Heuristik."""
+    lower = title.lower()
+    for agent, keywords in AGENT_KEYWORDS:
+        if any(kw in lower for kw in keywords):
+            return agent
+    return "solver"
+
+
 def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> str:
     links = github_links(run, owner)
     run_link = run.path / "summary.txt"
@@ -1855,8 +1874,9 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
     elif run.priority == 3:
         priority_badge = '<span class="priority-badge priority-low">Niedrig</span>'
 
+    agent = agent_for_issue(run.issue_title or "")
     return "\n".join([
-        "<tr>",
+        f'<tr data-repo="{escape(run.repo or "")}" data-agent="{escape(agent)}">',
         f'  <td><span class="badge badge-{escape(run.category)}">{escape(STATUS_LABELS[run.category])}</span></td>',
         f"  <td>{escape(format_datetime(run.created_at))}</td>",
         f"  <td>{escape(run.repo or '-')}</td>",
@@ -2065,7 +2085,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
                      allow_shutdown: bool = False,
                      refresh_seconds: int | None = None,
                      unstarted_issues: list[DashboardIssue] | None = None,
-                     active_tab: str = "overview") -> str:
+                     active_tab: str = "run-list") -> str:
     runs = [
         fallback_lifecycle_for_run(run)
         if run.category == "successful" and not run.lifecycle_label
@@ -2078,6 +2098,31 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
         counts[run.category] = counts.get(run.category, 0) + 1
 
     rows = "\n".join(render_run_row(run, owner, output_path) for run in runs)
+
+    # Repos mit letzter Aktivität ermitteln, absteigend sortieren
+    repo_activity: dict[str, datetime] = {}
+    for run in runs:
+        if run.repo:
+            ts = run.last_activity_at or run.created_at
+            if ts and (run.repo not in repo_activity or ts > repo_activity[run.repo]):
+                repo_activity[run.repo] = ts
+    repos_sorted = sorted(repo_activity, key=lambda r: repo_activity[r], reverse=True)
+
+    # Default: das oberste Repo
+    default_repos = [repos_sorted[0]] if repos_sorted else []
+
+    # Checkbox-HTML für die Repo-Übersicht
+    repo_checkboxes = "".join(
+        f'<label class="repo-checkbox"><input type="checkbox" value="{escape(r)}" onchange="onFilterChange()"'
+        f'{" checked" if r in default_repos else ""}>'
+        f'{escape(r)}</label>'
+        for r in repos_sorted
+    )
+
+    agent_filter_options = "".join(
+        f'<option value="{agent}">{agent}</option>'
+        for agent in sorted({agent_for_issue(run.issue_title or "") for run in runs if run.issue_title})
+    )
     if not rows:
         rows = (
             '<tr><td colspan="13" class="empty">'
@@ -2334,6 +2379,18 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     }}
     .tab-content {{ display: none; }}
     .tab-content.active {{ display: block; }}
+    .filter-bar {{ padding: 12px 16px 4px; display: flex; align-items: center; gap: 8px; }}
+    .filter-bar label {{ color: var(--muted); font-size: 13px; }}
+    .filter-bar select {{ font-size: 13px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); }}
+    .repo-bar {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 12px 16px; overflow: hidden; }}
+    .repo-bar summary {{ padding: 10px 14px; cursor: pointer; font-weight: 600; font-size: 14px; user-select: none; }}
+    .repo-bar summary::marker {{ color: var(--muted); }}
+    .repo-bar-body {{ padding: 4px 14px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }}
+    .repo-checkbox {{ font-size: 13px; cursor: pointer; white-space: nowrap; }}
+    .repo-checkbox input {{ margin-right: 3px; vertical-align: middle; }}
+    .repo-all {{ font-weight: 600; }}
+    .repo-bar-sep {{ display: inline-block; width: 1px; height: 18px; background: var(--line); margin: 0 4px; }}
+    .repo-count {{ font-size: 12px; color: var(--muted); margin-left: auto; }}
     .chart-container {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -2393,6 +2450,21 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       <div class="tab {'active' if active_tab == 'run-list' else ''}" onclick="switchTab('run-list')">Run-Liste</div>
       <div class="tab {'active' if active_tab == 'diagnostics' else ''}" onclick="switchTab('diagnostics')">Diagnose</div>
     </div>
+
+    <details class="repo-bar" id="repo-bar" open>
+      <summary>Repository-Übersicht ⏷ <span id="repo-summary-label">{escape(repos_sorted[0] if repos_sorted else "")}</span></summary>
+      <div class="repo-bar-body">
+        <label class="repo-checkbox repo-all"><input type="checkbox" id="repo-all" checked onchange="toggleAllRepos(this.checked)">Alle</label>
+        {repo_checkboxes}
+        <span class="repo-bar-sep"></span>
+        <label for="agent-filter">Agent:</label>
+        <select id="agent-filter" onchange="onFilterChange()">
+          <option value="">Alle</option>
+          {agent_filter_options}
+        </select>
+        <span id="repo-count" class="repo-count">1 Repo ausgewählt</span>
+      </div>
+    </details>
 
     <div id="overview" class="tab-content {'active' if active_tab == 'overview' else ''}">
       <section class="metrics" aria-label="Status-Zusammenfassung">
@@ -2488,20 +2560,108 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
   </main>
   {shutdown_script}
   <script>
-    function switchTab(tabId) {{
-      const tabs = document.querySelectorAll('.tab');
-      tabs.forEach(tab => tab.classList.remove('active'));
-
-      const tabContents = document.querySelectorAll('.tab-content');
-      tabContents.forEach(content => content.classList.remove('active'));
-
-      document.getElementById(tabId).classList.add('active');
-      event.currentTarget.classList.add('active');
+    function parseHash() {{
+      const raw = location.hash.replace(/^#/, '');
+      if (!raw) return {{ tab: '', repos: [], agent: '' }};
+      const parts = raw.split('&');
+      const result = {{ tab: '', repos: [], agent: '' }};
+      for (const p of parts) {{
+        const kv = p.split('=');
+        const key = kv[0], val = decodeURIComponent(kv[1] || '');
+        if (key === 'tab') result.tab = val;
+        else if (key === 'repos') result.repos = val ? val.split(',') : [];
+        else if (key === 'agent') result.agent = val;
+        else if (!result.tab && kv.length === 1) result.tab = kv[0];
+      }}
+      return result;
     }}
 
-    // Initialisiere Diagramme
+    function writeHash(tab, repos, agent) {{
+      const parts = [];
+      if (tab) parts.push('tab=' + encodeURIComponent(tab));
+      if (repos.length) parts.push('repos=' + repos.map(encodeURIComponent).join(','));
+      if (agent) parts.push('agent=' + encodeURIComponent(agent));
+      location.hash = parts.join('&');
+    }}
+
+    function getSelectedRepos() {{
+      return [...document.querySelectorAll('#repo-bar .repo-checkbox input:not(#repo-all):checked')]
+        .map(cb => cb.value);
+    }}
+
+    function updateRepoLabel(repos) {{
+      const label = document.getElementById('repo-summary-label');
+      const count = document.getElementById('repo-count');
+      const all = document.getElementById('repo-all');
+      if (label) label.textContent = repos.length ? repos.join(', ') : '\u2013';
+      if (count) count.textContent = repos.length + ' Repo(s) ausgew\u00e4hlt';
+      if (all) all.checked = repos.length === document.querySelectorAll('#repo-bar .repo-checkbox:not(#repo-all)').length;
+    }}
+
+    function toggleAllRepos(checked) {{
+      document.querySelectorAll('#repo-bar .repo-checkbox:not(#repo-all) input').forEach(cb => {{
+        cb.checked = checked;
+      }});
+      onFilterChange();
+    }}
+
+    function applyFilters(repos, agent) {{
+      document.querySelectorAll('#run-list table tbody tr').forEach(row => {{
+        const matchRepo = !repos.length || repos.includes(row.dataset.repo || '');
+        const matchAgent = !agent || row.dataset.agent === agent;
+        row.style.display = (matchRepo && matchAgent) ? '' : 'none';
+      }});
+    }}
+
+    function switchTab(tabId) {{
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      event.currentTarget.classList.add('active');
+      const state = parseHash();
+      writeHash(tabId, getSelectedRepos(), state.agent);
+    }}
+
+    function onFilterChange() {{
+      const repos = getSelectedRepos();
+      const agent = document.getElementById('agent-filter').value;
+      applyFilters(repos, agent);
+      updateRepoLabel(repos);
+      const state = parseHash();
+      writeHash(state.tab, repos, agent);
+    }}
+
     document.addEventListener('DOMContentLoaded', function() {{
       {render_charts_script(runs)}
+      const state = parseHash();
+
+      // Tab wiederherstellen
+      if (state.tab) {{
+        const el = document.getElementById(state.tab);
+        if (el) {{
+          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          el.classList.add('active');
+          const btn = document.querySelector(`.tab[onclick*="switchTab('${{state.tab}}')"]`);
+          if (btn) btn.classList.add('active');
+        }}
+      }}
+
+      // Repo-Checkboxen aus Hash wiederherstellen
+      const allCheckboxes = [...document.querySelectorAll('#repo-bar .repo-checkbox:not(#repo-all) input')];
+      if (state.repos.length) {{
+        allCheckboxes.forEach(cb => {{ cb.checked = state.repos.includes(cb.value); }});
+      }}
+
+      // Agent wiederherstellen
+      if (state.agent) {{
+        const sel = document.getElementById('agent-filter');
+        if ([...sel.options].some(o => o.value === state.agent)) sel.value = state.agent;
+      }}
+
+      const selected = getSelectedRepos();
+      applyFilters(selected, document.getElementById('agent-filter').value);
+      updateRepoLabel(selected);
     }});
   </script>
 </body>
@@ -2517,7 +2677,7 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
                      github_token: str | None = None,
                      github_cache_path: Path = DEFAULT_GITHUB_CACHE,
                      github_cache_ttl_seconds: int = DEFAULT_GITHUB_CACHE_TTL_SECONDS,
-                     active_tab: str = "overview") -> Path:
+                     active_tab: str = "run-list") -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_owner = owner or infer_owner_from_runs(runs)
     unstarted_issues: list[DashboardIssue] = []
