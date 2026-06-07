@@ -1953,7 +1953,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 auto_model: bool = False,
                 max_cost: str = "expensive",
                 skip_pr: bool = False,
-                branch_suffix: str | None = None) -> bool:
+                branch_suffix: str | None = None,
+                continue_: bool = False) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -2115,58 +2116,64 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                                      resource_diagnostics=resource_diagnostics)
                 return False
             if branch_has_changes_against_base(repo_dir, base_branch):
-                git_status = git_status_porcelain(repo_dir)
-                git_change_summary = format_git_change_summary(repo_dir, git_status)
-                print(
-                    "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
-                    "erstelle fehlenden PR."
-                )
-                if skip_pr:
-                    print("      [SKIP_PR] Überspringe PR-Erstellung (Benchmark-Modus)")
-                    pr = None
-                    status = "pr_skipped"
+                if continue_:
+                    print(
+                        "      [CONTINUE] Vorhandene Änderungen gefunden; "
+                        "setze Arbeit auf bestehendem Branch fort..."
+                    )
                 else:
-                    pr = create_issue_pull_request(
-                        client=client,
-                        repo=repo,
-                        number=number,
-                        title=title,
-                        model=model,
-                        config=config,
-                        branch_name=branch_name,
-                        base_branch=base_branch,
-                        close_issues=close_issues,
-                        model_name=model_name,
-                        dry_run=dry_run,
+                    git_status = git_status_porcelain(repo_dir)
+                    git_change_summary = format_git_change_summary(repo_dir, git_status)
+                    print(
+                        "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
+                        "erstelle fehlenden PR."
                     )
-                    status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
-                if not pr and run_report and should_preserve_worktree(
-                    status,
-                    repo_dir,
-                    base_branch,
-                    changes_exist=True,
-                ):
-                    preserved_worktree = preserve_worker_worktree(
-                        repo_dir=repo_dir,
-                        report=run_report,
-                        owner=config["owner"],
-                        repo=repo,
-                        issue_number=number,
-                        branch=branch_name,
-                        status=status,
-                        base_branch=base_branch,
-                    )
-                if run_report:
-                    write_run_report(
-                        run_report,
+                    if skip_pr:
+                        print("      [SKIP_PR] Überspringe PR-Erstellung (Benchmark-Modus)")
+                        pr = None
+                        status = "pr_skipped"
+                    else:
+                        pr = create_issue_pull_request(
+                            client=client,
+                            repo=repo,
+                            number=number,
+                            title=title,
+                            model=model,
+                            config=config,
+                            branch_name=branch_name,
+                            base_branch=base_branch,
+                            close_issues=close_issues,
+                            model_name=model_name,
+                            dry_run=dry_run,
+                        )
+                        status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
+                    if not pr and run_report and should_preserve_worktree(
                         status,
-                        pr_url=pr.get("html_url") if pr else None,
-                        preserved_worktree_path=preserved_worktree,
-                        base_branch=base_branch,
-                        git_change_summary=git_change_summary,
-                        resource_diagnostics=resource_diagnostics,
-                    )
-                return bool(pr)
+                        repo_dir,
+                        base_branch,
+                        changes_exist=True,
+                    ):
+                        preserved_worktree = preserve_worker_worktree(
+                            repo_dir=repo_dir,
+                            report=run_report,
+                            owner=config["owner"],
+                            repo=repo,
+                            issue_number=number,
+                            branch=branch_name,
+                            status=status,
+                            base_branch=base_branch,
+                        )
+                    if run_report:
+                        write_run_report(
+                            run_report,
+                            status,
+                            pr_url=pr.get("html_url") if pr else None,
+                            preserved_worktree_path=preserved_worktree,
+                            base_branch=base_branch,
+                            git_change_summary=git_change_summary,
+                            resource_diagnostics=resource_diagnostics,
+                        )
+                    return bool(pr)
         elif not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
             if run_report:
@@ -2543,6 +2550,12 @@ def main():
         "--branch-suffix",
         help="Optionaler Suffix für den Branch-Namen (z.B. Modell-Name für Ensemble-Läufe)",
     )
+    parser.add_argument(
+        "--continue-run",
+        action="store_true",
+        dest="continue_",
+        help="Vorhandenen Branch mit Änderungen weiterbearbeiten statt PR zu erstellen",
+    )
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
     parser.add_argument(
         "--base-branch",
@@ -2787,6 +2800,7 @@ def main():
                 max_cost=args.max_cost,
                 skip_pr=args.skip_pr,
                 branch_suffix=args.branch_suffix,
+                continue_=args.continue_,
             )
             if ok:
                 solved += 1
