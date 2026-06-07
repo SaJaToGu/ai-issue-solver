@@ -45,8 +45,10 @@ RISK_MAP = {
 }
 
 STRENGTH_MAP = {
-    "low": ["mistral-small", "deepseek-coder:6.7b", "qwen-coder"],
-    "medium": ["mistral-medium", "claude-sonnet-3.5", "gpt-4o-mini"],
+    "low": ["mistral-small", "deepseek-coder:6.7b", "qwen-coder",
+            "opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free", "opencode/minimax-m3-free"],
+    "medium": ["mistral-medium", "claude-sonnet-3.5", "gpt-4o-mini",
+               "opencode/nemotron-3-ultra-free"],
     "high": ["mistral-large", "claude-sonnet-4", "gpt-4o"],
 }
 
@@ -55,6 +57,10 @@ COST_TIERS = {
     "mistral-small": "cheap",
     "deepseek-coder:6.7b": "cheap",
     "qwen-coder": "cheap",
+    "opencode/deepseek-v4-flash-free": "cheap",
+    "opencode/mimo-v2.5-free": "cheap",
+    "opencode/minimax-m3-free": "cheap",
+    "opencode/nemotron-3-ultra-free": "cheap",
     "mistral-medium": "medium",
     "claude-sonnet-3.5": "medium",
     "gpt-4o-mini": "medium",
@@ -65,6 +71,10 @@ COST_TIERS = {
 
 # Standard-Modell-Reihenfolge für Eskalation
 MODEL_ESCALATION = [
+    "opencode/deepseek-v4-flash-free",
+    "opencode/mimo-v2.5-free",
+    "opencode/minimax-m3-free",
+    "opencode/nemotron-3-ultra-free",
     "mistral-small",
     "mistral-medium",
     "mistral-large",

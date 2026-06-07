@@ -154,7 +154,10 @@ def prepare_opencode_worker_environment(base_env: dict[str, str] | None = None) 
 
     # Nur Cache isolieren. State/Auth nicht überschreiben, damit OpenCode seine
     # bestehende SQLite-Datenbank inklusive WAL-Dateien konsistent findet.
+    # OPENCODE_SERVER_PASSWORD wird von OpenCode Desktop gesetzt und verhindert,
+    # dass CLI `opencode run` eine neue Session startet (GitHub issue #24747).
     env.pop("XDG_STATE_HOME", None)
+    env.pop("OPENCODE_SERVER_PASSWORD", None)
     env["OPENCODE_CACHE_DIR"] = str(cache_dir)
 
     return env
@@ -213,6 +216,13 @@ MODEL_CONFIGS = {
         "display_name": "OpenCode CLI",
         "env_key": None,
         "env_var": None,
+        "default_model_name": "opencode/deepseek-v4-flash-free",
+        "free_models": [
+            "opencode/deepseek-v4-flash-free",
+            "opencode/mimo-v2.5-free",
+            "opencode/minimax-m3-free",
+            "opencode/nemotron-3-ultra-free",
+        ],
     },
     "openrouter": {
         "display_name": "OpenRouter (aider, legacy)",
@@ -842,10 +852,12 @@ def run_opencode_diagnostic() -> int:
     print()
     print("  Verwendung:")
     print(f"    python scripts/solve_issues.py --model opencode")
+    print(f"    python scripts/solve_issues.py --model opencode --model-name opencode/deepseek-v4-flash-free")
     print(f"    python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603")
     print(f"    python scripts/solve_issues.py --model opencode --model-name claude-sonnet-4-20250514")
     print(f"    python scripts/solve_issues.py --model opencode --model-name gpt-4o")
     print(f"    python scripts/solve_issues.py --model opencode --dry-run")
+    print(f"  Freie OpenCode-Modelle (kein API-Key nötig): opencode/deepseek-v4-flash-free, opencode/mimo-v2.5-free, opencode/minimax-m3-free, opencode/nemotron-3-ultra-free")
     print("=" * 50)
 
     return 0
@@ -1939,11 +1951,15 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 run_report_dir: Path | str | None = None,
                 verbosity: str = "normal",
                 auto_model: bool = False,
-                max_cost: str = "expensive") -> bool:
+                max_cost: str = "expensive",
+                skip_pr: bool = False,
+                branch_suffix: str | None = None) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
     default_branch_name = f"ai/fix-issue-{number}"
+    if branch_suffix:
+        default_branch_name = f"{default_branch_name}/{branch_suffix}"
 
     print(f"\n   🔧 Issue #{number}: {title}")
     print(f"      Modell: {MODEL_CONFIGS[model]['display_name']}")
@@ -2105,20 +2121,25 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
                     "erstelle fehlenden PR."
                 )
-                pr = create_issue_pull_request(
-                    client=client,
-                    repo=repo,
-                    number=number,
-                    title=title,
-                    model=model,
-                    config=config,
-                    branch_name=branch_name,
-                    base_branch=base_branch,
-                    close_issues=close_issues,
-                    model_name=model_name,
-                    dry_run=dry_run,
-                )
-                status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
+                if skip_pr:
+                    print("      [SKIP_PR] Überspringe PR-Erstellung (Benchmark-Modus)")
+                    pr = None
+                    status = "pr_skipped"
+                else:
+                    pr = create_issue_pull_request(
+                        client=client,
+                        repo=repo,
+                        number=number,
+                        title=title,
+                        model=model,
+                        config=config,
+                        branch_name=branch_name,
+                        base_branch=base_branch,
+                        close_issues=close_issues,
+                        model_name=model_name,
+                        dry_run=dry_run,
+                    )
+                    status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
                 if not pr and run_report and should_preserve_worktree(
                     status,
                     repo_dir,
@@ -2391,27 +2412,32 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         if run_report:
             write_run_health(run_report, status="running", phase="creating_pr")
-        pr = create_issue_pull_request(
-            client=client,
-            repo=repo,
-            number=number,
-            title=title,
-            model=model,
-            config=config,
-            branch_name=branch_name,
-            base_branch=base_branch,
-            close_issues=close_issues,
-            model_name=effective_model_name,
-            fallback_from=model_selection_metadata.get('fallback_from') if model_selection_metadata else None,
-            dry_run=dry_run,
-        )
-        # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
-        is_vibe_turn_limit = (
-            model == "mistral-vibe"
-            and pr
+        if skip_pr:
+            print("      [SKIP_PR] Überspringe PR-Erstellung (Benchmark-Modus)")
+            pr = None
+            status = "pr_skipped" if assessment.has_changes else "no_changes"
+        else:
+            pr = create_issue_pull_request(
+                client=client,
+                repo=repo,
+                number=number,
+                title=title,
+                model=model,
+                config=config,
+                branch_name=branch_name,
+                base_branch=base_branch,
+                close_issues=close_issues,
+                model_name=effective_model_name,
+                fallback_from=model_selection_metadata.get('fallback_from') if model_selection_metadata else None,
+                dry_run=dry_run,
+            )
+            # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
+            is_vibe_turn_limit = (
+                model == "mistral-vibe"
+                and pr
             and VIBE_TURN_LIMIT_RE.search(diagnostic_result.output)
         )
-        status = "pr_created_with_warning" if is_vibe_turn_limit else ("pr_created" if pr else "pr_failed")
+            status = "pr_created_with_warning" if is_vibe_turn_limit else ("pr_created" if pr else "pr_failed")
         if not pr and run_report and should_preserve_worktree(
             status,
             repo_dir,
@@ -2483,7 +2509,8 @@ def main():
     parser.add_argument(
         "--model-name",
         help=(
-            "Spezifisches Modell (z.B. 'mistral/mistral-small-2603', "
+            "Spezifisches Modell (z.B. 'opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', "
+            "'mistral/mistral-small-2603', "
             "'claude-sonnet-4-20250514', 'gpt-4o', 'deepseek-coder:6.7b', "
             "'openrouter/openai/gpt-4o-mini')"
         )
@@ -2507,6 +2534,15 @@ def main():
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
+    parser.add_argument(
+        "--skip-pr",
+        action="store_true",
+        help="Benchmark-Modus: Commit & Push ausführen aber keinen PR erstellen",
+    )
+    parser.add_argument(
+        "--branch-suffix",
+        help="Optionaler Suffix für den Branch-Namen (z.B. Modell-Name für Ensemble-Läufe)",
+    )
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
     parser.add_argument(
         "--base-branch",
@@ -2652,17 +2688,21 @@ def main():
 
         # Mappe das ausgewählte Modell auf die bestehende MODEL_CONFIGS-Struktur
         # TODO: Erweitere MODEL_CONFIGS für alle unterstützten Modelle
-        if "mistral" in model_selection["model"]:
+        selected = model_selection["model"]
+        if selected in MODEL_CONFIGS["opencode"].get("free_models", []):
+            args.model = "opencode"
+            args.model_name = selected
+        elif "mistral" in selected:
             args.model = "mistral"
-            args.model_name = model_selection["model"]
-        elif "claude" in model_selection["model"]:
+            args.model_name = selected
+        elif "claude" in selected:
             args.model = "claude"
-            args.model_name = model_selection["model"]
-        elif "gpt" in model_selection["model"]:
+            args.model_name = selected
+        elif "gpt" in selected:
             args.model = "openai"
-            args.model_name = model_selection["model"]
+            args.model_name = selected
         else:
-            print_err(f"Automatisch ausgewähltes Modell wird nicht unterstützt: {model_selection['model']}")
+            print_err(f"Automatisch ausgewähltes Modell wird nicht unterstützt: {selected}")
             sys.exit(1)
 
     model_config = MODEL_CONFIGS[args.model]
@@ -2745,6 +2785,8 @@ def main():
                 verbosity=args.verbosity,
                 auto_model=args.auto_model,
                 max_cost=args.max_cost,
+                skip_pr=args.skip_pr,
+                branch_suffix=args.branch_suffix,
             )
             if ok:
                 solved += 1
