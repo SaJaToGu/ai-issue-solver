@@ -13,6 +13,7 @@ from unittest.mock import Mock
 from scripts.solver_reporting import (
     ProviderScorecard,
     RunReport,
+    build_run_outcome,
     create_provider_scorecard,
     create_run_report,
     write_run_report,
@@ -56,6 +57,27 @@ def test_provider_scorecard_creation():
     assert scorecard.cost_currency == "USD"
     assert scorecard.cost_confidence == "high"
     assert scorecard.cost_source == "provider_api"
+
+
+def test_build_run_outcome_marks_preserved_push_failure_as_pipeline_failure():
+    """Push failures with preserved changes are benchmark-relevant pipeline failures."""
+    worker = Mock()
+    worker.returncode = 0
+
+    outcome = build_run_outcome(
+        "push_failed",
+        worker_result=worker,
+        preserved_worktree_path="reports/preserved-worktrees/run/demo",
+        git_change_summary=["Git-Änderungsübersicht:", "  README.md | 1 +"],
+        test_result="passed",
+    )
+
+    assert outcome["worker_status"] == "succeeded"
+    assert outcome["has_changes"] is True
+    assert outcome["test_status"] == "passed"
+    assert outcome["delivery_status"] == "push_failed"
+    assert outcome["failure_class"] == "pipeline_failure"
+    assert outcome["recovery_status"] == "preserved_worktree"
 
 
 def test_provider_scorecard_missing_costs():
@@ -244,6 +266,13 @@ def test_write_run_report_with_scorecard():
         assert scorecard_data["test_result"] == "passed"
         assert scorecard_data["no_change"] is False
         assert scorecard_data["fallback_used"] is True
+        outcome_data = metadata["run_outcome"]
+        assert outcome_data["worker_status"] == "succeeded"
+        assert outcome_data["has_changes"] is True
+        assert outcome_data["test_status"] == "passed"
+        assert outcome_data["delivery_status"] == "pr_created"
+        assert outcome_data["failure_class"] == "success"
+        assert outcome_data["recovery_status"] == "none"
 
         # Lese die summary.txt
         summary_path = report.path / "summary.txt"
@@ -264,6 +293,12 @@ def test_write_run_report_with_scorecard():
         assert "provider_scorecard_test_result: passed" in summary_content
         assert "provider_scorecard_no_change: False" in summary_content
         assert "provider_scorecard_fallback_used: True" in summary_content
+        assert "run_outcome_worker_status: succeeded" in summary_content
+        assert "run_outcome_has_changes: True" in summary_content
+        assert "run_outcome_test_status: passed" in summary_content
+        assert "run_outcome_delivery_status: pr_created" in summary_content
+        assert "run_outcome_failure_class: success" in summary_content
+        assert "run_outcome_recovery_status: none" in summary_content
 
 
 def test_write_run_report_no_change():

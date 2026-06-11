@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -33,6 +34,27 @@ FREE_OPencode_MODELS = [
     "opencode/minimax-m3-free",
     "opencode/nemotron-3-ultra-free",
 ]
+
+RUN_REPORT_RE = re.compile(r"Run-Report:\s*(\S+)")
+
+
+def extract_run_report_path(output: str) -> Path | None:
+    match = RUN_REPORT_RE.search(output)
+    if not match:
+        return None
+    return Path(match.group(1))
+
+
+def load_run_outcome(run_report: Path | None) -> dict:
+    if not run_report:
+        return {}
+    metadata_path = run_report / "metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    outcome = metadata.get("run_outcome", {})
+    return outcome if isinstance(outcome, dict) else {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,7 +121,9 @@ def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False) -
             
             # Analysiere die Ausgabe
             output = result.stdout + result.stderr
-            has_changes = "no_changes" not in output.lower()
+            run_report = extract_run_report_path(output)
+            run_outcome = load_run_outcome(run_report)
+            has_changes = bool(run_outcome.get("has_changes")) if run_outcome else "no_changes" not in output.lower()
             has_pr = "PR erstellt" in output
             
             # Führe Tests aus
@@ -116,6 +140,8 @@ def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False) -
                 "pr": has_pr,
                 "tests_passed": tests_passed,
                 "returncode": result.returncode,
+                "run_report": str(run_report) if run_report else "",
+                "run_outcome": run_outcome,
                 "output": output,
             }
             
@@ -156,7 +182,9 @@ def main() -> int:
     print_results(results)
     
     # Speichere Ergebnisse als JSON
-    output_file = f"benchmark_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    output_dir = Path("benchmarks")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"benchmark_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"\nErgebnisse gespeichert in: {output_file}")
