@@ -2099,7 +2099,21 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
 
     rows = "\n".join(render_run_row(run, owner, output_path) for run in runs)
 
-    # Repos mit letzter Aktivität ermitteln, absteigend sortieren
+    # Repos mit aktuell laufenden Jobs ermitteln (für Default-Auswahl)
+    running_repos: dict[str, datetime] = {}
+    for run in runs:
+        if run.repo and run.category == "running" and run.created_at:
+            if run.repo not in running_repos or run.created_at > running_repos[run.repo]:
+                running_repos[run.repo] = run.created_at
+
+    if len(running_repos) == 1:
+        default_repos = [list(running_repos.keys())[0]]
+    elif len(running_repos) > 1:
+        default_repos = [max(running_repos, key=lambda r: running_repos[r])]
+    else:
+        default_repos = []
+
+    # Alle Repos nach letzter Aktivität sortieren (für Checkbox-Reihenfolge)
     repo_activity: dict[str, datetime] = {}
     for run in runs:
         if run.repo:
@@ -2107,9 +2121,6 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
             if ts and (run.repo not in repo_activity or ts > repo_activity[run.repo]):
                 repo_activity[run.repo] = ts
     repos_sorted = sorted(repo_activity, key=lambda r: repo_activity[r], reverse=True)
-
-    # Default: das oberste Repo
-    default_repos = [repos_sorted[0]] if repos_sorted else []
 
     # Checkbox-HTML für die Repo-Übersicht
     repo_checkboxes = "".join(
@@ -2560,28 +2571,22 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
   </main>
   {shutdown_script}
   <script>
-    function parseHash() {{
-      const raw = location.hash.replace(/^#/, '');
-      if (!raw) return {{ tab: '', repos: [], agent: '' }};
-      const parts = raw.split('&');
-      const result = {{ tab: '', repos: [], agent: '' }};
-      for (const p of parts) {{
-        const kv = p.split('=');
-        const key = kv[0], val = decodeURIComponent(kv[1] || '');
-        if (key === 'tab') result.tab = val;
-        else if (key === 'repos') result.repos = val ? val.split(',') : [];
-        else if (key === 'agent') result.agent = val;
-        else if (!result.tab && kv.length === 1) result.tab = kv[0];
-      }}
-      return result;
+    function parseUrlParams() {{
+      const params = new URLSearchParams(location.search);
+      return {{
+        tab: params.get('tab') || '',
+        repo: params.get('repo') || '',
+        agent: params.get('agent') || ''
+      }};
     }}
 
-    function writeHash(tab, repos, agent) {{
-      const parts = [];
-      if (tab) parts.push('tab=' + encodeURIComponent(tab));
-      if (repos.length) parts.push('repos=' + repos.map(encodeURIComponent).join(','));
-      if (agent) parts.push('agent=' + encodeURIComponent(agent));
-      location.hash = parts.join('&');
+    function updateUrlParams(tab, repo, agent) {{
+      const params = new URLSearchParams();
+      if (tab) params.set('tab', tab);
+      if (repo) params.set('repo', repo);
+      if (agent) params.set('agent', agent);
+      const newUrl = location.pathname + '?' + params.toString() + location.hash;
+      history.replaceState(null, '', newUrl);
     }}
 
     function getSelectedRepos() {{
@@ -2613,13 +2618,26 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       }});
     }}
 
+    function getActiveTab() {{
+      const active = document.querySelector('.tab.active');
+      if (active) {{
+        const match = active.getAttribute('onclick')?.match(/'([^']+)'/);
+        if (match) return match[1];
+      }}
+      return 'run-list';
+    }}
+
     function switchTab(tabId) {{
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       document.getElementById(tabId).classList.add('active');
-      event.currentTarget.classList.add('active');
-      const state = parseHash();
-      writeHash(tabId, getSelectedRepos(), state.agent);
+      [...document.querySelectorAll('.tab')].forEach(t => {{
+        const onclick = t.getAttribute('onclick') || '';
+        if (onclick.includes("'" + tabId + "'")) t.classList.add('active');
+      }});
+      const repos = getSelectedRepos();
+      const agent = document.getElementById('agent-filter').value;
+      updateUrlParams(tabId, repos.length === 1 ? repos[0] : '', agent !== '' ? agent : '');
     }}
 
     function onFilterChange() {{
@@ -2627,41 +2645,85 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       const agent = document.getElementById('agent-filter').value;
       applyFilters(repos, agent);
       updateRepoLabel(repos);
-      const state = parseHash();
-      writeHash(state.tab, repos, agent);
+      updateUrlParams(
+        getActiveTab(),
+        repos.length === 1 ? repos[0] : '',
+        agent !== '' ? agent : ''
+      );
+    }}
+
+    function findDefaultRepo() {{
+      const rows = document.querySelectorAll('#run-list table tbody tr');
+      const runningByRepo = {{}};
+      rows.forEach(row => {{
+        const badge = row.querySelector('.badge-running');
+        if (badge) {{
+          const repo = row.dataset.repo;
+          const timeCell = row.querySelector('td:nth-child(2)');
+          if (repo && timeCell) {{
+            const time = timeCell.textContent.trim();
+            if (!runningByRepo[repo] || time > runningByRepo[repo]) {{
+              runningByRepo[repo] = time;
+            }}
+          }}
+        }}
+      }});
+      const repos = Object.keys(runningByRepo);
+      if (repos.length === 1) return repos[0];
+      if (repos.length > 1) {{
+        return repos.reduce((a, b) => runningByRepo[a] > runningByRepo[b] ? a : b);
+      }}
+      return '';
     }}
 
     document.addEventListener('DOMContentLoaded', function() {{
       {render_charts_script(runs)}
-      const state = parseHash();
+      const params = parseUrlParams();
 
-      // Tab wiederherstellen
-      if (state.tab) {{
-        const el = document.getElementById(state.tab);
-        if (el) {{
-          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-          el.classList.add('active');
-          const btn = document.querySelector(`.tab[onclick*="switchTab('${{state.tab}}')"]`);
-          if (btn) btn.classList.add('active');
-        }}
+      // Tab aus URL-Parameter oder Default "run-list"
+      const tabId = params.tab || 'run-list';
+      const tabEl = document.getElementById(tabId);
+      if (tabEl) {{
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tabEl.classList.add('active');
+        [...document.querySelectorAll('.tab')].forEach(t => {{
+          const onclick = t.getAttribute('onclick') || '';
+          if (onclick.includes("'" + tabId + "'")) t.classList.add('active');
+        }});
       }}
 
-      // Repo-Checkboxen aus Hash wiederherstellen
+      // Repo aus URL oder Default (Repo mit laufenden Jobs)
       const allCheckboxes = [...document.querySelectorAll('#repo-bar .repo-checkbox:not(#repo-all) input')];
-      if (state.repos.length) {{
-        allCheckboxes.forEach(cb => {{ cb.checked = state.repos.includes(cb.value); }});
+      const urlRepo = params.repo;
+      const runningRepo = findDefaultRepo();
+      const selectedRepo = urlRepo || runningRepo;
+
+      if (selectedRepo) {{
+        allCheckboxes.forEach(cb => {{ cb.checked = cb.value === selectedRepo; }});
+        document.getElementById('repo-all').checked = allCheckboxes.every(cb => cb.checked);
+      }} else {{
+        allCheckboxes.forEach(cb => {{ cb.checked = true; }});
+        document.getElementById('repo-all').checked = true;
       }}
 
-      // Agent wiederherstellen
-      if (state.agent) {{
-        const sel = document.getElementById('agent-filter');
-        if ([...sel.options].some(o => o.value === state.agent)) sel.value = state.agent;
+      // Agent aus URL oder Default (Alle)
+      const agentValue = params.agent || '';
+      const sel = document.getElementById('agent-filter');
+      if (agentValue && [...sel.options].some(o => o.value === agentValue)) {{
+        sel.value = agentValue;
       }}
 
       const selected = getSelectedRepos();
       applyFilters(selected, document.getElementById('agent-filter').value);
       updateRepoLabel(selected);
+
+      // URL-Parameter beim initialen Laden setzen, falls noch nicht vorhanden
+      updateUrlParams(
+        tabId,
+        selected.length === 1 ? selected[0] : '',
+        document.getElementById('agent-filter').value || ''
+      );
     }});
   </script>
 </body>
@@ -2793,7 +2855,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--tab",
-        default="overview",
+        default="run-list",
         help="Standard-Tab beim Öffnen des Dashboards",
     )
     args = parser.parse_args()
