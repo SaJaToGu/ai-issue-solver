@@ -184,3 +184,63 @@ python scripts/solve_issues.py --model opencode --model-name mistral/mistral-lar
 > - Night-Mode-Läufe sollten immer auf den `develop`-Branch zielen, um Stabilität in `main` zu gewährleisten.
 > - Vermeide breite `--open-issue`-Sweeps während der Kalibrierung. Nutze stattdessen explizite `--issue`-Flags.
 > - Die Dokumentation ist rein informativ und enthält keine Secrets.
+
+---
+
+## Benchmark-Modus & Einschränkungen
+
+### `benchmark_issues.py`
+
+Das Skript `scripts/benchmark_issues.py` führt mehrere Model-Kandidaten gegen dieselbe Issue aus, ohne Pull Requests zu erzeugen. Es dient dem Vergleich verschiedener Provider und Modellversionen.
+
+**Verhalten:**
+- Ruft `solve_issues.py` für jedes Modell mit `--skip-pr` auf, sodass Commits erstellt aber keine PRs geöffnet werden.
+- Jeder Lauf erhält einen eindeutigen Branch-Suffix (`bench/<timestamp>/<model-slug>`) über `--branch-suffix`, um Branch-Kollisionen zwischen Modellen zu vermeiden.
+- Ergebnisse werden als JSON-Datei (`benchmark_results_<timestamp>.json`) abgelegt.
+
+**Aktuelle Einschränkungen:**
+- **Keine automatische Gewinnerauswahl:** Es existiert noch keine Logik, die aus den Benchmark-Ergebnissen den besten Kandidaten ermittelt und automatisch einen PR erstellt.
+- **Keine PR-Promotion:** Ein erfolgreicher Modell-Lauf führt nicht automatisch zu einem PR. Dies muss manuell oder per Skript aus dem gepushten Branch nachgeholt werden.
+- **Kein Ensemble-Modus:** Parallele Modell-Läufe werden sequenziell ausgeführt; es gibt kein paralleles Dispatch-System für Benchmark-Sweeps.
+
+### Auswertung von Run-Reports und Worktrees
+
+Nach einem Benchmark-Lauf liegen Run-Reports unter `reports/runs/<timestamp>-<repo>-<issue>/` und ggf. gesicherte Worktrees unter `reports/preserved-worktrees/`. Um zwischen Modellfehler und Pipeline-Fehler zu unterscheiden, sollten folgende Felder im `metadata.json` des Run-Reports ausgewertet werden:
+
+| Feld | Bedeutung | Fehler-Diagnose |
+|------|-----------|-----------------|
+| `status` | Run-Endstatus (`pr_skipped`, `no_changes`, `worker_failed`, `push_failed`, `validation_failed`, `branch_create_failed`) | `worker_failed` → Modell-Problem; `push_failed` → Pipeline-Problem |
+| `worker_exit_code` | Exit-Code des KI-Workers | `!= 0` deutet auf Worker-Absturz hin |
+| `preserved_worktree` | Pfad zum gesicherten Worktree für Recovery | Gesetzt bei teilweisem Erfolg (Änderungen vorhanden, aber PR fehlgeschlagen) |
+| `provider_scorecard_run_status` | Normalisierter Run-Status aus der Provider-Scorecard | Identisch zu `status`, aber für Dashboard-Abfragen aufbereitet |
+| `provider_scorecard_duration_seconds` | Laufzeit des Workers | Ungewöhnlich kurze Laufzeit → Worker frühzeitig abgebrochen |
+| `model_selection.reason` | Grund der Modellauswahl | Hilft bei der Einordnung von Fallback-Entscheidungen |
+| `resource_diagnostics` | Locking-/Branch-Konflikte | Nicht-leer → parallele Run-Kollision, kein Modellfehler |
+
+**Orientierung:**
+- **Modellfehler:** `worker_exit_code != 0`, kurze Laufzeit, `status` endet auf `_failed` ohne `preserved_worktree`.
+- **Pipeline-Fehler:** `push_failed`, `branch_create_failed`, `branch_conflict` — hier liegt ein Infrastruktur-Problem vor.
+- **Teilerfolg:** `pr_skipped` oder `validation_failed` mit gesetztem `preserved_worktree` — Änderungen existieren, können manuell inspiziert werden.
+
+**Wiederherstellung aus preserved Worktrees:**
+```bash
+# Worktree inspizieren
+ls reports/preserved-worktrees/<timestamp>-<repo>-<issue>/
+
+# Branch aus dem Worktree pushen (falls nicht bereits geschehen)
+cd reports/preserved-worktrees/<timestamp>-<repo>-<issue>/repo
+git push origin <branch-name>
+
+# Bereinigung alter Worktrees
+python scripts/solve_issues.py --cleanup-preserved-worktrees --retention-days 14
+```
+
+### Sparsamer Einsatz von Benchmark-Läufen
+
+Benchmark-Läufe verbrauchen Tokens und Provider-Kontingent. Folgende Empfehlungen helfen, Ressourcen zu schonen:
+
+- **Nicht breitflächig einsetzen:** Führe Benchmarks nur auf einer kleinen, repräsentativen Issue aus, nicht auf allen offenen Issues.
+- **Modelle gezielt auswählen:** Teste nicht alle verfügbaren Modelle, sondern nur die relevanten Kandidaten (z. B. zwei pro Provider).
+- **Limit setzen:** Nutze `--issues` statt offener Sweeps, und vermeide `run_overnight.py` für Benchmark-Sweeps.
+- **Ergebnisse wiederverwenden:** Analysiere vorhandene Run-Reports aus `reports/runs/`, bevor neue Benchmark-Läufe gestartet werden.
+- **Dashboard konsultieren:** `status_dashboard.py` gruppiert Runs nach Status und zeigt gesicherte Worktrees an, sodass vorhandene Ergebnisse sichtbar sind, bevor neue Läufe anstoßen werden.
