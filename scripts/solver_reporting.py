@@ -645,7 +645,8 @@ def write_run_report(report: RunReport, status: str,
                       rework_reason: str | None = None,
                       subtask_id: str | None = None,
                       supersedes_pr: int | None = None,
-                      follow_up_issue: int | None = None) -> Path | None:
+                      follow_up_issue: int | None = None,
+                      opencode_session_metrics: dict | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -679,6 +680,7 @@ def write_run_report(report: RunReport, status: str,
             report, status, worker_result, pr_url, model_selection_metadata, test_command, test_result
         )
 
+        opencode_session = (opencode_session_metrics or {}) if opencode_session_metrics else {}
         metadata = {
             "status": status,
             "selected_repo": report.repo,
@@ -714,6 +716,7 @@ def write_run_report(report: RunReport, status: str,
                 "supersedes_pr": supersedes_pr,
                 "follow_up_issue": follow_up_issue,
             },
+            "opencode_session": opencode_session,
             "provider_scorecard": {
                 "requested_model": scorecard.requested_model,
                 "actual_model": scorecard.actual_model,
@@ -805,6 +808,20 @@ def write_run_report(report: RunReport, status: str,
             summary_lines.extend(["", "git_diff_stat:", *git_change_summary])
         if opencode_diagnostic_lines:
             summary_lines.extend(["", "opencode_runtime:", *opencode_diagnostic_lines])
+        if opencode_session:
+            summary_lines.extend([
+                "",
+                "opencode_session:",
+                f"  total_cost: {opencode_session.get('total_cost', '')}",
+                f"  total_tokens_input: {opencode_session.get('total_tokens_input', '')}",
+                f"  total_tokens_output: {opencode_session.get('total_tokens_output', '')}",
+                f"  total_tokens_reasoning: {opencode_session.get('total_tokens_reasoning', '')}",
+                f"  total_tokens_cache_read: {opencode_session.get('total_tokens_cache_read', '')}",
+                f"  total_tokens_cache_write: {opencode_session.get('total_tokens_cache_write', '')}",
+            ])
+            budget_exceeded = opencode_session.get("budget_exceeded")
+            if budget_exceeded:
+                summary_lines.append(f"  budget_exceeded: {budget_exceeded}")
         if output_tail:
             summary_lines.extend(["", "output_tail:", output_tail])
         if vibe_snippet:
@@ -833,7 +850,8 @@ def write_worker_diagnostics(result, repo: str, issue_number: int,
                               status: str = "worker_finished",
                               model_selection_metadata: dict | None = None,
                               test_command: str | None = None,
-                              test_result: str | None = None) -> Path | None:
+                              test_result: str | None = None,
+                              opencode_session_metrics: dict | None = None) -> Path | None:
     report = create_run_report(repo, issue_number, branch, model, issue_title=issue_title)
     if not report:
         return None
@@ -843,7 +861,8 @@ def write_worker_diagnostics(result, repo: str, issue_number: int,
         pr_url=pr_url,
         model_selection_metadata=model_selection_metadata,
         test_command=test_command,
-        test_result=test_result
+        test_result=test_result,
+        opencode_session_metrics=opencode_session_metrics,
     )
 
 

@@ -1950,7 +1950,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 max_cost: str = "expensive",
                 skip_pr: bool = False,
                 branch_suffix: str | None = None,
-                continue_: bool = False) -> bool:
+                continue_: bool = False,
+                max_run_cost_usd: float | None = None,
+                max_run_input_tokens: int | None = None,
+                max_run_output_tokens: int | None = None,
+                max_run_cache_read_tokens: int | None = None) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -2199,6 +2203,15 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         adapter_kwargs: dict = {}
         if model == "codex":
             adapter_kwargs["additional_dirs"] = additional_dirs
+        if model == "opencode":
+            if max_run_cost_usd is not None:
+                adapter_kwargs["max_run_cost_usd"] = max_run_cost_usd
+            if max_run_input_tokens is not None:
+                adapter_kwargs["max_run_input_tokens"] = max_run_input_tokens
+            if max_run_output_tokens is not None:
+                adapter_kwargs["max_run_output_tokens"] = max_run_output_tokens
+            if max_run_cache_read_tokens is not None:
+                adapter_kwargs["max_run_cache_read_tokens"] = max_run_cache_read_tokens
         if model == "codex" and defer_codex_rate_limit:
             from workers.codex_adapter import CodexAdapter
             adapter = CodexAdapter(defer_rate_limit=True)
@@ -2218,6 +2231,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             run_report=run_report,
             **adapter_kwargs,
         )
+
+        # OpenCode-Session-Metriken aus Adapter-Diagnostics extrahieren
+        opencode_session_metrics = None
+        if adapter_diagnostics.opencode_session_totals:
+            opencode_session_metrics = dict(adapter_diagnostics.opencode_session_totals)
+            if adapter_diagnostics.opencode_budget_exceeded:
+                opencode_session_metrics["budget_exceeded"] = adapter_diagnostics.opencode_budget_exceeded
 
         # Modellauswahl-Metadaten im Report speichern (falls vorhanden)
         model_selection_metadata = None
@@ -2294,6 +2314,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
+                    opencode_session_metrics=opencode_session_metrics,
                 )
             return False
         if not assessment.should_continue:
@@ -2327,6 +2348,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
+                    opencode_session_metrics=opencode_session_metrics,
                 )
             return False
 
@@ -2366,6 +2388,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
+                    opencode_session_metrics=opencode_session_metrics,
                 )
             return False
 
@@ -2409,6 +2432,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
+                    opencode_session_metrics=opencode_session_metrics,
                 )
             return False
         print("✅")
@@ -2472,6 +2496,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     model_selection_metadata=model_selection_metadata,
+                    opencode_session_metrics=opencode_session_metrics,
                 )
         return bool(pr)
     finally:
@@ -2592,6 +2617,31 @@ def main():
         "--cleanup-stale-locks",
         action="store_true",
         help="Veraltete Lock-Dateien unter reports/locks bereinigen",
+    )
+    # OpenCode Budget-Limits (nur fuer --model opencode)
+    parser.add_argument(
+        "--max-run-cost-usd",
+        type=float,
+        default=None,
+        help="Maximale Kosten in USD fuer einen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-input-tokens",
+        type=int,
+        default=None,
+        help="Maximale Input-Tokens fuer einen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-output-tokens",
+        type=int,
+        default=None,
+        help="Maximale Output-Tokens fuer einen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-cache-read-tokens",
+        type=int,
+        default=None,
+        help="Maximale Cache-Read-Tokens fuer einen OpenCode-Run",
     )
     args = parser.parse_args()
 
@@ -2797,6 +2847,10 @@ def main():
                 skip_pr=args.skip_pr,
                 branch_suffix=args.branch_suffix,
                 continue_=args.continue_,
+                max_run_cost_usd=args.max_run_cost_usd,
+                max_run_input_tokens=args.max_run_input_tokens,
+                max_run_output_tokens=args.max_run_output_tokens,
+                max_run_cache_read_tokens=args.max_run_cache_read_tokens,
             )
             if ok:
                 solved += 1
