@@ -1175,6 +1175,37 @@ pr_url:
         self.assertIn('<section class="metric metric-superseded"><span>Superseded</span><strong>0</strong></section>', html)
         self.assertNotIn('<span class="badge badge-superseded">Superseded</span>', html)
 
+    def test_render_dashboard_shows_run_outcome_for_preserved_push_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-73",
+                """status: push_failed
+repo: demo
+issue_number: 73
+branch: ai/fix-issue-73
+model: opencode
+worker_exit_code: 0
+pr_url:
+preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-73
+run_outcome_worker_status: succeeded
+run_outcome_has_changes: True
+run_outcome_test_status: passed
+run_outcome_delivery_status: push_failed
+run_outcome_failure_class: pipeline_failure
+run_outcome_recovery_status: preserved_worktree
+""",
+            )
+
+            html = render_dashboard(
+                read_runs(runs_dir),
+                "test-owner",
+                Path(tmpdir) / "status.html",
+            )
+
+        self.assertIn("Outcome: pipeline_failure / push_failed / preserved_worktree", html)
+        self.assertIn("Recovery-Worktree", html)
+
     def test_github_enrichment_keeps_failed_run_without_issue_failed(self):
         """Test that failed runs without issue number remain failed."""
         with tempfile.TemporaryDirectory() as tmpdir:

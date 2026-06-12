@@ -85,6 +85,12 @@ OPENCODE_WAL_FAILURE_RE = re.compile(
 )
 OPENCODE_EDIT_FAILURE_RE = re.compile(r"\bEdit\s+(.+?)\s+failed\b", re.IGNORECASE)
 OPENCODE_EDIT_FAILURE_REPEAT_THRESHOLD = 3
+NO_CHANGE_STATUSES = {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr"}
+PIPELINE_FAILURE_STATUSES = {
+    "pr_failed",
+    "pr_failed_from_existing_branch",
+    "push_failed",
+}
 
 
 @dataclass(frozen=True)
@@ -129,6 +135,82 @@ class OpenCodeRuntimeDiagnostics:
     @property
     def has_findings(self) -> bool:
         return self.wal_failure or self.edit_loop
+
+
+def infer_test_status(test_result: str | None) -> str:
+    if not test_result:
+        return "unknown"
+    lowered = test_result.lower()
+    if any(marker in lowered for marker in ("fail", "failed", "error")):
+        return "failed"
+    if any(marker in lowered for marker in ("pass", "passed", "ok", "success")):
+        return "passed"
+    return "unknown"
+
+
+def build_run_outcome(status: str,
+                      worker_result=None,
+                      pr_url: str | None = None,
+                      preserved_worktree_path: Path | str | None = None,
+                      git_change_summary: list[str] | None = None,
+                      test_result: str | None = None) -> dict[str, str | bool]:
+    """Build a compact outcome schema for benchmark and dashboard comparisons."""
+    if worker_result is None:
+        worker_status = "not_started"
+    else:
+        worker_status = "succeeded" if worker_result.returncode == 0 else "failed"
+
+    has_changes = bool(git_change_summary)
+    test_status = infer_test_status(test_result)
+    preserved = bool(preserved_worktree_path)
+
+    if pr_url:
+        delivery_status = "pr_created"
+    elif status == "push_failed":
+        delivery_status = "push_failed"
+    elif status in {"pr_failed", "pr_failed_from_existing_branch"}:
+        delivery_status = "pr_failed"
+    elif status in NO_CHANGE_STATUSES:
+        delivery_status = "not_applicable"
+    elif status == "started":
+        delivery_status = "incomplete"
+    else:
+        delivery_status = "unknown"
+
+    if status in NO_CHANGE_STATUSES:
+        failure_class = "noop"
+    elif pr_url or status.startswith("pr_created"):
+        failure_class = "success"
+    elif status in PIPELINE_FAILURE_STATUSES and (has_changes or preserved):
+        failure_class = "pipeline_failure"
+    elif worker_result is not None and worker_result.returncode != 0 and not has_changes:
+        failure_class = "model_failure"
+    elif status == "validation_failed":
+        failure_class = "validation_failure"
+    elif status == "started":
+        failure_class = "interrupted"
+    elif status.endswith("_failed"):
+        failure_class = "pipeline_failure" if has_changes or preserved else "runtime_failure"
+    else:
+        failure_class = "unknown"
+
+    if preserved:
+        recovery_status = "preserved_worktree"
+    elif failure_class in {"model_failure", "runtime_failure", "interrupted"}:
+        recovery_status = "retry_clean"
+    elif failure_class == "validation_failure":
+        recovery_status = "manual_review"
+    else:
+        recovery_status = "none"
+
+    return {
+        "worker_status": worker_status,
+        "has_changes": has_changes,
+        "test_status": test_status,
+        "delivery_status": delivery_status,
+        "failure_class": failure_class,
+        "recovery_status": recovery_status,
+    }
 
 
 def should_surface_worker_line(line: str) -> bool:
@@ -565,6 +647,14 @@ def write_run_report(report: RunReport, status: str,
     preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
     cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
     vibe_snippet = vibe_log_snippet or ""
+    run_outcome = build_run_outcome(
+        status,
+        worker_result=worker_result,
+        pr_url=pr_url,
+        preserved_worktree_path=preserved_worktree_path,
+        git_change_summary=git_change_summary,
+        test_result=test_result,
+    )
 
     # Ressourcen-Diagnosen als optionaler Bestandteil
     resource_diag_dict = resource_diagnostics.to_report_dict() if resource_diagnostics else {}
@@ -606,6 +696,7 @@ def write_run_report(report: RunReport, status: str,
                 "diagnostic_lines": opencode_diagnostic_lines,
             },
             "resource_diagnostics": resource_diag_dict,
+            "run_outcome": run_outcome,
             "model_selection": model_selection_metadata or {},
              "provider_scorecard": {
                 "requested_model": scorecard.requested_model,
@@ -644,6 +735,12 @@ def write_run_report(report: RunReport, status: str,
             f"last_report_update_at: {datetime.now().isoformat(timespec='seconds')}",
             f"pr_url: {pr_value}",
             f"preserved_worktree: {preserved_value}",
+            f"run_outcome_worker_status: {run_outcome['worker_status']}",
+            f"run_outcome_has_changes: {run_outcome['has_changes']}",
+            f"run_outcome_test_status: {run_outcome['test_status']}",
+            f"run_outcome_delivery_status: {run_outcome['delivery_status']}",
+            f"run_outcome_failure_class: {run_outcome['failure_class']}",
+            f"run_outcome_recovery_status: {run_outcome['recovery_status']}",
             f"provider_scorecard_requested_model: {scorecard.requested_model}",
             f"provider_scorecard_actual_model: {scorecard.actual_model}",
             f"provider_scorecard_fallback_source: {scorecard.fallback_source or ''}",

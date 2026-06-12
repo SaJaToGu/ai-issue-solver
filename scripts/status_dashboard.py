@@ -210,6 +210,12 @@ class DashboardRun:
     cost_confidence: str = "unavailable"
     priority: int | None = None
     provider: str = ""
+    run_outcome_worker_status: str = ""
+    run_outcome_has_changes: bool = False
+    run_outcome_test_status: str = ""
+    run_outcome_delivery_status: str = ""
+    run_outcome_failure_class: str = ""
+    run_outcome_recovery_status: str = ""
     
     # Provider-Scorecard Felder
     provider_scorecard_requested_model: str = ""
@@ -705,6 +711,12 @@ def read_runs(runs_dir: Path,
         cost_confidence = fields.get("cost_confidence", "unavailable")
         priority = int(fields.get("priority", 0)) if fields.get("priority") else None
         provider = fields.get("provider", "")
+        run_outcome_worker_status = fields.get("run_outcome_worker_status", "")
+        run_outcome_has_changes = fields.get("run_outcome_has_changes", "").lower() in ("true", "1", "yes")
+        run_outcome_test_status = fields.get("run_outcome_test_status", "")
+        run_outcome_delivery_status = fields.get("run_outcome_delivery_status", "")
+        run_outcome_failure_class = fields.get("run_outcome_failure_class", "")
+        run_outcome_recovery_status = fields.get("run_outcome_recovery_status", "")
         
         # Provider-Scorecard Felder
         provider_scorecard_requested_model = fields.get("provider_scorecard_requested_model", "")
@@ -748,6 +760,12 @@ def read_runs(runs_dir: Path,
                 cost_confidence=cost_confidence,
                 priority=priority,
                 provider=provider,
+                run_outcome_worker_status=run_outcome_worker_status,
+                run_outcome_has_changes=run_outcome_has_changes,
+                run_outcome_test_status=run_outcome_test_status,
+                run_outcome_delivery_status=run_outcome_delivery_status,
+                run_outcome_failure_class=run_outcome_failure_class,
+                run_outcome_recovery_status=run_outcome_recovery_status,
                 provider_scorecard_requested_model=provider_scorecard_requested_model,
                 provider_scorecard_actual_model=provider_scorecard_actual_model,
                 provider_scorecard_fallback_source=provider_scorecard_fallback_source,
@@ -1856,6 +1874,13 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         note_parts.append(f"Health: {escape(run.health_reason)}")
     if run.recovery_hint:
         note_parts.append(f"Hinweis: {escape(run.recovery_hint)}")
+    if run.run_outcome_failure_class:
+        note_parts.append(
+            "Outcome: "
+            f"{escape(run.run_outcome_failure_class)} / "
+            f"{escape(run.run_outcome_delivery_status or 'unknown')} / "
+            f"{escape(run.run_outcome_recovery_status or 'none')}"
+        )
     if run.preserved_worktree:
         note_parts.append(f"Recovery-Worktree: <code>{escape(run.preserved_worktree)}</code>")
     note = f"<div class=\"note\">{'<br>'.join(note_parts)}</div>" if note_parts else ""
