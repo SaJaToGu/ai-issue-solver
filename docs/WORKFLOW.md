@@ -184,3 +184,56 @@ python scripts/solve_issues.py --model opencode --model-name mistral/mistral-lar
 > - Night-Mode-Läufe sollten immer auf den `develop`-Branch zielen, um Stabilität in `main` zu gewährleisten.
 > - Vermeide breite `--open-issue`-Sweeps während der Kalibrierung. Nutze stattdessen explizite `--issue`-Flags.
 > - Die Dokumentation ist rein informativ und enthält keine Secrets.
+
+---
+
+## Benchmark-Modus (`benchmark_issues.py`)
+
+`benchmark_issues.py` vergleicht mehrere OpenCode-Modelle auf einer einzelnen, sicheren Issue. Es startet pro Modell einen Solverlauf mit `--skip-pr`, schreibt die Ergebnisse als JSON nach `benchmarks/` und erzeugt bewusst keinen Pull Request.
+
+### Aktuelle Funktionsweise
+
+- Der Benchmark ruft `scripts/solve_issues.py` mit `--model opencode`, `--model-name <modell>`, `--skip-pr` und einem eindeutigen `--branch-suffix` auf.
+- Ohne `--models` werden die freien OpenCode-Modelle aus `FREE_OPencode_MODELS` verwendet.
+- Jeder Modelllauf bekommt einen eigenen Branch-Suffix wie `bench/<timestamp>/<model-slug>`, damit parallele oder wiederholte Läufe nicht kollidieren.
+- Wenn ein Run-Report gefunden wird, übernimmt die Benchmark-Ausgabe das strukturierte `run_outcome` aus `metadata.json`.
+
+### Bekannte Grenzen
+
+- Der Benchmark wählt noch keinen Gewinner automatisch aus.
+- Er promotet kein Ergebnis automatisch in einen PR.
+- Alte Benchmark-Branches und gespeicherte Benchmark-JSONs werden noch nicht automatisch bereinigt.
+- Ein erfolgreicher `--skip-pr`-Lauf bedeutet nur: Branch/Änderungen sind für Review verfügbar. Merge-Entscheidung und PR-Erstellung bleiben manuell.
+
+### Recovery-Signale
+
+Die wichtigsten `run_outcome`-Felder helfen, Modellqualität und Pipeline-Probleme zu trennen:
+
+| Signal | Bedeutung | Nächster Schritt |
+|---|---|---|
+| `delivery_status: pushed_without_pr` + `failure_class: success` | Modell hat Änderungen geliefert; PR wurde absichtlich übersprungen | Branch prüfen und bei Bedarf PR erstellen |
+| `delivery_status: push_failed` + `recovery_status: preserved_worktree` | Änderungen existieren, aber Push/Delivery ist fehlgeschlagen | Preserved Worktree prüfen und Recovery-Hinweise nutzen |
+| `has_changes: false` + `failure_class: noop` | Modell hat keine Änderung geliefert | Anderes Modell oder präzisere Issue-Beschreibung erwägen |
+| `failure_class: model_failure` | Worker ist ohne verwertbare Änderung fehlgeschlagen | Sauber neu starten oder anderes Modell testen |
+| `failure_class: pipeline_failure` | Solver-/GitHub-/Delivery-Problem, nicht zwingend Modellversagen | Run-Report, `RECOVERY.md` und Worktree prüfen |
+
+Preserved Worktrees liegen unter `reports/preserved-worktrees/`. Sie enthalten eine `RECOVERY.md` mit konkreten Befehlen für Inspektion, Push oder manuelle PR-Erstellung.
+
+### Sparsamer Einsatz
+
+- Standardmäßig nur ein kleines, ungefährliches Issue benchmarken.
+- Für normale Arbeit ein Modell verwenden; alle freien OpenCode-Modelle nur gelegentlich, zum Beispiel bei jedem zehnten Dokumentationslauf.
+- Für einen engen Vergleich `--models` mit konkreten OpenCode-Modellnamen verwenden.
+
+Beispiele:
+
+```bash
+# Alle freien OpenCode-Modelle
+python scripts/benchmark_issues.py --issue 184
+
+# Nur zwei ausgewählte OpenCode-Modelle
+python scripts/benchmark_issues.py --issue 184 --models opencode/deepseek-v4-flash-free,opencode/mimo-v2.5-free
+
+# Planung ohne Änderungen
+python scripts/benchmark_issues.py --issue 184 --dry-run
+```
