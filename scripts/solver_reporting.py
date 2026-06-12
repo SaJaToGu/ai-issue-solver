@@ -866,6 +866,60 @@ def write_worker_diagnostics(result, repo: str, issue_number: int,
     )
 
 
+HEARTBEAT_PROGRESS_WIDTH = 20
+
+
+def format_heartbeat_progress(elapsed_seconds: float, width: int = HEARTBEAT_PROGRESS_WIDTH) -> str:
+    """
+    Erzeugt einen kompakten wachsenden Progress-String fuer Heartbeat-Ausgaben.
+
+    Das Format folgt dem Pattern: alle 5 Zeichen wird ein '+' eingefuegt,
+    dazwischen liegen '.'-Marker. Dadurch entsteht ein stabiles,利于Mobile-
+    Anzeige formatiertes Muster.
+
+    Args:
+        elapsed_seconds: Vergangene Zeit in Sekunden.
+        width: Anzahl der Progress-Marker (Standard: 20).
+
+    Returns:
+        Fortschrittsstring wie "....+....+....+....+....+"
+    """
+    elapsed_minutes = int(elapsed_seconds // 60)
+    progress_chars = []
+    for i in range(width):
+        if (i + 1) % 5 == 0:
+            progress_chars.append("+")
+        else:
+            progress_chars.append(".")
+    return "".join(progress_chars) + f" {elapsed_minutes}min"
+
+
+def format_heartbeat(issue_number: int,
+                    elapsed_seconds: float,
+                    job_label: str | None = None,
+                    width: int = HEARTBEAT_PROGRESS_WIDTH) -> str:
+    """
+    Formatiert eine Heartbeat-Zeile fuer langlaufende Solver-Jobs.
+
+    Das Format ist kompakt und phone-freundlich:
+        #223 PR2 ....+....+....+....+....+ 17min
+
+    Args:
+        issue_number: GitHub Issue-Nummer.
+        elapsed_seconds: Vergangene Zeit in Sekunden.
+        job_label: Optionaler Label zur Identifikation (z.B. Modellname oder Worker-ID).
+        width: Anzahl der Progress-Marker.
+
+    Returns:
+        Heartbeat-Zeile wie "#223 PR2 ....+....+....+....+....+ 17min"
+    """
+    progress = format_heartbeat_progress(elapsed_seconds, width)
+    prefix = f"#{issue_number}"
+    if job_label:
+        return f"{prefix} {job_label} {progress}"
+    return f"{prefix} {progress}"
+
+
 def cleanup_preserved_worktrees(root: Path = PRESERVED_WORKTREES_ROOT,
                                 retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS,
                                 dry_run: bool = True,
