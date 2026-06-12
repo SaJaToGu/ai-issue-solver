@@ -19,7 +19,6 @@ from scripts.solver_reporting import (
     write_run_report,
     format_heartbeat,
     format_heartbeat_progress,
-    HEARTBEAT_PROGRESS_WIDTH,
 )
 from scripts.solve_issues import build_issue_pr_body
 from scripts.solve_issues import build_issue_pr_body
@@ -695,8 +694,13 @@ class HeartbeatFormatterTests(unittest.TestCase):
             self.assertTrue(hb.startswith("#"))
             self.assertIn("codex", hb)
 
-    def test_format_heartbeat_progress_default_width(self):
-        """Testet die Standardbreite für den Progress-String."""
-        progress = format_heartbeat_progress(elapsed_seconds=300.0)
-        progress_part = progress.split(" ")[0]
-        self.assertEqual(len(progress_part), HEARTBEAT_PROGRESS_WIDTH)
+    def test_format_heartbeat_progress_grows_over_time(self):
+        """Testet, dass der Progress-String mit der Zeit wächst."""
+        progress_5min = format_heartbeat_progress(elapsed_seconds=300.0)
+        self.assertEqual(len(progress_5min.split(" ")[0]), 2)
+
+        progress_10min = format_heartbeat_progress(elapsed_seconds=600.0)
+        self.assertEqual(len(progress_10min.split(" ")[0]), 5)
+
+        progress_20min = format_heartbeat_progress(elapsed_seconds=1200.0)
+        self.assertEqual(len(progress_20min.split(" ")[0]), 10)
