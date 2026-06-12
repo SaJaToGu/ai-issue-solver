@@ -284,10 +284,12 @@ def terminate_process_tree(
     terminated = []
     killed = []
     failed = []
+    handled = set()
 
     for pid in pids:
         if pid in PROTECTED_PIDS:
             failed.append(pid)
+            handled.add(pid)
             continue
         if not is_process_alive(pid):
             continue
@@ -297,12 +299,15 @@ def terminate_process_tree(
         sent = send_signal_to_process(pid, GRACEFUL_SIGNAL)
         if not sent:
             failed.append(pid)
+            handled.add(pid)
             continue
 
     if pids:
         time.sleep(graceful_timeout)
 
     for pid in pids:
+        if pid in handled:
+            continue
         if pid in PROTECTED_PIDS or pid in terminated:
             continue
         if not is_process_alive(pid):
