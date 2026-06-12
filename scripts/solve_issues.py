@@ -567,19 +567,25 @@ class GitHubClient:
 
     def create_pull_request(self, repo: str, title: str, body: str,
                              head: str, base: str | None = None,
-                             dry_run: bool = False) -> dict | None:
+                             dry_run: bool = False,
+                             draft: bool = False) -> dict | None:
         resolved_base = self.resolve_base_branch(repo, base)
         if not resolved_base:
             print_warn("PR konnte nicht erstellt werden: Kein gültiger Base-Branch gefunden")
             return None
 
         if dry_run:
-            print(f"      [DRY-RUN] Würde PR erstellen: '{title}' gegen '{resolved_base}'")
+            pr_type = "Draft-PR" if draft else "PR"
+            print(f"      [DRY-RUN] Würde {pr_type} erstellen: '{title}' gegen '{resolved_base}'")
             return {"html_url": "https://github.com/dry-run-pr"}
+
+        pr_data = {"title": title, "body": body, "head": head, "base": resolved_base}
+        if draft:
+            pr_data["draft"] = True
 
         resp = self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
-            json={"title": title, "body": body, "head": head, "base": resolved_base}
+            json=pr_data,
         )
         if resp.status_code == 201:
             return resp.json()
@@ -1870,7 +1876,9 @@ def print_branch_recovery_plan(plan: BranchRecoveryPlan) -> None:
 
 def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
                          model: str, model_name: str | None = None, close_issues: bool = True,
-                         fallback_from: str | None = None) -> str:
+                         fallback_from: str | None = None,
+                         test_delta_table: str | None = None,
+                         draft: bool = False) -> str:
     display_name = MODEL_CONFIGS[model]['display_name']
     effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
 
@@ -1882,7 +1890,7 @@ def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
     if fallback_from:
         display_name = f"{display_name} (Fallback von {fallback_from})"
 
-    return f"""## 🤖 AI-generierter Fix für Issue #{number}
+    body = f"""## 🤖 AI-generierter Fix für Issue #{number}
 
 Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_owner}/ai-issue-solver) erstellt.
 
@@ -1893,11 +1901,25 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 `{display_name}`
 
 ### Änderungen
-*(bitte vor dem Merge reviewen)*
+*(bitte vor dem Merge reviewen)*"""
+
+    if draft:
+        body += """
+---
+> ⚠️ **Dieses PR wurde als Entwurf erstellt.**"""
+
+    if test_delta_table:
+        body += f"""
+
+---
+{test_delta_table}"""
+
+    body += """
 
 ---
 *Erstellt mit dem AI Issue Solver (Morpheus-Methode)*
 """
+    return body
 
 
 def create_issue_pull_request(client: GitHubClient, repo: str, number: int, title: str,
@@ -1905,19 +1927,33 @@ def create_issue_pull_request(client: GitHubClient, repo: str, number: int, titl
                                base_branch: str, close_issues: bool,
                                model_name: str | None = None,
                                fallback_from: str | None = None,
-                               dry_run: bool = False) -> dict | None:
+                               dry_run: bool = False,
+                               draft: bool = False,
+                               test_delta_table: str | None = None) -> dict | None:
+    pr_body = build_issue_pr_body(
+        config["owner"], repo, number, title, model, model_name,
+        close_issues, fallback_from,
+        test_delta_table=test_delta_table,
+        draft=draft,
+    )
+    pr_title = f"[AI] Fix: {title}"
+    if draft:
+        pr_title = f"[DRAFT] {pr_title}"
+
     pr = client.create_pull_request(
         repo=repo,
-        title=f"[AI] Fix: {title}",
-        body=build_issue_pr_body(config["owner"], repo, number, title, model, model_name, close_issues, fallback_from),
+        title=pr_title,
+        body=pr_body,
         head=branch_name,
         base=base_branch,
         dry_run=dry_run,
+        draft=draft,
     )
     if pr:
-        print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
+        pr_type = "Draft-PR" if draft else "PR"
+        print(f"      🔀 {pr_type} erstellt: {pr.get('html_url', '?')}")
 
-    if close_issues and pr:
+    if close_issues and pr and not draft:
         display_name = MODEL_CONFIGS[model]['display_name']
         effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
         if effective_model_name and effective_model_name not in display_name:
@@ -1950,7 +1986,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 max_cost: str = "expensive",
                 skip_pr: bool = False,
                 branch_suffix: str | None = None,
-                continue_: bool = False) -> bool:
+                continue_: bool = False,
+                post_solve_tests: bool = False,
+                test_command: str | None = None) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -2176,6 +2214,18 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 write_run_report(run_report, "branch_create_failed",
                                  resource_diagnostics=resource_diagnostics)
             return False
+
+        # Baseline-Tests vor dem Worker starten (Preflight)
+        test_delta_data = None
+        effective_test_command = (test_command or DEFAULT_TEST_COMMAND).strip()
+        if post_solve_tests:
+            print(f"      🧪 Baseline-Tests: {effective_test_command}")
+            baseline_ok, baseline_output = run_test_suite(effective_test_command, repo_dir)
+            _print_test_result(baseline_ok, baseline_output, verbosity)
+            test_delta_data = {
+                "baseline_output": baseline_output,
+                "baseline_ok": baseline_ok,
+            }
 
         # Prompt bauen
         prompt = AIDER_PROMPT_TEMPLATE.format(
@@ -2413,6 +2463,38 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             return False
         print("✅")
 
+        # Post-Solve-Tests nach erfolgreichem Commit ausfuehren
+        test_delta_table = None
+        make_draft = False
+        post_solve_passed_before = None
+        post_solve_passed_after = None
+        post_solve_failed_before = None
+        post_solve_failed_after = None
+        post_solve_outcome = None
+        if post_solve_tests and test_delta_data:
+            print(f"      🧪 Post-Solve-Tests: {effective_test_command}")
+            after_ok, after_output = run_test_suite(effective_test_command, repo_dir)
+            _print_test_result(after_ok, after_output, verbosity)
+            baseline_output = test_delta_data["baseline_output"]
+            (post_solve_passed_before, post_solve_passed_after,
+             post_solve_failed_before, post_solve_failed_after,
+             post_solve_outcome) = compute_test_delta(baseline_output, after_output)
+            test_delta_table = format_test_delta_table(
+                post_solve_passed_before, post_solve_passed_after,
+                post_solve_failed_before, post_solve_failed_after,
+                post_solve_outcome,
+            )
+            print(f"         Outcome: {post_solve_outcome}")
+            if post_solve_outcome == "new_failures":
+                print("         ⚠️  Neue Testfehler gefunden — PR wird als Entwurf erstellt")
+                make_draft = True
+            elif post_solve_outcome == "unchanged":
+                print("         ⚠️  Testergebnisse unveraendert — PR mit Warnung")
+            else:
+                print("         ✅ Alle Tests bestanden")
+            print(f"         Bestanden: {post_solve_passed_before} → {post_solve_passed_after}, "
+                  f"Fehlgeschlagen: {post_solve_failed_before} → {post_solve_failed_after}")
+
         if run_report:
             write_run_health(run_report, status="running", phase="creating_pr")
         if skip_pr:
@@ -2433,6 +2515,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 model_name=effective_model_name,
                 fallback_from=model_selection_metadata.get('fallback_from') if model_selection_metadata else None,
                 dry_run=dry_run,
+                draft=make_draft,
+                test_delta_table=test_delta_table,
             )
             # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
             is_vibe_turn_limit = (
@@ -2441,6 +2525,32 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             and VIBE_TURN_LIMIT_RE.search(diagnostic_result.output)
         )
             status = "pr_created_with_warning" if is_vibe_turn_limit else ("pr_created" if pr else "pr_failed")
+            if make_draft and pr:
+                status = "draft_pr_created"
+            # Report fuer erfolgreichen PR mit Test-Delta aktualisieren
+            if pr and run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    pr_url=pr.get("html_url") if pr else None,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
+                    model_selection_metadata=model_selection_metadata,
+                    test_command=effective_test_command if post_solve_tests else None,
+                    test_result=post_solve_outcome if post_solve_tests else None,
+                    test_delta_passed_before=post_solve_passed_before,
+                    test_delta_passed_after=post_solve_passed_after,
+                    test_delta_failed_before=post_solve_failed_before,
+                    test_delta_failed_after=post_solve_failed_after,
+                    test_delta_outcome=post_solve_outcome,
+                )
         if not pr and run_report and should_preserve_worktree(
             status,
             repo_dir,
@@ -2472,12 +2582,184 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     model_selection_metadata=model_selection_metadata,
+                    test_command=effective_test_command if post_solve_tests else None,
+                    test_result=post_solve_outcome if post_solve_tests else None,
+                    test_delta_passed_before=post_solve_passed_before,
+                    test_delta_passed_after=post_solve_passed_after,
+                    test_delta_failed_before=post_solve_failed_before,
+                    test_delta_failed_after=post_solve_failed_after,
+                    test_delta_outcome=post_solve_outcome,
                 )
         return bool(pr)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     return True
+
+
+# ─────────────────────────────────────────────────────────────
+# Post-Solve Testing
+# ─────────────────────────────────────────────────────────────
+
+DEFAULT_TEST_COMMAND = "python -m unittest discover -s tests"
+
+PYTEST_SUMMARY_LINE_RE = re.compile(
+    r"(?:=+)\s+(.*?)\s+in\s+\S+",
+    re.IGNORECASE,
+)
+PYTEST_COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|warning)", re.IGNORECASE)
+UNITTEST_FAILURE_RE = re.compile(
+    r"FAILED\s*\(.*?(?:failures|errors)=(\d+).*?\)",
+    re.IGNORECASE,
+)
+
+
+def parse_test_results(output: str) -> tuple[int, int]:
+    """Ermittelt (passed, failed) aus pytest- oder unittest-Output."""
+    # Versuche pytest-Format: finde die Summary-Zeile
+    for line in output.splitlines():
+        summary_match = PYTEST_SUMMARY_LINE_RE.search(line)
+        if not summary_match:
+            continue
+        summary_body = summary_match.group(1)
+        passed = 0
+        failed = 0
+        for count_match in PYTEST_COUNT_RE.finditer(summary_body):
+            count = int(count_match.group(1))
+            kind = count_match.group(2).lower()
+            if kind == "passed":
+                passed = count
+            elif kind == "failed":
+                failed = count
+        if passed > 0 or failed > 0:
+            return passed, failed
+    # Versuche unittest-Format
+    last_lines = output.splitlines()[-3:]
+    if any("OK" in line for line in last_lines):
+        return 0, 0
+    fail_match = UNITTEST_FAILURE_RE.search(output)
+    if fail_match:
+        return 0, int(fail_match.group(1))
+    if "FAILED" in output or "failed" in output:
+        return 0, 1
+    return 0, 0
+
+
+def run_test_suite(command: str, repo_dir: str) -> tuple[bool, str]:
+    """Fuehrt einen Testbefehl im Repo-Verzeichnis aus und gibt (erfolg, output) zurueck."""
+    try:
+        result = subprocess.run(
+            command,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            shell=True,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "TIMEOUT: Tests haben 300s ueberschritten"
+    except OSError as exc:
+        return False, f"FEHLER: Testbefehl konnte nicht ausgefuehrt werden: {exc}"
+    output = (result.stdout or "") + (result.stderr or "")
+    return result.returncode == 0, output
+
+
+def compute_test_delta(
+    before_output: str,
+    after_output: str,
+) -> tuple[int, int, int, int, str]:
+    """Vergleicht Testergebnisse vor und nach dem Fix.
+
+    Returns:
+        (passed_before, passed_after, failed_before, failed_after, outcome)
+    """
+    passed_before, failed_before = parse_test_results(before_output)
+    passed_after, failed_after = parse_test_results(after_output)
+
+    if failed_after == 0:
+        outcome = "all_green"
+    elif failed_after <= failed_before and passed_before == passed_after:
+        outcome = "unchanged"
+    elif failed_after > failed_before:
+        outcome = "new_failures"
+    else:
+        outcome = "unknown"
+
+    return passed_before, passed_after, failed_before, failed_after, outcome
+
+
+def format_test_delta_table(
+    passed_before: int,
+    passed_after: int,
+    failed_before: int,
+    failed_after: int,
+    outcome: str,
+) -> str:
+    """Erzeugt eine kompakte Markdown-Tabelle mit dem Test-Delta."""
+    outcome_icon = {"all_green": "✅ Alle Tests bestanden",
+                    "unchanged": "⚠️  Gleiches Ergebnis wie vorher",
+                    "new_failures": "❌ Neue Fehlschlaege",
+                    "unknown": "❓ Unbekannt"}.get(outcome, "")
+
+    table = (
+        "| Status | Vorher | Nachher |\n"
+        "|--------|-------:|--------:|\n"
+        f"| ✅ Bestanden | {passed_before} | {passed_after} |\n"
+        f"| ❌ Fehlgeschlagen | {failed_before} | {failed_after} |\n"
+    )
+
+    delta_passed = passed_after - passed_before
+    delta_failed = failed_after - failed_before
+    if delta_passed != 0 or delta_failed != 0:
+        table += (
+            f"| Δ Delta | {_format_delta(delta_passed)} | {_format_delta(delta_failed)} |\n"
+        )
+
+    return f"\n### Tests\n{outcome_icon}\n\n{table}\n"
+
+
+def _format_delta(value: int) -> str:
+    if value > 0:
+        return f"+{value}"
+    if value < 0:
+        return str(value)
+    return "0"
+
+
+def run_post_solve_tests(
+    test_command: str,
+    repo_dir: str,
+    base_branch: str,
+    issue_number: int,
+    verbosity: str = "normal",
+) -> dict | None:
+    """Fuehrt Baseline-Tests und Post-Solve-Tests aus und gibt Test-Delta zurueck.
+
+    Returns:
+        dict mit test_delta_* keys oder None bei Fehler/keine Tests.
+    """
+    print(f"      🧪 Baseline-Tests auf {base_branch}: {test_command}")
+    baseline_ok, baseline_output = run_test_suite(test_command, repo_dir)
+    _print_test_result(baseline_ok, baseline_output, verbosity)
+
+    # Baseline speichern — der eigentliche Post-Solve-Lauf erfolgt nach dem Commit
+    # in solve_issue(), der das erhaltene dict zurueckgibt
+    passed_before, _failed_before = parse_test_results(baseline_output)
+    print(f"         Baseline: {passed_before} Tests bestanden")
+
+    return {
+        "baseline_output": baseline_output,
+        "baseline_ok": baseline_ok,
+    }
+
+
+def _print_test_result(success: bool, output: str, verbosity: str) -> None:
+    if verbosity != "quiet":
+        status = "✅" if success else "❌"
+        print(f"         {status}")
+        if verbosity == "verbose" and output:
+            for line in output.splitlines()[-10:]:
+                print(f"           | {line}")
 
 
 def print_solver_directories() -> None:
@@ -2592,6 +2874,19 @@ def main():
         "--cleanup-stale-locks",
         action="store_true",
         help="Veraltete Lock-Dateien unter reports/locks bereinigen",
+    )
+    parser.add_argument(
+        "--post-solve-tests",
+        action="store_true",
+        help="Nach dem Commit die Test-Suite auf dem AI-Branch ausfuehren und Ergebnis im PR-Body dokumentieren",
+    )
+    parser.add_argument(
+        "--test-command",
+        default=None,
+        help=(
+            "Testbefehl fuer --post-solve-tests (Default: 'python -m unittest discover -s tests'). "
+            "Wird im geklonten Repo-Verzeichnis ausgefuehrt."
+        ),
     )
     args = parser.parse_args()
 
@@ -2797,6 +3092,8 @@ def main():
                 skip_pr=args.skip_pr,
                 branch_suffix=args.branch_suffix,
                 continue_=args.continue_,
+                post_solve_tests=args.post_solve_tests,
+                test_command=args.test_command,
             )
             if ok:
                 solved += 1

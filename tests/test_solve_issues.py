@@ -21,6 +21,7 @@ from solve_issues import (  # noqa: E402
     PullRequestState,
     WorkerAssessment,
     WorkerRunResult,
+    WorkerValidation,
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
@@ -62,6 +63,11 @@ from solve_issues import (  # noqa: E402
     write_run_report,
     write_run_health,
     write_worker_diagnostics,
+    parse_test_results,
+    compute_test_delta,
+    format_test_delta_table,
+    build_issue_pr_body,
+    run_test_suite,
 )
 
 
@@ -2020,6 +2026,484 @@ class TestOpenRouterDirectWorkerPath(unittest.TestCase):
             api_key="test-key",
             model="mistralai/mistral-large",
         )
+
+
+# ─────────────────────────────────────────────────────────────
+# Post-Solve Testing Tests
+# ─────────────────────────────────────────────────────────────
+
+class TestParseTestResults(unittest.TestCase):
+    """Tests fuer parse_test_results()."""
+
+    def test_parse_pytest_all_passed(self):
+        output = "== 5 passed in 0.12s =="
+        self.assertEqual(parse_test_results(output), (5, 0))
+
+    def test_parse_pytest_with_failures(self):
+        output = "== 3 passed, 2 failed in 1.23s =="
+        self.assertEqual(parse_test_results(output), (3, 2))
+
+    def test_parse_pytest_failed_first(self):
+        output = "== 2 failed, 3 passed in 0.45s =="
+        self.assertEqual(parse_test_results(output), (3, 2))
+
+    def test_parse_pytest_with_warnings(self):
+        output = "== 5 passed, 1 warning in 0.30s =="
+        self.assertEqual(parse_test_results(output), (5, 0))
+
+    def test_parse_pytest_with_failures_and_warnings(self):
+        output = "== 4 passed, 1 failed, 2 warnings in 2.00s =="
+        self.assertEqual(parse_test_results(output), (4, 1))
+
+    def test_parse_unittest_ok(self):
+        output = "Ran 5 tests in 0.001s\n\nOK"
+        self.assertEqual(parse_test_results(output), (0, 0))
+
+    def test_parse_unittest_failed(self):
+        output = "Ran 3 tests in 0.001s\n\nFAILED (failures=1)"
+        self.assertEqual(parse_test_results(output), (0, 1))
+
+    def test_parse_unittest_errors(self):
+        output = "Ran 2 tests in 0.001s\n\nFAILED (errors=1)"
+        self.assertEqual(parse_test_results(output), (0, 1))
+
+    def test_parse_empty_output(self):
+        self.assertEqual(parse_test_results(""), (0, 0))
+
+    def test_parse_no_test_output(self):
+        self.assertEqual(parse_test_results("Some random output\nNo test results"), (0, 0))
+
+
+class TestComputeTestDelta(unittest.TestCase):
+    """Tests fuer compute_test_delta()."""
+
+    def test_all_green(self):
+        before = "== 5 passed in 0.12s =="
+        after = "== 5 passed in 0.15s =="
+        result = compute_test_delta(before, after)
+        self.assertEqual(result, (5, 5, 0, 0, "all_green"))
+
+    def test_all_green_improved(self):
+        before = "== 3 passed, 1 failed in 0.50s =="
+        after = "== 4 passed in 0.30s =="
+        result = compute_test_delta(before, after)
+        self.assertEqual(result, (3, 4, 1, 0, "all_green"))
+
+    def test_unchanged(self):
+        before = "== 3 passed, 2 failed in 0.12s =="
+        after = "== 3 passed, 2 failed in 0.15s =="
+        result = compute_test_delta(before, after)
+        self.assertEqual(result, (3, 3, 2, 2, "unchanged"))
+
+    def test_new_failures(self):
+        before = "== 5 passed in 0.12s =="
+        after = "== 3 passed, 2 failed in 0.15s =="
+        result = compute_test_delta(before, after)
+        self.assertEqual(result, (5, 3, 0, 2, "new_failures"))
+
+    def test_empty_output_is_all_green(self):
+        result = compute_test_delta("", "")
+        self.assertEqual(result[4], "all_green")
+
+
+class TestFormatTestDeltaTable(unittest.TestCase):
+    """Tests fuer format_test_delta_table()."""
+
+    def test_all_green_table(self):
+        table = format_test_delta_table(5, 5, 0, 0, "all_green")
+        self.assertIn("### Tests", table)
+        self.assertIn("✅ Alle Tests bestanden", table)
+        self.assertIn("| ✅ Bestanden | 5 | 5 |", table)
+        self.assertIn("| ❌ Fehlgeschlagen | 0 | 0 |", table)
+
+    def test_new_failures_table_includes_delta(self):
+        table = format_test_delta_table(5, 3, 0, 2, "new_failures")
+        self.assertIn("❌ Neue Fehlschlaege", table)
+        self.assertIn("| Δ Delta | -2 | +2 |", table)
+
+    def test_unchanged_table_no_delta(self):
+        table = format_test_delta_table(3, 3, 2, 2, "unchanged")
+        self.assertIn("⚠️", table)
+        self.assertNotIn("Δ Delta", table)
+
+
+class TestBuildIssuePrBodyWithTestDelta(unittest.TestCase):
+    """Tests fuer build_issue_pr_body() mit Test-Delta und Draft."""
+
+    def test_body_with_test_delta(self):
+        test_table = "\n### Tests\n| Status | Vorher | Nachher |\n|--------|-------:|--------:|\n| ✅ Bestanden | 5 | 5 |\n| ❌ Fehlgeschlagen | 0 | 0 |\n"
+        body = build_issue_pr_body(
+            config_owner="testowner",
+            repo="testrepo",
+            number=42,
+            title="Test",
+            model="opencode",
+            model_name=None,
+            close_issues=True,
+            fallback_from=None,
+            test_delta_table=test_table,
+        )
+        self.assertIn("### Tests", body)
+        self.assertIn("✅ Bestanden | 5 | 5 |", body)
+        self.assertIn("Morpheus-Methode", body)
+
+    def test_body_draft_flag(self):
+        body = build_issue_pr_body(
+            config_owner="testowner",
+            repo="testrepo",
+            number=42,
+            title="Test",
+            model="opencode",
+            model_name=None,
+            close_issues=True,
+            fallback_from=None,
+            test_delta_table=None,
+            draft=True,
+        )
+        self.assertIn("Entwurf", body)
+
+    def test_body_draft_with_test_delta_new_failures(self):
+        test_table = "\n### Tests\n❌ Neue Fehlschlaege\n\n| Status | Vorher | Nachher |\n|--------|-------:|--------:|\n| ✅ Bestanden | 5 | 3 |\n| ❌ Fehlgeschlagen | 0 | 2 |\n"
+        body = build_issue_pr_body(
+            config_owner="testowner",
+            repo="testrepo",
+            number=42,
+            title="Test",
+            model="opencode",
+            model_name=None,
+            close_issues=True,
+            fallback_from=None,
+            test_delta_table=test_table,
+            draft=True,
+        )
+        self.assertIn("Entwurf", body)
+        self.assertIn("Neue Fehlschlaege", body)
+
+
+class TestGitHubClientDraftPR(unittest.TestCase):
+    """Tests fuer GitHubClient.create_pull_request mit Draft."""
+
+    def test_create_pull_request_sends_draft_flag(self):
+        session = FakeGitHubSession()
+        client = GitHubClient.__new__(GitHubClient)
+        client.owner = "test-owner"
+        client.session = session
+
+        result = client.create_pull_request(
+            repo="demo",
+            title="[DRAFT] [AI] Fix: Test",
+            body="PR body",
+            head="ai/fix-issue-42",
+            base="main",
+            draft=True,
+        )
+
+        self.assertIsNotNone(result)
+        # Pruefe, ob der POST-JSON "draft": True enthaelt
+        for url, json_data in session.posts:
+            if "pulls" in url:
+                self.assertTrue(json_data.get("draft", False))
+                break
+        else:
+            self.fail("Kein POST an pulls-API gefunden")
+
+
+class TestCreateIssuePullRequestDraft(unittest.TestCase):
+    """Tests fuer create_issue_pull_request() mit Draft und Test-Delta."""
+
+    def test_create_draft_pr_with_test_delta(self):
+        class DraftPrClient:
+            def __init__(self):
+                self.last_draft = False
+                self.last_body = ""
+
+            def create_pull_request(self, **kwargs):
+                self.last_draft = kwargs.get("draft", False)
+                self.last_body = kwargs.get("body", "")
+                return {"html_url": "https://github.com/test-owner/demo/pull/1"}
+
+            def close_issue_with_comment(self, repo, number, comment):
+                pass
+
+        client = DraftPrClient()
+        test_table = "\n### Tests\n| Status | Vorher | Nachher |\n"
+        pr = create_issue_pull_request(
+            client=client,
+            repo="demo",
+            number=42,
+            title="Test",
+            model="opencode",
+            config={"owner": "test-owner"},
+            branch_name="ai/fix-issue-42",
+            base_branch="main",
+            close_issues=False,
+            draft=True,
+            test_delta_table=test_table,
+        )
+
+        self.assertIsNotNone(pr)
+        self.assertTrue(client.last_draft)
+        self.assertIn("### Tests", client.last_body)
+        self.assertIn("Entwurf", client.last_body)
+
+    def test_normal_pr_without_test_delta(self):
+        class NormalPrClient:
+            def __init__(self):
+                self.last_draft = True
+
+            def create_pull_request(self, **kwargs):
+                self.last_draft = kwargs.get("draft", False)
+                return {"html_url": "https://github.com/test-owner/demo/pull/1"}
+
+            def close_issue_with_comment(self, repo, number, comment):
+                pass
+
+        client = NormalPrClient()
+        pr = create_issue_pull_request(
+            client=client,
+            repo="demo",
+            number=42,
+            title="Test",
+            model="opencode",
+            config={"owner": "test-owner"},
+            branch_name="ai/fix-issue-42",
+            base_branch="main",
+            close_issues=False,
+            draft=False,
+        )
+
+        self.assertIsNotNone(pr)
+        self.assertFalse(client.last_draft)
+
+
+class TestSolveIssuePostSolveTests(unittest.TestCase):
+    """Integrationstests fuer solve_issue() mit --post-solve-tests."""
+
+    def make_client(self, branch_exists=True, pull_requests=None):
+        """Erzeugt einen Mini-Client aehnlich dem bestehenden Test-Pattern."""
+        class MiniClient:
+            def __init__(self):
+                self.posts = []
+
+            def create_pull_request(self, repo, title, body, head, base,
+                                    dry_run=False, draft=False):
+                self.posts.append(dict(repo=repo, title=title, draft=draft))
+                return {"html_url": "https://github.com/test/demo/pull/42"}
+
+            def close_issue_with_comment(self, repo, number, comment):
+                pass
+
+            def get_issue_branches(self, repo, issue_number):
+                return []
+
+            def branch_exists(self, repo, branch):
+                return branch_exists
+
+            def get_pull_requests_for_branch(self, repo, branch, state="all"):
+                return pull_requests or []
+
+            def resolve_base_branch(self, repo, requested_base=None):
+                return "main"
+
+        return MiniClient()
+
+    @patch("solve_issues.run_test_suite",
+           side_effect=[(True, "=== 5 passed in 0.12s ==="),
+                        (True, "=== 5 passed in 0.15s ===")])
+    @patch("solve_issues.format_git_change_summary", return_value=["  test.py | 1 +"])
+    @patch("solve_issues.git_status_porcelain", return_value=" M test.py\n")
+    @patch("solve_issues.validate_worker_changes",
+           return_value=WorkerValidation(ok=True))
+    @patch("solve_issues.branch_has_changes_against_base", return_value=False)
+    @patch("solve_issues.build_worker_command", return_value=["echo", "ok"])
+    @patch("solve_issues.run_worker_command",
+           return_value=WorkerRunResult(0, "output"))
+    @patch("solve_issues.clone_repo", return_value=True)
+    @patch("solve_issues.commit_and_push", return_value=True)
+    @patch("solve_issues.checkout_existing_remote_branch", return_value=True)
+    @patch("solve_issues.create_branch", return_value=True)
+    def test_post_solve_all_green_creates_normal_pr(
+        self, mock_create_branch, mock_checkout, mock_commit, mock_clone,
+        mock_worker_run, mock_build_cmd, mock_branch_has_changes,
+        mock_validate, mock_git_status, mock_format_summary, mock_test_suite,
+    ):
+        """Wenn alle Tests bestanden werden, wird ein normaler PR erstellt."""
+        client = self.make_client()
+        issue = {"number": 42, "title": "Fix tests", "body": ""}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = solve_issue(
+                    client=client,
+                    issue=issue,
+                    repo="demo",
+                    model="opencode",
+                    model_name="",
+                    config={"owner": "test-owner", "config": {}},
+                    token="token",
+                    dry_run=False,
+                    base_branch="main",
+                    close_issues=False,
+                    run_report_dir=tmpdir,
+                    verbosity="quiet",
+                    post_solve_tests=True,
+                    test_command="python -m unittest discover -s tests",
+                )
+
+        self.assertTrue(result)
+        # Normaler PR (kein Draft) wurde erstellt
+        self.assertEqual(len(client.posts), 1)
+        self.assertFalse(client.posts[0]["draft"])
+
+    @patch("solve_issues.run_test_suite",
+           side_effect=[(False, "=== 3 passed, 2 failed in 0.12s ==="),
+                        (False, "=== 3 passed, 2 failed in 0.15s ===")])
+    @patch("solve_issues.format_git_change_summary", return_value=["  test.py | 1 +"])
+    @patch("solve_issues.git_status_porcelain", return_value=" M test.py\n")
+    @patch("solve_issues.validate_worker_changes",
+           return_value=WorkerValidation(ok=True))
+    @patch("solve_issues.branch_has_changes_against_base", return_value=False)
+    @patch("solve_issues.build_worker_command", return_value=["echo", "ok"])
+    @patch("solve_issues.run_worker_command",
+           return_value=WorkerRunResult(0, "output"))
+    @patch("solve_issues.clone_repo", return_value=True)
+    @patch("solve_issues.commit_and_push", return_value=True)
+    @patch("solve_issues.checkout_existing_remote_branch", return_value=True)
+    @patch("solve_issues.create_branch", return_value=True)
+    def test_post_solve_unchanged_creates_normal_pr_with_warning(
+        self, mock_create_branch, mock_checkout, mock_commit, mock_clone,
+        mock_worker_run, mock_build_cmd, mock_branch_has_changes,
+        mock_validate, mock_git_status, mock_format_summary, mock_test_suite,
+    ):
+        """Wenn Testergebnisse unveraendert sind, wird ein normaler PR erstellt."""
+        client = self.make_client()
+        issue = {"number": 42, "title": "Fix tests", "body": ""}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = solve_issue(
+                    client=client,
+                    issue=issue,
+                    repo="demo",
+                    model="opencode",
+                    model_name="",
+                    config={"owner": "test-owner", "config": {}},
+                    token="token",
+                    dry_run=False,
+                    base_branch="main",
+                    close_issues=False,
+                    run_report_dir=tmpdir,
+                    verbosity="quiet",
+                    post_solve_tests=True,
+                    test_command="python -m unittest discover -s tests",
+                )
+
+        self.assertTrue(result)
+        self.assertEqual(len(client.posts), 1)
+        self.assertFalse(client.posts[0]["draft"])
+
+    @patch("solve_issues.run_test_suite",
+           side_effect=[(True, "=== 5 passed in 0.12s ==="),
+                        (False, "=== 3 passed, 2 failed in 0.15s ===")])
+    @patch("solve_issues.format_git_change_summary", return_value=["  test.py | 1 +"])
+    @patch("solve_issues.git_status_porcelain", return_value=" M test.py\n")
+    @patch("solve_issues.validate_worker_changes",
+           return_value=WorkerValidation(ok=True))
+    @patch("solve_issues.branch_has_changes_against_base", return_value=False)
+    @patch("solve_issues.build_worker_command", return_value=["echo", "ok"])
+    @patch("solve_issues.run_worker_command",
+           return_value=WorkerRunResult(0, "output"))
+    @patch("solve_issues.clone_repo", return_value=True)
+    @patch("solve_issues.commit_and_push", return_value=True)
+    @patch("solve_issues.checkout_existing_remote_branch", return_value=True)
+    @patch("solve_issues.create_branch", return_value=True)
+    def test_post_solve_new_failures_creates_draft_pr(
+        self, mock_create_branch, mock_checkout, mock_commit, mock_clone,
+        mock_worker_run, mock_build_cmd, mock_branch_has_changes,
+        mock_validate, mock_git_status, mock_format_summary, mock_test_suite,
+    ):
+        """Wenn neue Testfehler auftreten, wird ein Draft-PR erstellt."""
+        client = self.make_client()
+        issue = {"number": 42, "title": "Fix tests", "body": ""}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = solve_issue(
+                    client=client,
+                    issue=issue,
+                    repo="demo",
+                    model="opencode",
+                    model_name="",
+                    config={"owner": "test-owner", "config": {}},
+                    token="token",
+                    dry_run=False,
+                    base_branch="main",
+                    close_issues=False,
+                    run_report_dir=tmpdir,
+                    verbosity="quiet",
+                    post_solve_tests=True,
+                    test_command="python -m unittest discover -s tests",
+                )
+
+        self.assertTrue(result)
+        self.assertEqual(len(client.posts), 1)
+        # Draft-PR wurde erstellt
+        self.assertTrue(client.posts[0]["draft"])
+
+    @patch("solve_issues.run_test_suite",
+           side_effect=[(True, "=== 5 passed in 0.12s ==="),
+                        (False, "=== 1 passed, 4 failed in 0.15s ===")])
+    @patch("solve_issues.format_git_change_summary", return_value=["  test.py | 1 +"])
+    @patch("solve_issues.git_status_porcelain", return_value=" M test.py\n")
+    @patch("solve_issues.validate_worker_changes",
+           return_value=WorkerValidation(ok=True))
+    @patch("solve_issues.branch_has_changes_against_base", return_value=False)
+    @patch("solve_issues.build_worker_command", return_value=["echo", "ok"])
+    @patch("solve_issues.run_worker_command",
+           return_value=WorkerRunResult(0, "output"))
+    @patch("solve_issues.clone_repo", return_value=True)
+    @patch("solve_issues.commit_and_push", return_value=True)
+    @patch("solve_issues.checkout_existing_remote_branch", return_value=True)
+    @patch("solve_issues.create_branch", return_value=True)
+    @patch("solve_issues.write_run_report")
+    def test_post_solve_new_failures_run_report_contains_test_delta(
+        self, mock_write_report, mock_create_branch, mock_checkout,
+        mock_commit, mock_clone, mock_worker_run, mock_build_cmd,
+        mock_branch_has_changes, mock_validate, mock_git_status,
+        mock_format_summary, mock_test_suite,
+    ):
+        """Der Run-Report enthaelt die Test-Delta-Informationen bei neuen Fehlern."""
+        client = self.make_client()
+        issue = {"number": 42, "title": "Fix tests", "body": ""}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = solve_issue(
+                    client=client,
+                    issue=issue,
+                    repo="demo",
+                    model="opencode",
+                    model_name="",
+                    config={"owner": "test-owner", "config": {}},
+                    token="token",
+                    dry_run=False,
+                    base_branch="main",
+                    close_issues=False,
+                    run_report_dir=tmpdir,
+                    verbosity="quiet",
+                    post_solve_tests=True,
+                    test_command="python -m unittest discover -s tests",
+                )
+
+        self.assertTrue(result)
+        # Pruefe, dass write_run_report mit Test-Delta-Parametern aufgerufen wurde
+        self.assertTrue(mock_write_report.called)
+        call_kwargs = mock_write_report.call_args[1]
+        self.assertEqual(call_kwargs.get("test_delta_outcome"), "new_failures")
+        self.assertEqual(call_kwargs.get("test_delta_passed_before"), 5)
+        self.assertEqual(call_kwargs.get("test_delta_passed_after"), 1)
+        self.assertEqual(call_kwargs.get("test_delta_failed_before"), 0)
+        self.assertEqual(call_kwargs.get("test_delta_failed_after"), 4)
 
 
 if __name__ == "__main__":

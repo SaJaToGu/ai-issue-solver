@@ -114,6 +114,13 @@ class ProviderScorecard:
     cost_confidence: str | None = None  # z.B. "low", "medium", "high", "unavailable"
     cost_source: str | None = None  # z.B. "provider_api", "estimated", "manual"
 
+    # Post-Solve Test-Delta
+    test_delta_passed_before: int | None = None
+    test_delta_passed_after: int | None = None
+    test_delta_failed_before: int | None = None
+    test_delta_failed_after: int | None = None
+    test_delta_outcome: str | None = None  # "all_green", "unchanged", "new_failures", "unknown"
+
 
 @dataclass(frozen=True)
 class RunReport:
@@ -576,6 +583,11 @@ def create_provider_scorecard(
     model_selection_metadata: dict | None = None,
     test_command: str | None = None,
     test_result: str | None = None,
+    test_delta_passed_before: int | None = None,
+    test_delta_passed_after: int | None = None,
+    test_delta_failed_before: int | None = None,
+    test_delta_failed_after: int | None = None,
+    test_delta_outcome: str | None = None,
 ) -> ProviderScorecard:
     """Erstellt eine Provider-Scorecard für den Run."""
     fallback_source = model_selection_metadata.get('fallback_from') if model_selection_metadata else None
@@ -626,6 +638,13 @@ def create_provider_scorecard(
         cost_currency=model_selection_metadata.get('cost_currency') if model_selection_metadata else None,
         cost_confidence=model_selection_metadata.get('cost_confidence') if model_selection_metadata else None,
         cost_source=model_selection_metadata.get('cost_source') if model_selection_metadata else None,
+
+        # Test-Delta-Werte weiterreichen
+        test_delta_passed_before=test_delta_passed_before,
+        test_delta_passed_after=test_delta_passed_after,
+        test_delta_failed_before=test_delta_failed_before,
+        test_delta_failed_after=test_delta_failed_after,
+        test_delta_outcome=test_delta_outcome,
     )
 
 
@@ -640,7 +659,12 @@ def write_run_report(report: RunReport, status: str,
                       resource_diagnostics=None,
                       model_selection_metadata: dict | None = None,
                       test_command: str | None = None,
-                      test_result: str | None = None) -> Path | None:
+                      test_result: str | None = None,
+                      test_delta_passed_before: int | None = None,
+                      test_delta_passed_after: int | None = None,
+                      test_delta_failed_before: int | None = None,
+                      test_delta_failed_after: int | None = None,
+                      test_delta_outcome: str | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -671,7 +695,12 @@ def write_run_report(report: RunReport, status: str,
 
         # Provider-Scorecard erstellen
         scorecard = create_provider_scorecard(
-            report, status, worker_result, pr_url, model_selection_metadata, test_command, test_result
+            report, status, worker_result, pr_url, model_selection_metadata, test_command, test_result,
+            test_delta_passed_before=test_delta_passed_before,
+            test_delta_passed_after=test_delta_passed_after,
+            test_delta_failed_before=test_delta_failed_before,
+            test_delta_failed_after=test_delta_failed_after,
+            test_delta_outcome=test_delta_outcome,
         )
 
         metadata = {
@@ -718,6 +747,11 @@ def write_run_report(report: RunReport, status: str,
                 "cost_currency": scorecard.cost_currency,
                 "cost_confidence": scorecard.cost_confidence,
                 "cost_source": scorecard.cost_source,
+                "test_delta_passed_before": scorecard.test_delta_passed_before,
+                "test_delta_passed_after": scorecard.test_delta_passed_after,
+                "test_delta_failed_before": scorecard.test_delta_failed_before,
+                "test_delta_failed_after": scorecard.test_delta_failed_after,
+                "test_delta_outcome": scorecard.test_delta_outcome,
             },
         }
         (report.path / "metadata.json").write_text(
@@ -760,6 +794,11 @@ def write_run_report(report: RunReport, status: str,
             f"provider_scorecard_cost_currency: {scorecard.cost_currency or ''}",
             f"provider_scorecard_cost_confidence: {scorecard.cost_confidence or ''}",
             f"provider_scorecard_cost_source: {scorecard.cost_source or ''}",
+            f"provider_scorecard_test_delta_passed_before: {scorecard.test_delta_passed_before or ''}",
+            f"provider_scorecard_test_delta_passed_after: {scorecard.test_delta_passed_after or ''}",
+            f"provider_scorecard_test_delta_failed_before: {scorecard.test_delta_failed_before or ''}",
+            f"provider_scorecard_test_delta_failed_after: {scorecard.test_delta_failed_after or ''}",
+            f"provider_scorecard_test_delta_outcome: {scorecard.test_delta_outcome or ''}",
         ]
 
         # Modellauswahl-Metadaten hinzufügen
@@ -816,7 +855,12 @@ def write_worker_diagnostics(result, repo: str, issue_number: int,
                               status: str = "worker_finished",
                               model_selection_metadata: dict | None = None,
                               test_command: str | None = None,
-                              test_result: str | None = None) -> Path | None:
+                              test_result: str | None = None,
+                              test_delta_passed_before: int | None = None,
+                              test_delta_passed_after: int | None = None,
+                              test_delta_failed_before: int | None = None,
+                              test_delta_failed_after: int | None = None,
+                              test_delta_outcome: str | None = None) -> Path | None:
     report = create_run_report(repo, issue_number, branch, model, issue_title=issue_title)
     if not report:
         return None
@@ -826,7 +870,12 @@ def write_worker_diagnostics(result, repo: str, issue_number: int,
         pr_url=pr_url,
         model_selection_metadata=model_selection_metadata,
         test_command=test_command,
-        test_result=test_result
+        test_result=test_result,
+        test_delta_passed_before=test_delta_passed_before,
+        test_delta_passed_after=test_delta_passed_after,
+        test_delta_failed_before=test_delta_failed_before,
+        test_delta_failed_after=test_delta_failed_after,
+        test_delta_outcome=test_delta_outcome,
     )
 
 
