@@ -298,12 +298,17 @@ def _run_subprocess(
     env: dict[str, str],
     run_report: Any | None = None,
     verbosity: str = "normal",
+    process_ref: list | None = None,
 ) -> WorkerRunResult:
     """
     Führt einen Worker-Befehl als Subprocess aus und gibt das Ergebnis zurück.
 
     Diese interne Funktion wird von mehreren Adaptern wiederverwendet und
     entspricht der Logik von solve_issues.run_worker_command().
+
+    Args:
+        process_ref: Wenn gesetzt (z.B. leere Liste), wird darin der Popen-Prozess
+                     abgelegt, damit Aufrufer den Zugriff auf den laufenden Prozess haben.
     """
     from solver_reporting import should_surface_worker_line, write_run_health
     from utils import print_err
@@ -321,6 +326,9 @@ def _run_subprocess(
     except FileNotFoundError:
         print_err(f"KI-Worker nicht gefunden: {cmd[0]}")
         return WorkerRunResult(returncode=127, output="")
+
+    if process_ref is not None:
+        process_ref.append(process)
 
     output_parts = []
     suppressed_lines = 0

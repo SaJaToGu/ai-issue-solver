@@ -9,6 +9,8 @@ Besonderheiten:
     - Solver-lokale Cache-Verzeichnisse werden eingerichtet.
     - Der Prompt wird mit Anweisungen für repo-relative Pfade angereichert.
     - OpenCode Runtime-Diagnostics (WAL-Fehler, Edit-Loop) werden gesammelt.
+    - OpenCode Session-Metriken (Kosten, Tokens) werden aus der lokalen SQLite-DB gelesen.
+    - Budget-Limits (--max-run-cost-usd, --max-run-*-tokens) werden während des Laufs ueberwacht.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -228,10 +232,24 @@ class OpenCodeAdapter(WorkerAdapter):
         """
         Führt den OpenCode CLI aus und sammelt Runtime-Diagnostics.
 
+        Wenn Budget-Limits per kwargs uebergeben werden (max_run_cost_usd,
+        max_run_input_tokens, max_run_output_tokens, max_run_cache_read_tokens),
+        wird die lokale OpenCode-SQLite-Datenbank während des Laufs ueberwacht
+        und der Worker bei Ueberschreitung beendet.
+
         Returns:
-            Tupel (WorkerRunResult, AdapterDiagnostics mit OpenCode-Diagnostics).
+            Tupel (WorkerRunResult, AdapterDiagnostics mit OpenCode-Diagnostics
+            und Session-Metriken).
         """
         from solver_reporting import detect_opencode_runtime_diagnostics, print_opencode_runtime_diagnostics
+        from workers.opencode_session_reader import (
+            OpenCodeBudgetLimits,
+            calculate_session_totals,
+            check_budget_limits,
+            find_opencode_db_path,
+            has_any_limit,
+            match_sessions_by_run,
+        )
 
         diagnostics = AdapterDiagnostics()
 
@@ -245,9 +263,75 @@ class OpenCodeAdapter(WorkerAdapter):
                 diagnostics,
             )
 
+        # Budget-Limits aus kwargs extrahieren
+        budget_limits = OpenCodeBudgetLimits(
+            max_cost_usd=kwargs.pop("max_run_cost_usd", None),
+            max_input_tokens=kwargs.pop("max_run_input_tokens", None),
+            max_output_tokens=kwargs.pop("max_run_output_tokens", None),
+            max_cache_read_tokens=kwargs.pop("max_run_cache_read_tokens", None),
+        )
+
+        run_start_time = datetime.now()
+        stop_polling = threading.Event()
+        process_ref: list = []
+        poll_thread: threading.Thread | None = None
+        budget_exceeded_reason: str | None = None
+
+        # Budget-Polling-Thread starten (nur wenn Limits konfiguriert sind)
+        if has_any_limit(budget_limits):
+            db_path = find_opencode_db_path()
+            if db_path is not None:
+                def _poll_budget():
+                    nonlocal budget_exceeded_reason
+                    while not stop_polling.wait(15):
+                        if not process_ref:
+                            continue
+                        try:
+                            sessions = match_sessions_by_run(
+                                db_path, repo_path, run_start_time,
+                                time_window_seconds=120,
+                            )
+                            totals = calculate_session_totals(sessions)
+                            result = check_budget_limits(totals, budget_limits)
+                            if result.exceeded_reason:
+                                budget_exceeded_reason = result.exceeded_reason
+                                proc = process_ref[0]
+                                if proc and proc.poll() is None:
+                                    proc.terminate()
+                                break
+                        except Exception:
+                            pass
+                poll_thread = threading.Thread(target=_poll_budget, daemon=True)
+                poll_thread.start()
+
         result = _run_subprocess(cmd, repo_path, env, run_report=run_report,
-                                 verbosity=verbosity)
+                                 verbosity=verbosity, process_ref=process_ref)
+
+        if poll_thread is not None:
+            stop_polling.set()
+            poll_thread.join(timeout=5)
+
         diagnostics.all_outputs.append(result.output)
+
+        # OpenCode-Session-Metriken aus der DB lesen
+        db_path = find_opencode_db_path()
+        if db_path is not None:
+            try:
+                final_sessions = match_sessions_by_run(
+                    db_path, repo_path, run_start_time,
+                    time_window_seconds=120,
+                )
+                if final_sessions:
+                    totals = calculate_session_totals(final_sessions)
+                    diagnostics.opencode_session_totals = totals.to_dict()
+                    final_check = check_budget_limits(totals, budget_limits)
+                    if final_check.exceeded_reason:
+                        budget_exceeded_reason = final_check.exceeded_reason
+            except Exception:
+                pass
+
+        if budget_exceeded_reason:
+            diagnostics.opencode_budget_exceeded = budget_exceeded_reason
 
         # OpenCode Runtime-Diagnostics ausgeben (WAL-Fehler, Edit-Loop)
         print_opencode_runtime_diagnostics(

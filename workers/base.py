@@ -63,6 +63,10 @@ class AdapterDiagnostics:
     rate_limit_note: str = ""
     # Rohausgabe aller Runs (für diagnostischen Report)
     all_outputs: list[str] = field(default_factory=list)
+    # OpenCode-Session-Totals (nur für OpenCodeAdapter)
+    opencode_session_totals: dict | None = None
+    # OpenCode-Budget-Ueberschreitung (nur für OpenCodeAdapter)
+    opencode_budget_exceeded: str | None = None
 
 
 # ─────────────────────────────────────────────────────────────
