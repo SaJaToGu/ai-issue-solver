@@ -942,3 +942,38 @@ Touches: `scripts/benchmark_issues.py`, `scripts/solve_issues.py`,
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+## 40. Add compact growing progress heartbeat for long-running solver jobs
+
+Labels: `kind/feature`, `theme/workflow`, `agent/supervisor`, `priority/2`
+
+Priority: `2`
+
+Long-running solver jobs should emit a compact, phone-friendly heartbeat line
+that shows elapsed runtime without verbose logs. This is especially useful when
+Codex is monitored from a mobile client and token usage should stay low.
+
+Expected output format:
+- print one short heartbeat per configured check interval
+- prefix each line with issue number and optional job label, for example:
+  `#223 PR2 ....+....+....+.. 17min`
+- every fifth progress character must be `+`; all other progress characters
+  are `.`
+- include elapsed minutes as a short suffix
+- keep the output stable for multiple parallel jobs by prefixing each line with
+  the issue number
+
+Suggested implementation:
+- add a small formatter function for heartbeat progress strings
+- reuse it wherever long-running solver jobs are polled or monitored
+- default to the existing low-noise behavior unless heartbeat output is enabled
+  by verbosity or an explicit flag
+- add tests for the progress marker sequence, elapsed-minute suffix, issue
+  prefix, and optional job label
+
+Touches: `scripts/solve_issues.py`, `scripts/solve_issues_batch.py`,
+         `tests/`
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
