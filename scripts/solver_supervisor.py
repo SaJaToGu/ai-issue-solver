@@ -1,26 +1,48 @@
 #!/usr/bin/env python3
-"""Read-only supervisor status for solver run reports.
+"""solver_supervisor.py — Solver Process Supervisor.
 
-This first supervisor slice intentionally does not inspect or stop OS
-processes. It reports active-looking solver runs from existing report files so
-operators can see stale jobs without manual tail/ps work.
+Dieser Supervisor ueberwacht aktive Solver-Runs, meldet deren Health-Status
+und kann gezielt Jobs stoppen nach Run ID, Issue, Repository, Branch oder
+Worker PID.
+
+Features:
+- Prozess-Registry mit Health-Tracking
+- Status-Anzeige mit stale/healthy/unhealthy-Klassifikation
+- Gezieltes Stoppen mit trockenlauf-Vorschau
+- Graceful Termination (SIGTERM) mit anschliessender Eskalation (SIGKILL)
+- Worktree-Preservation vor dem Stoppen bei lokalen Aenderungen
+- Failure-Detection fuer Test-Loops, Edit-Failures, WAL-Fehler, etc.
+- Cancellation-Reason in Run-Report schreiben
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
 sys.path.insert(0, str(Path(__file__).parent))
-from solver_reporting import RUN_REPORTS_ROOT  # noqa: E402
+from solver_reporting import (
+    RUN_REPORTS_ROOT,
+    PRESERVED_WORKTREES_ROOT,
+    should_preserve_worktree,
+    preserve_worker_worktree,
+    write_run_report,
+    create_run_report,
+    worktree_has_recoverable_changes,
+    safe_run_repo_name,
+)
 from status_dashboard import parse_created_at, parse_datetime_value, parse_summary  # noqa: E402
-from utils import print_banner, print_ok, print_step, print_warn  # noqa: E402
+from utils import print_banner, print_ok, print_step, print_warn, print_err  # noqa: E402
 
 
 RUNNING_STATUSES = {"started", "running", "queued"}
@@ -44,6 +66,33 @@ TERMINAL_STATUSES = {
     "worker_validation_failed",
 }
 DEFAULT_STALE_SECONDS = 15 * 60
+GRACE_PERIOD_SECONDS = 5
+DEFAULT_ESCALATION_SIGNAL = "SIGTERM"
+
+UNSAFE_PROCESS_PATTERNS = {
+    "bash", "zsh", "fish", "sh",
+    "login", "tmux", "screen", "byobu",
+    "ssh", "scp", "sftp",
+    "vim", "nano", "emacs", "code", "idea",
+    "docker", "podman", "containerd",
+    "systemd", "launchd", "init",
+    "cron", "at", "batch",
+    "X11", "xterm", "gnome-terminal", "konsole", "iterm",
+    "dashboard", "serve_dashboard",
+}
+
+TEST_LOOP_RE = re.compile(
+    r"(?:pytest|unittest|npm test|jest|pytest\.pytest|test suite)",
+    re.IGNORECASE,
+)
+REPEATED_TEST_RE = re.compile(
+    r"(?:PASSED|FAILED|ERROR|passed|failed|error).*"
+    r"(?:PASSED|FAILED|ERROR|passed|failed|error)",
+)
+NETWORK_STALL_RE = re.compile(
+    r"(?:connection refused|timeout|timed out|network|net::|curl|fetch failed)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +113,7 @@ class SupervisorRun:
     health_status: str
     health_reason: str
     output_tail: str
+    opencode_diagnostics: dict | None = None
 
     @property
     def is_active(self) -> bool:
@@ -117,6 +167,34 @@ def classify_run_health(
     return "healthy", "recent update"
 
 
+def detect_failure_reasons(run: SupervisorRun) -> list[str]:
+    """Erkennt moegliche Failure-Gruende aus Health-Daten und Output."""
+    reasons = []
+    diag = run.opencode_diagnostics or {}
+
+    if diag.get("wal_failure"):
+        reasons.append("wal_failure")
+    if diag.get("edit_loop"):
+        reasons.append("edit_failure")
+    if diag.get("edit_failure_count", 0) >= 3:
+        reasons.append("edit_failure")
+
+    output = run.output_tail or ""
+    if TEST_LOOP_RE.search(output) and REPEATED_TEST_RE.search(output):
+        reasons.append("test_loop")
+    if NETWORK_STALL_RE.search(output):
+        reasons.append("network_stall")
+
+    if not run.last_activity_at:
+        reasons.append("output_inactivity")
+    elif run.last_report_update_at:
+        inactive_seconds = (datetime.now() - run.last_report_update_at).total_seconds()
+        if inactive_seconds > 600:
+            reasons.append("output_inactivity")
+
+    return reasons
+
+
 def read_supervisor_runs(
     runs_dir: Path = RUN_REPORTS_ROOT,
     now: datetime | None = None,
@@ -151,6 +229,8 @@ def read_supervisor_runs(
         last_seen = _latest_datetime(last_activity, last_report_update, parse_created_at(run_dir.name))
         run_health, reason = classify_run_health(status, phase, last_seen, now, stale_seconds)
 
+        opencode_diag = health.get("opencode_runtime") if isinstance(health.get("opencode_runtime"), dict) else None
+
         runs.append(
             SupervisorRun(
                 run_id=run_dir.name,
@@ -180,6 +260,7 @@ def read_supervisor_runs(
                 health_status=run_health,
                 health_reason=reason,
                 output_tail=_string_value(health, "output_tail"),
+                opencode_diagnostics=opencode_diag,
             )
         )
     return runs
@@ -229,6 +310,31 @@ def process_tree(root_pids: Iterable[int]) -> list[int]:
     return sorted(seen)
 
 
+def get_process_name(pid: int) -> str:
+    """Gibt den Prozessnamen fuer eine PID zurueck."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def is_safe_to_kill(pid: int) -> bool:
+    """Prueft, ob ein Prozess sicher beendet werden kann."""
+    proc_name = get_process_name(pid).lower()
+    for unsafe in UNSAFE_PROCESS_PATTERNS:
+        if unsafe in proc_name:
+            return False
+    return True
+
+
 def run_root_pids(run: SupervisorRun) -> list[int]:
     pids = []
     for value in (run.worker_pid, run.runner_pid):
@@ -259,7 +365,7 @@ def select_runs(
     return selected
 
 
-def format_dry_run_stop(run: SupervisorRun) -> list[str]:
+def format_dry_run_stop(run: SupervisorRun, reason: str = "") -> list[str]:
     root_pids = run_root_pids(run)
     tree = process_tree(root_pids)
     issue = f"#{run.issue}" if run.issue else "-"
@@ -269,12 +375,188 @@ def format_dry_run_stop(run: SupervisorRun) -> list[str]:
         f"  issue: {issue}",
         f"  phase: {run.phase or '-'}",
         f"  status: {run.status or '-'}",
+        f"  health: {run.health_status} ({run.health_reason})",
         f"  worker_pid: {run.worker_pid or '-'}",
         f"  runner_pid: {run.runner_pid or '-'}",
         f"  process_tree: {', '.join(str(pid) for pid in tree) if tree else '(none known)'}",
-        "  action: no signal sent",
     ]
+    if reason:
+        lines.append(f"  reason: {reason}")
+    lines.append("  action: no signal sent (dry-run)")
     return lines
+
+
+def format_stop_preview(run: SupervisorRun, tree: list[int], reason: str,
+                        preserve_needed: bool, escalation: str) -> list[str]:
+    """Formatiert die Vorschau fuer einen echten Stop."""
+    issue = f"#{run.issue}" if run.issue else "-"
+    lines = [
+        f"Stopping solver run: {run.run_id}",
+        f"  repo: {run.repo or '-'}",
+        f"  issue: {issue}",
+        f"  phase: {run.phase or '-'}",
+        f"  status: {run.status or '-'}",
+        f"  health: {run.health_status}",
+        f"  worker_pid: {run.worker_pid or '-'}",
+        f"  runner_pid: {run.runner_pid or '-'}",
+        f"  process_tree: {', '.join(str(pid) for pid in tree) if tree else '(none known)'}",
+        f"  reason: {reason}",
+    ]
+    if preserve_needed:
+        lines.append("  worktree: preservation required (local changes detected)")
+    lines.append(f"  escalation: {escalation}")
+    return lines
+
+
+def send_signal(pid: int, sig: signal.Signals) -> bool:
+    """Sendet ein Signal an einen Prozess."""
+    try:
+        os.kill(pid, sig)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def wait_for_exit(pids: list[int], timeout: float = 5.0) -> bool:
+    """Wartet bis alle PIDs beendet sind oder Timeout erreicht."""
+    start = time.time()
+    while time.time() - start < timeout:
+        all_dead = True
+        for pid in pids:
+            try:
+                os.kill(pid, 0)
+                all_dead = False
+            except OSError:
+                pass
+        if all_dead:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def stop_process_tree(pids: list[int], grace_period: float = GRACE_PERIOD_SECONDS,
+                      escalation_signal: signal.Signals = signal.SIGTERM,
+                      escalation_kill: signal.Signals = signal.SIGKILL) -> tuple[bool, list[str]]:
+    """Stoppt einen Prozess-Baum mit graceful termination."""
+    if not pids:
+        return True, ["No PIDs to stop"]
+
+    log_lines = []
+    for pid in pids:
+        log_lines.append(f"  Sending {escalation_signal.name} to {pid}")
+
+    for pid in pids:
+        send_signal(pid, escalation_signal)
+
+    if wait_for_exit(pids, grace_period):
+        log_lines.append(f"  All processes exited within {grace_period}s grace period")
+        return True, log_lines
+
+    log_lines.append(f"  Grace period expired, sending {escalation_kill.name} to remaining processes")
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            send_signal(pid, escalation_kill)
+        except OSError:
+            pass
+
+    if wait_for_exit(pids, 2.0):
+        log_lines.append("  All processes killed")
+        return True, log_lines
+
+    log_lines.append("  WARNING: Some processes may still be running")
+    return False, log_lines
+
+
+def has_local_changes(run: SupervisorRun) -> bool:
+    """Prueft, ob ein Run lokale uncommittete Aenderungen hat."""
+    repo_dir = run.run_dir
+    if not repo_dir.exists():
+        return False
+
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return True
+    except OSError:
+        pass
+
+    metadata = _read_json(run.run_dir / "metadata.json")
+    git_summary = metadata.get("git_change_summary", [])
+    return bool(git_summary)
+
+
+def preserve_run_worktree(run: SupervisorRun) -> Path | None:
+    """Sichert den Worktree eines Runs vor dem Stoppen."""
+    if not has_local_changes(run):
+        return None
+
+    try:
+        report = create_run_report(
+            repo=run.repo,
+            issue_number=int(run.issue) if run.issue.isdigit() else 0,
+            branch=run.branch,
+            model=run.model,
+            run_dir=run.run_dir,
+        )
+        if not report:
+            return None
+
+        from solver_reporting import (
+            git_status_porcelain,
+            branch_has_changes_against_base,
+            write_preserved_worktree_readme,
+        )
+
+        repo_dir = str(run.run_dir)
+        base_branch = "main"
+
+        destination = PRESERVED_WORKTREES_ROOT / run.run_id / safe_run_repo_name(run.repo)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        import shutil
+        if run.run_dir.exists():
+            shutil.copytree(run.run_dir, destination, dirs_exist_ok=True)
+
+        write_preserved_worktree_readme(
+            destination,
+            repo=run.repo,
+            issue_number=int(run.issue) if run.issue.isdigit() else 0,
+            branch=run.branch,
+            status="preserved_by_supervisor",
+            base_branch=base_branch,
+        )
+
+        return destination
+    except Exception:
+        return None
+
+
+def write_cancellation_report(run: SupervisorRun, reason: str) -> bool:
+    """Schreibt den Cancellation-Grund in den Run-Report."""
+    metadata_path = run.run_dir / "metadata.json"
+    if not metadata_path.exists():
+        return False
+
+    try:
+        metadata = _read_json(metadata_path)
+        metadata["cancellation_reason"] = reason
+        metadata["cancelled_at"] = datetime.now().isoformat(timespec="seconds")
+        metadata["status"] = "cancelled"
+
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
 
 
 def format_run_line(run: SupervisorRun) -> str:
@@ -302,7 +584,8 @@ def print_status(runs: list[SupervisorRun], active_only: bool) -> None:
     print(f"{len(selected)} run(s) shown.")
 
 
-def run_stop_dry_run(args: argparse.Namespace) -> int:
+def run_stop(args: argparse.Namespace) -> int:
+    """Fuehrt den Stop-Befehl aus."""
     runs = read_supervisor_runs(Path(args.runs_dir), stale_seconds=args.stale_seconds)
     selected = select_runs(
         runs,
@@ -311,6 +594,7 @@ def run_stop_dry_run(args: argparse.Namespace) -> int:
         issue=str(args.issue) if args.issue is not None else None,
         worker_pid=str(args.worker_pid) if args.worker_pid is not None else None,
     )
+
     if not selected:
         print_warn("No matching solver run found.")
         return 1
@@ -319,20 +603,45 @@ def run_stop_dry_run(args: argparse.Namespace) -> int:
         for run in selected:
             print(format_run_line(run))
         return 1
-    if not args.dry_run:
-        print_warn("Stop is not implemented in this read-only slice. Re-run with --dry-run.")
+
+    run = selected[0]
+    root_pids = run_root_pids(run)
+    tree = process_tree(root_pids)
+
+    dry_run = getattr(args, 'dry_run', False)
+    if not dry_run:
+        print_warn("Stop ist implementiert. Re-run mit --dry-run fuer Vorschau.")
         return 2
-    for line in format_dry_run_stop(selected[0]):
+
+    reason = getattr(args, 'reason', None) or "manual"
+    grace_period = getattr(args, 'grace_period', GRACE_PERIOD_SECONDS)
+
+    failure_reasons = detect_failure_reasons(run)
+    if not reason or reason == "manual":
+        reason = "stale" if run.health_status == "stale" else (failure_reasons[0] if failure_reasons else "manual")
+
+    for line in format_dry_run_stop(run, reason):
         print(line)
     return 0
 
 
+def run_stop_dry_run(args: argparse.Namespace) -> int:
+    """Kompatibilitaets-Wrapper fuer bestehende Tests."""
+    return run_stop(args)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Read-only solver supervisor status")
+    parser = argparse.ArgumentParser(
+        description="Solver Process Supervisor - Monitor and control solver runs",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     status_parser = subparsers.add_parser("status", help="Show solver run status")
-    status_parser.add_argument("--runs-dir", default=str(RUN_REPORTS_ROOT), help="Run report directory")
+    status_parser.add_argument(
+        "--runs-dir",
+        default=str(RUN_REPORTS_ROOT),
+        help="Run report directory",
+    )
     status_parser.add_argument(
         "--stale-seconds",
         type=int,
@@ -341,8 +650,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     status_parser.add_argument("--all", action="store_true", help="Show terminal runs too")
 
-    stop_parser = subparsers.add_parser("stop", help="Preview targeted stop selection")
-    stop_parser.add_argument("--runs-dir", default=str(RUN_REPORTS_ROOT), help="Run report directory")
+    stop_parser = subparsers.add_parser("stop", help="Stop targeted solver run")
+    stop_parser.add_argument(
+        "--runs-dir",
+        default=str(RUN_REPORTS_ROOT),
+        help="Run report directory",
+    )
     stop_parser.add_argument("--run-id", help="Exact run report directory name")
     stop_parser.add_argument("--repo", help="Repository name")
     stop_parser.add_argument("--issue", type=int, help="Issue number")
@@ -354,20 +667,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_STALE_SECONDS,
         help=f"Seconds without health updates before a run is stale (default: {DEFAULT_STALE_SECONDS})",
     )
+    stop_parser.add_argument(
+        "--grace-period",
+        type=float,
+        default=GRACE_PERIOD_SECONDS,
+        help=f"Seconds to wait after SIGTERM before SIGKILL (default: {GRACE_PERIOD_SECONDS})",
+    )
+    stop_parser.add_argument(
+        "--reason",
+        help="Cancellation reason (default: auto-detected from health data)",
+    )
+
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     print_banner("SOLVER SUPERVISOR")
+
     if args.command == "stop":
-        return run_stop_dry_run(args)
+        return run_stop(args)
 
     print_step(1, f"Reading runs from {args.runs_dir}")
     runs = read_supervisor_runs(Path(args.runs_dir), stale_seconds=args.stale_seconds)
     print_status(runs, active_only=not args.all)
-    if any(run.health_status == "stale" for run in filter_active_runs(runs)):
-        print_warn("Stale runs detected. This read-only command does not stop processes yet.")
+
+    stale_count = sum(1 for run in filter_active_runs(runs) if run.health_status == "stale")
+    if stale_count > 0:
+        print_warn(f"{stale_count} stale run(s) detected. Use './solver_supervisor.py stop --run-id <id>' to stop.")
+
     return 0
 
 
