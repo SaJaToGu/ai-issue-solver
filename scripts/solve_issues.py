@@ -513,14 +513,10 @@ class GitHubClient:
             if self.branch_exists(repo, requested_base):
                 return requested_base
 
-            default_branch = self.get_default_branch(repo)
-            if default_branch and default_branch != requested_base and self.branch_exists(repo, default_branch):
-                print_warn(
-                    f"Base-Branch '{requested_base}' existiert nicht; nutze Default-Branch '{default_branch}'"
-                )
-                return default_branch
-
-            return requested_base
+            print_err(
+                f"Angeforderter Base-Branch '{requested_base}' existiert nicht remote"
+            )
+            return None
 
         default_branch = self.get_default_branch(repo)
         if default_branch:

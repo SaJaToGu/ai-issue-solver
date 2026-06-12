@@ -128,15 +128,15 @@ class GitHubClientBranchTests(unittest.TestCase):
 
         self.assertEqual(base_branch, "main")
 
-    def test_resolve_base_branch_falls_back_to_default_when_requested_branch_is_missing(self):
+    def test_resolve_base_branch_returns_none_when_explicit_branch_is_missing(self):
         client = self.make_client()
 
         with contextlib.redirect_stdout(io.StringIO()):
             base_branch = client.resolve_base_branch("demo", "develop")
 
-        self.assertEqual(base_branch, "main")
+        self.assertIsNone(base_branch)
 
-    def test_create_pull_request_posts_against_resolved_default_branch(self):
+    def test_create_pull_request_returns_none_when_explicit_branch_is_missing(self):
         client = self.make_client()
 
         with contextlib.redirect_stdout(io.StringIO()):
@@ -146,6 +146,21 @@ class GitHubClientBranchTests(unittest.TestCase):
                 body="Body",
                 head="ai/fix-issue-1",
                 base="develop",
+            )
+
+        self.assertIsNone(pr)
+        self.assertEqual(len(client.session.posts), 0)
+
+    def test_create_pull_request_posts_against_default_branch_without_explicit_base(self):
+        client = self.make_client()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            pr = client.create_pull_request(
+                repo="demo",
+                title="Fix",
+                body="Body",
+                head="ai/fix-issue-1",
+                base=None,
             )
 
         self.assertEqual(pr["html_url"], "https://github.com/test-owner/demo/pull/1")
