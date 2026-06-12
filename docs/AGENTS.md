@@ -69,6 +69,7 @@ This document defines the roles, responsibilities, and workflow integration of s
 - **Outputs**: PR reviews, rework issues, and quality reports.
 - **Key Scripts**:
   - `solver_reporting.py` (PR validation)
+  - `rework_workflow.py` (structured rework issues and follow-up slices)
   - Custom review scripts (e.g., `pr_review.py`)
 - **Labels Applied**: `theme/quality`, `agent/reviewer`
 
@@ -87,7 +88,7 @@ This document defines the roles, responsibilities, and workflow integration of s
 - **Research**: Ad-hoc implementation via custom scripts.
 - **Planner**: Partially implemented via backlog scripts.
 - **Solver**: Core implementation via solver scripts.
-- **Reviewer**: Minimal implementation via PR validation.
+- **Reviewer**: Partially implemented via PR validation and `rework_workflow.py`.
 
 ## Next Steps
 1. **Automate Triage**: Enhance `create_backlog_issues.py` to apply the full label taxonomy automatically.

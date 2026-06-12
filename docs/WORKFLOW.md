@@ -34,6 +34,12 @@ Dieser Guide erklärt den detaillierten Workflow des AI Issue Solvers, die Batch
 ┌─────────────────┐
 │   GitHub PR      │  ← Du reviewst und mergst
 └─────────────────┘
+          │
+          ▼
+┌─────────────────┐
+│ 4. rework /      │  ← Bei roter CI, zu großem PR oder Review-Bedenken
+│    merge         │    gezielt nacharbeiten oder mergen
+└─────────────────┘
 ```
 
 ---
@@ -119,6 +125,44 @@ python scripts/serve_dashboard.py --port 8765 --refresh-seconds 10
 - `--github-enrich`: PR-/Merge-/Issue-Lifecycle per GitHub API anreichern
 - `--cleanup-stale`: Alte Reports als Cleanup-Kandidaten anzeigen
 - `--health-timeout-minutes`: Timeout für Unhealthy-Jobs (Standard: `60`)
+
+---
+
+### `rework_workflow.py`
+Erstellt strukturierte Rework-Kontexte, wenn ein generierter PR nicht direkt
+gemergt werden sollte. Das gilt nicht nur für rote CI, sondern auch für grüne,
+aber zu große oder riskante PRs.
+
+**Typische Auslöser:**
+- CI oder lokale Tests sind rot
+- PR ist grün, aber zu groß, zu breit oder nicht reviewbar genug
+- Worker wurde unterbrochen, hat aber verwertbare Änderungen erzeugt
+- User-Review fordert eine konkrete Korrektur
+- Ein alter PR soll durch einen engeren Ansatz ersetzt werden
+
+**Beispiele:**
+```bash
+python scripts/rework_workflow.py --from-note "PR #288 is CI green but too large for #223" --dry-run
+python scripts/rework_workflow.py --from-pr 288 --rework-reason risky_pr_rework --dry-run
+python scripts/rework_workflow.py --from-run reports/runs/<run-id> --dry-run
+```
+
+**Same-Branch-Rework:**
+Wenn ein PR grundsätzlich brauchbar ist, aber einen kleinen Nacharbeitsbedarf
+hat, kann ein Modell auf demselben PR-Branch weiterlaufen. Der Prompt sollte
+dann den PR, Branch, konkreten Fehler, erlaubte Dateien, Tests und Out-of-Scope
+Punkte nennen. Vorher:
+
+```bash
+git status --short --branch
+gh pr view <pr> --json number,title,state,mergeable,headRefName,changedFiles,additions,deletions,url
+gh pr checks <pr>
+```
+
+**Merge-Guard:**
+Ein PR wird nicht allein wegen grüner Checks gemergt. Wenn Diff-Größe, Scope,
+Risko oder unterbrochene Worker-Ausgabe unklar sind, erst Rework klassifizieren
+und den nächsten Slice explizit machen.
 
 ---
 

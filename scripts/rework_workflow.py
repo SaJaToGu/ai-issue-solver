@@ -66,6 +66,7 @@ REWORK_LABELS = {
 class ReworkReason(Enum):
     USER_REVIEW_FEEDBACK = "user_review_feedback"
     FAILED_CHECKS = "failed_checks"
+    RISKY_PR_REWORK = "risky_pr_rework"
     BEHAVIOR_UNCHANGED = "behavior_unchanged"
     PARTIAL_IMPLEMENTATION = "partial_implementation"
     SUPERSEDED_APPROACH = "superseded_approach"
@@ -78,6 +79,7 @@ class ReworkReason(Enum):
 REWORK_REASON_LABELS = {
     ReworkReason.USER_REVIEW_FEEDBACK: ["kind/rework", "theme/quality"],
     ReworkReason.FAILED_CHECKS: ["kind/rework", "theme/quality"],
+    ReworkReason.RISKY_PR_REWORK: ["kind/rework", "theme/quality", "agent/reviewer"],
     ReworkReason.BEHAVIOR_UNCHANGED: ["kind/rework", "theme/quality"],
     ReworkReason.PARTIAL_IMPLEMENTATION: ["kind/impl-correction", "theme/quality"],
     ReworkReason.SUPERSEDED_APPROACH: ["kind/pr-supersede", "theme/workflow"],
@@ -171,6 +173,27 @@ SUBTASK_LINK_TEMPLATE = """  - Verknüpft mit: {links}"""
 def detect_rework_reason_from_text(text: str) -> ReworkReason:
     """Erkennt den Rework-Grund aus einem Text (Review-Feedback, Note, etc.)."""
     text_lower = text.lower()
+
+    risky_pr_keywords = [
+        "green but",
+        "ci green but",
+        "too large",
+        "too big",
+        "large pr",
+        "big pr",
+        "risky pr",
+        "not mergeable as-is",
+        "not merge as-is",
+        "nicht mergebar",
+        "zu gross",
+        "zu groß",
+        "zu breit",
+        "rohmaterial",
+        "needs content review",
+        "needs rework before merge",
+    ]
+    if any(kw in text_lower for kw in risky_pr_keywords):
+        return ReworkReason.RISKY_PR_REWORK
 
     if any(kw in text_lower for kw in ["test", "failed", "failure", "assertion", "pytest", "unittest"]):
         if any(kw in text_lower for kw in ["fail", "error", "broken"]):
@@ -313,10 +336,13 @@ def should_use_single_pr(sub_tasks: list[ReworkSubTask]) -> tuple[bool, str]:
         return True, "Keine Sub-Tasks definiert"
 
     total_lines = sum(len(t.description.splitlines()) for t in sub_tasks)
+    task_types = [t.task_type for t in sub_tasks]
+    if "review and scope reduction" in task_types:
+        return False, ""
+
     if total_lines <= 10 and len(sub_tasks) <= 2:
         return True, "Wenig Code-Änderungen und maximal 2 Sub-Tasks"
 
-    task_types = [t.task_type for t in sub_tasks]
     coupled_types = {"implementation correction", "validation/test repair"}
     if all(tt in coupled_types for tt in task_types) and len(sub_tasks) <= 2:
         return True, "Eng gekoppelte Implementierungs- oder Test-Korrekturen"
@@ -353,6 +379,30 @@ def generate_sub_tasks_from_reason(
             title="Review-Feedback adressieren",
             description=f"Die bei der PR-Review #{original_pr_number} gesammelten Anmerkungen umsetzen.",
             task_type="implementation correction",
+            linked_pr=str(original_pr_number) if original_pr_number else None,
+        ))
+
+    elif reason == ReworkReason.RISKY_PR_REWORK:
+        tasks.append(ReworkSubTask(
+            id="review-scope-1",
+            title="PR-Scope prüfen und begrenzen",
+            description=(
+                "Den vorhandenen PR auf Diff-Größe, betroffene Dateien, "
+                "Issue-Scope und riskante Nebeneffekte prüfen. Nur notwendige "
+                "Änderungen behalten; breite oder unklare Teile entfernen oder "
+                "in separate Rework-Tasks auslagern."
+            ),
+            task_type="review and scope reduction",
+            linked_pr=str(original_pr_number) if original_pr_number else None,
+        ))
+        tasks.append(ReworkSubTask(
+            id="validation-tighten-1",
+            title="Gezielte Validierung nach Scope-Kürzung",
+            description=(
+                "Fokussierte Tests für den verbleibenden Scope ausführen und "
+                "im PR-Kommentar dokumentieren. Keine neuen Features hinzufügen."
+            ),
+            task_type="validation/test repair",
             linked_pr=str(original_pr_number) if original_pr_number else None,
         ))
 
@@ -683,6 +733,15 @@ def build_rework_spec_from_note(
 
 def extract_issue_number_from_text(text: str) -> int | None:
     """Extract the first GitHub-style issue reference from free text."""
+    issue_patterns = [
+        r"(?:issue|for|für|fuer|zu)\s+#(\d+)",
+        r"#(\d+)\s+(?:issue|ticket)",
+    ]
+    for pattern in issue_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
     match = re.search(r"#(\d+)", text)
     if not match:
         return None

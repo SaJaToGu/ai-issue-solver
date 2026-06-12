@@ -51,6 +51,17 @@ class ReworkWorkflowCliTests(unittest.TestCase):
                 rework_workflow.main()
         self.assertEqual(ctx.exception.code, 2)
 
+    def test_from_note_prefers_explicit_issue_reference_over_pr_reference(self):
+        code, output = self.run_main(
+            "--from-note",
+            "PR #288 is CI green but too large for #223",
+            "--dry-run",
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("Titel:  [Rework] #223", output)
+        self.assertIn("Rework-Reason: risky_pr_rework", output)
+
     def test_from_run_dry_run_does_not_require_github_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir) / "run"
@@ -86,6 +97,17 @@ class ReworkWorkflowCliTests(unittest.TestCase):
 
         self.assertTrue(rework_workflow.pull_request_links_issue(pr, 220))
         self.assertFalse(rework_workflow.pull_request_links_issue(pr, 221))
+
+    def test_risky_green_pr_note_creates_scope_rework(self):
+        spec = rework_workflow.build_rework_spec_from_note(
+            "PR #288 is CI green but too large and should not merge as-is.",
+            original_issue_number=223,
+            original_pr_number=288,
+        )
+
+        self.assertEqual(spec.rework_reason, rework_workflow.ReworkReason.RISKY_PR_REWORK)
+        self.assertEqual([task.id for task in spec.sub_tasks], ["review-scope-1", "validation-tighten-1"])
+        self.assertFalse(spec.suggested_single_pr)
 
 
 class ReworkReportFieldTests(unittest.TestCase):
