@@ -640,7 +640,12 @@ def write_run_report(report: RunReport, status: str,
                       resource_diagnostics=None,
                       model_selection_metadata: dict | None = None,
                       test_command: str | None = None,
-                      test_result: str | None = None) -> Path | None:
+                      test_result: str | None = None,
+                      rework_of: int | None = None,
+                      rework_reason: str | None = None,
+                      subtask_id: str | None = None,
+                      supersedes_pr: int | None = None,
+                      follow_up_issue: int | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -702,7 +707,14 @@ def write_run_report(report: RunReport, status: str,
             "resource_diagnostics": resource_diag_dict,
             "run_outcome": run_outcome,
             "model_selection": model_selection_metadata or {},
-             "provider_scorecard": {
+            "rework": {
+                "rework_of": rework_of,
+                "rework_reason": rework_reason,
+                "subtask_id": subtask_id,
+                "supersedes_pr": supersedes_pr,
+                "follow_up_issue": follow_up_issue,
+            },
+            "provider_scorecard": {
                 "requested_model": scorecard.requested_model,
                 "actual_model": scorecard.actual_model,
                 "fallback_source": scorecard.fallback_source,
@@ -760,6 +772,11 @@ def write_run_report(report: RunReport, status: str,
             f"provider_scorecard_cost_currency: {scorecard.cost_currency or ''}",
             f"provider_scorecard_cost_confidence: {scorecard.cost_confidence or ''}",
             f"provider_scorecard_cost_source: {scorecard.cost_source or ''}",
+            f"rework_of: {rework_of or ''}",
+            f"rework_reason: {rework_reason or ''}",
+            f"subtask_id: {subtask_id or ''}",
+            f"supersedes_pr: {supersedes_pr or ''}",
+            f"follow_up_issue: {follow_up_issue or ''}",
         ]
 
         # Modellauswahl-Metadaten hinzufügen
