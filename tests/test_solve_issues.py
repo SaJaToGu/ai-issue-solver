@@ -1,6 +1,7 @@
 import contextlib
 from datetime import datetime
 import io
+import inspect
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -23,12 +25,16 @@ from solve_issues import (  # noqa: E402
     branch_has_changes_against_base,
     build_aider_command,
     build_opencode_command,
+    build_opencode_prompt,
     build_vibe_command,
     build_worker_command,
     build_worker_env,
+    check_opencode_auth,
+    clone_repo,
     cleanup_preserved_worktrees,
     create_run_report,
     create_issue_pull_request,
+    detect_opencode_runtime_diagnostics,
     detect_codex_rate_limit,
     find_vibe_executable,
     format_git_change_summary,
@@ -37,18 +43,24 @@ from solve_issues import (  # noqa: E402
     get_worker_display_name,
     git_status_porcelain,
     infer_aider_targets,
+    is_secret_worker_path,
     parse_codex_reset_datetime,
     plan_branch_recovery,
     print_branch_recovery_plan,
+    relativize_repo_absolute_paths,
     preserve_worker_worktree,
     retry_branch_name,
+    run_openrouter_direct_worker,
+    run_opencode_diagnostic,
     run_worker_command,
+    sanitize_worker_prompt_secret_paths,
     should_preserve_worktree,
     should_surface_worker_line,
     sleep_until_codex_reset,
     validate_worker_changes,
     solve_issue,
     write_run_report,
+    write_run_health,
     write_worker_diagnostics,
 )
 
@@ -408,6 +420,11 @@ class BranchRecoveryTests(unittest.TestCase):
         self.assertIn("Recovery:", printed.getvalue())
         self.assertIn("Geplanter Issue-Branch: ai/fix-issue-7", printed.getvalue())
 
+    def test_solve_issue_does_not_reference_cli_args_global(self):
+        source = inspect.getsource(solve_issue)
+
+        self.assertNotIn("args.", source)
+
     def test_create_issue_pull_request_does_not_close_issue_when_pr_creation_fails(self):
         class FailingPrClient:
             def __init__(self):
@@ -693,6 +710,7 @@ class AiderCommandTests(unittest.TestCase):
             repo = Path(tmpdir)
             (repo / "scripts").mkdir()
             (repo / "scripts" / "solve_issues.py").write_text("print('x')\n", encoding="utf-8")
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
             prompt = "Bitte `scripts/solve_issues.py` und README.md prüfen."
 
             cmd = build_aider_command("claude", "", prompt, str(repo))
@@ -706,11 +724,23 @@ class AiderCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
             (repo / "README.md").write_text("hello\n", encoding="utf-8")
-            prompt = "Ändere `README.md`, `../secret.txt` und https://example.test/file.py"
+            prompt = "Ändere `README.md`, `LICENSE`, `../secret.txt` und https://example.test/file.py"
 
             targets = infer_aider_targets(prompt, str(repo))
 
         self.assertEqual(targets, ["README.md"])
+
+    def test_aider_target_inference_rejects_secret_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "config").mkdir()
+            (repo / "config" / ".env").write_text("SECRET=1\n", encoding="utf-8")
+            (repo / "config" / "config.example.env").write_text("SECRET=\n", encoding="utf-8")
+            prompt = "Pruefe `config/.env` und `config/config.example.env`."
+
+            targets = infer_aider_targets(prompt, str(repo))
+
+        self.assertEqual(targets, ["config/config.example.env"])
 
     def test_aider_command_can_use_explicit_file_targets(self):
         cmd = build_aider_command(
@@ -723,6 +753,15 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertIn("--model", cmd)
         self.assertIn("ollama/llama3.2:3b", cmd)
+        self.assertIn("--no-check-update", cmd)
+        self.assertIn("--no-analytics", cmd)
+        self.assertIn("--no-gitignore", cmd)
+        self.assertIn("--chat-history-file", cmd)
+        self.assertIn("--input-history-file", cmd)
+        self.assertIn("--map-tokens", cmd)
+        self.assertIn("0", cmd)
+        self.assertNotIn(".aider.chat.history.md", cmd)
+        self.assertNotIn(".aider.input.history", cmd)
         self.assertEqual(cmd[-1], "src/app.py")
 
     def test_mistral_command_uses_default_magistral_model(self):
@@ -823,6 +862,44 @@ class AiderCommandTests(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", env)
         self.assertEqual(env["KEEP"], "1")
 
+    def test_openrouter_worker_env_requires_api_key(self):
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit) as raised:
+            build_worker_env("openrouter", {"OPENROUTER_API_KEY": "sk-or-DEIN_KEY_HIER"}, base_env={})
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("OPENROUTER_API_KEY fehlt", printed.getvalue())
+
+    def test_openrouter_worker_env_exports_api_key(self):
+        env = build_worker_env(
+            "openrouter",
+            {"OPENROUTER_API_KEY": "real-openrouter-key"},
+            base_env={"KEEP": "1"},
+        )
+
+        self.assertEqual(env["OPENROUTER_API_KEY"], "real-openrouter-key")
+        self.assertEqual(env["KEEP"], "1")
+
+    def test_openrouter_worker_env_removes_other_provider_keys(self):
+        env = build_worker_env(
+            "openrouter",
+            {"OPENROUTER_API_KEY": "real-openrouter-key"},
+            base_env={
+                "ANTHROPIC_API_KEY": "anthropic-key",
+                "MISTRAL_API_KEY": "mistral-key",
+                "OPENAI_API_KEY": "openai-key",
+                "GITHUB_TOKEN": "github-token",
+            },
+        )
+
+        self.assertEqual(env["OPENROUTER_API_KEY"], "real-openrouter-key")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("MISTRAL_API_KEY", env)
+        self.assertNotIn("OPENAI_API_KEY", env)
+        # GITHUB_TOKEN sollte bleiben für Git-Operationen
+        self.assertEqual(env["GITHUB_TOKEN"], "github-token")
+
     def test_find_opencode_executable_uses_repo_venv(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             opencode = Path(tmpdir) / ".venv" / "bin" / "opencode"
@@ -836,6 +913,19 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertEqual(found, str(opencode))
 
+    def test_find_opencode_executable_uses_home_opencode_install(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_opencode = Path(tmpdir) / ".opencode" / "bin" / "opencode"
+            home_opencode.parent.mkdir(parents=True)
+            home_opencode.write_text("#!/bin/sh\n", encoding="utf-8")
+            home_opencode.chmod(0o755)
+
+            with patch("solve_issues.Path.home", return_value=Path(tmpdir)):
+                with patch("solve_issues.shutil.which", return_value=None):
+                    found = find_opencode_executable("/missing/repo")
+
+        self.assertEqual(found, str(home_opencode))
+
     def test_opencode_command_uses_run_dir_prompt_and_model(self):
         with patch("solve_issues.find_opencode_executable", return_value="/usr/local/bin/opencode"):
             cmd = build_opencode_command("Fix issue", "/tmp/repo", model_name="mistral/mistral-small-2603")
@@ -846,7 +936,123 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn("/tmp/repo", cmd)
         self.assertIn("--model", cmd)
         self.assertIn("mistral/mistral-small-2603", cmd)
-        self.assertEqual(cmd[-1], "Fix issue")
+        self.assertIn("Fix issue", cmd[-1])
+        self.assertIn("repo-relative Pfade", cmd[-1])
+
+    def test_opencode_prompt_relativizes_repo_internal_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            internal_path = repo / "scripts" / "create_issues.py"
+            external_path = Path("/tmp/ai-solver-xyz/outside.py")  # Kein /var/folders-Pfad
+            prompt = (
+                f"Lies `{internal_path}` und pruefe auch "
+                f"{external_path}."
+            )
+
+            normalized = relativize_repo_absolute_paths(prompt, str(repo))
+
+        self.assertIn("`scripts/create_issues.py`", normalized)
+        self.assertNotIn(str(internal_path), normalized)
+        self.assertNotIn(str(external_path), normalized)
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)
+
+    def test_opencode_prompt_keeps_var_folders_paths_outside_repo(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            external_var_path = Path("/var/folders/pl/pgd1g7vs7n98drgk98fxj1dw0000gp/T/outside.py")
+            prompt = f"Pruefe {external_var_path}."
+
+            normalized = relativize_repo_absolute_paths(prompt, str(repo))
+
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)  # Externe /var/folders-Pfade entfernen
+        self.assertNotIn(str(external_var_path), normalized)
+
+    def test_opencode_prompt_removes_temp_worktree_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            temp_path = Path("/tmp/ai-solver-xyz/worktree/scripts/file.py")
+            prompt = f"Bearbeite {temp_path} und pruefe `scripts/file.py`."
+
+            normalized = relativize_repo_absolute_paths(prompt, str(repo))
+
+        self.assertNotIn(str(temp_path), normalized)
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)
+        self.assertIn("`scripts/file.py`", normalized)
+
+    def test_secret_worker_path_detection_allows_example_files(self):
+        self.assertTrue(is_secret_worker_path(".env"))
+        self.assertTrue(is_secret_worker_path(".env.local"))
+        self.assertTrue(is_secret_worker_path("config/.env"))
+        self.assertTrue(is_secret_worker_path("config/.env.production"))
+        self.assertFalse(is_secret_worker_path(".env.example"))
+        self.assertFalse(is_secret_worker_path("config/config.example.env"))
+
+    def test_worker_prompt_sanitizes_secret_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            absolute_secret = repo / "config" / ".env"
+            prompt = (
+                f"Lies {absolute_secret}, pruefe `config/.env` "
+                "und vergleiche mit `config/config.example.env`."
+            )
+
+            sanitized = sanitize_worker_prompt_secret_paths(prompt, str(repo))
+
+        self.assertNotIn(str(absolute_secret), sanitized)
+        self.assertNotIn("`config/.env`", sanitized)
+        self.assertIn("config/config.example.env", sanitized)
+
+    def test_opencode_prompt_omits_secret_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            absolute_secret = repo / "config" / ".env"
+            prompt = f"Bitte {absolute_secret} zur Diagnose lesen."
+
+            normalized = build_opencode_prompt(prompt, str(repo))
+
+        self.assertNotIn(str(absolute_secret), normalized)
+        self.assertIn("config/config.example.env", normalized)
+        self.assertIn("Lies, kopiere oder bearbeite keine echten Secret-Dateien", normalized)
+
+    def test_opencode_prompt_keeps_urls_and_external_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            internal_path = repo / "scripts" / "create_issues.py"
+            external_path = Path(tmpdir).parent / "outside.py"
+            prompt = (
+                f"Quelle: https://example.test{internal_path}. "
+                f"Repo-Datei: {internal_path}, extern: {external_path}"
+            )
+
+            normalized = relativize_repo_absolute_paths(prompt, str(repo))
+
+        self.assertIn(f"https://example.test{internal_path}", normalized)
+        self.assertIn("Repo-Datei: scripts/create_issues.py,", normalized)
+        self.assertNotIn(f"Repo-Datei: {internal_path}", normalized)
+        self.assertIn("<EXTERNAL_PATH_REMOVED>", normalized)
+        self.assertNotIn(str(external_path), normalized)
+
+    def test_opencode_command_prompt_does_not_expose_repo_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            absolute_repo_file = repo / "scripts" / "create_issues.py"
+            prompt = f"Bitte {absolute_repo_file} bearbeiten."
+
+            with patch("solve_issues.find_opencode_executable", return_value="/usr/local/bin/opencode"):
+                cmd = build_opencode_command(prompt, str(repo))
+
+        self.assertIn("--dir", cmd)
+        self.assertIn(str(repo), cmd)
+        self.assertIn("scripts/create_issues.py", cmd[-1])
+        self.assertNotIn(str(absolute_repo_file), cmd[-1])
+        self.assertIn("ausschliesslich repo-relative Pfade", cmd[-1])
+
+    def test_opencode_prompt_adds_repo_relative_file_access_instruction(self):
+        prompt = build_opencode_prompt("Fix issue", "/tmp/repo")
+
+        self.assertIn("OpenCode wurde bereits mit `--dir`", prompt)
+        self.assertIn("repo-relative Pfade", prompt)
+        self.assertIn("Fix issue", prompt)
 
     def test_opencode_command_requires_executable(self):
         with patch("solve_issues.find_opencode_executable", return_value=None):
@@ -865,6 +1071,7 @@ class WorkerCommandConstructionTests(unittest.TestCase):
         self.assertEqual(get_worker_display_name("ollama"), "Ollama (lokal)")
         self.assertEqual(get_worker_display_name("mistral-vibe"), "Mistral Vibe CLI")
         self.assertEqual(get_worker_display_name("opencode"), "OpenCode CLI")
+        self.assertEqual(get_worker_display_name("openrouter"), "OpenRouter (aider, legacy)")
 
     def test_build_worker_command_delegates_to_codex_builder(self):
         with patch("solve_issues.build_codex_command", return_value=["codex", "exec", "--cd", "/repo", "prompt"]):
@@ -920,8 +1127,8 @@ class WorkerCommandConstructionTests(unittest.TestCase):
             with patch("solve_issues.find_codex_executable", return_value="/usr/bin/codex"):
                 build_worker_command("codex", "", "prompt", "/repo")
 
-        # Leerer String soll als None weitergegeben werden
-        mock_codex.assert_called_once_with("prompt", "/repo", None)
+        # Leerer String soll als None weitergegeben werden (zusätzlicher None für additional_dirs)
+        mock_codex.assert_called_once_with("prompt", "/repo", None, None)
 
     def test_build_worker_command_passes_model_name_for_non_empty(self):
         with patch("solve_issues.build_opencode_command", return_value=["opencode", "run", "--model", "custom", "prompt"]) as mock_opencode:
@@ -936,8 +1143,49 @@ class WorkerCommandConstructionTests(unittest.TestCase):
 
         mock_aider.assert_called_once_with("claude", "", "prompt", "/repo", ["file.py"])
 
+    def test_build_worker_command_delegates_to_aider_builder_for_openrouter(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--model", "openrouter/openai/gpt-4o-mini", "prompt"]) as mock_aider:
+            cmd = build_worker_command("openrouter", "", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["aider", "--model", "openrouter/openai/gpt-4o-mini", "prompt"])
+        mock_aider.assert_called_once_with("openrouter", "", "prompt", "/repo", None)
+
+    def test_build_worker_command_delegates_to_aider_builder_for_openrouter_with_custom_model(self):
+        with patch("solve_issues.build_aider_command", return_value=["aider", "--model", "openrouter/anthropic/claude-3-haiku", "prompt"]) as mock_aider:
+            cmd = build_worker_command("openrouter", "openrouter/anthropic/claude-3-haiku", "prompt", "/repo")
+
+        self.assertEqual(cmd, ["aider", "--model", "openrouter/anthropic/claude-3-haiku", "prompt"])
+        mock_aider.assert_called_once_with("openrouter", "openrouter/anthropic/claude-3-haiku", "prompt", "/repo", None)
+
 
 class WorkerOutputTests(unittest.TestCase):
+    def test_detect_opencode_runtime_diagnostics_finds_wal_failure(self):
+        output = "Failed to run the query 'PRAGMA wal_checkpoint(PASSIVE)'"
+
+        diagnostics = detect_opencode_runtime_diagnostics(output)
+
+        self.assertTrue(diagnostics.wal_failure)
+        self.assertFalse(diagnostics.edit_loop)
+
+    def test_detect_opencode_runtime_diagnostics_finds_edit_loop(self):
+        output = "\n".join(
+            [
+                "Edit README.md failed",
+                "Edit README.md failed",
+                "Edit docs/WORKFLOW.md failed",
+            ]
+        )
+
+        diagnostics = detect_opencode_runtime_diagnostics(output)
+
+        self.assertFalse(diagnostics.wal_failure)
+        self.assertTrue(diagnostics.edit_loop)
+        self.assertEqual(diagnostics.edit_failure_count, 3)
+        self.assertEqual(
+            diagnostics.edit_failure_files,
+            ("README.md", "docs/WORKFLOW.md"),
+        )
+
     def test_output_tail_uses_last_lines(self):
         output = "\n".join(f"line {i}" for i in range(40))
 
@@ -972,6 +1220,9 @@ class WorkerOutputTests(unittest.TestCase):
         self.assertTrue(should_surface_worker_line("Plan: update solver output\n"))
         self.assertTrue(should_surface_worker_line("Ergebnis: Tests erfolgreich\n"))
         self.assertTrue(should_surface_worker_line("WARNING: test command failed\n"))
+        self.assertTrue(should_surface_worker_line("→ Read tests/test_solve_issues.py\n"))
+        self.assertTrue(should_surface_worker_line("✓ Write docs/WORKFLOW.md\n"))
+        self.assertTrue(should_surface_worker_line("✗ Read docs/WORKFLOW.md failed\n"))
         self.assertFalse(should_surface_worker_line("+print('implementation detail')\n"))
         self.assertFalse(should_surface_worker_line("@@ -1,2 +1,3 @@\n"))
 
@@ -997,6 +1248,8 @@ class WorkerOutputTests(unittest.TestCase):
                 '+        f.write("            <th>Repo</th>\\n")',
                 'self.assertIn("test-owner", links["issue"])',
                 'WARNING: tests failed, retrying',
+                '→ Read scripts/solve_issues.py',
+                '✓ Write tests/test_solve_issues.py',
                 '"test-owner|demo|44|ai/fix-issue-44|https://github.com/test-owner/demo/pull/44":',
                 'Final result: PR ready',
             ]
@@ -1006,6 +1259,8 @@ class WorkerOutputTests(unittest.TestCase):
 
         self.assertIn("Plan: update dashboard rendering", tail)
         self.assertIn("WARNING: tests failed, retrying", tail)
+        self.assertIn("→ Read scripts/solve_issues.py", tail)
+        self.assertIn("✓ Write tests/test_solve_issues.py", tail)
         self.assertIn("Final result: PR ready", tail)
         self.assertNotIn("f.write", tail)
         self.assertNotIn("test-owner|demo|44", tail)
@@ -1058,6 +1313,145 @@ class WorkerOutputTests(unittest.TestCase):
         self.assertEqual(output.count("Detailzeilen ausgeblendet"), 1)
         self.assertIn("100 Detailzeilen ausgeblendet", output)
         self.assertNotIn("bisher", output)
+
+
+class SolverDirectoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.repo_dir = Path(self.tmpdir.name)
+        self.original_env = os.environ.copy()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+        os.environ.clear()
+        os.environ.update(self.original_env)
+
+    def test_solver_does_not_force_xdg_state_home_for_opencode_auth(self):
+        """OpenCode-State/Auth bleiben bei OpenCode, damit SQLite/WAL konsistent bleiben."""
+        xdg_state = self.repo_dir / "xdg_state"
+        os.environ["XDG_STATE_HOME"] = str(xdg_state)
+        os.environ.pop("HOME", None)
+
+        # Simuliere build_worker_env, um den Pfad zu prüfen
+        from solve_issues import build_worker_env
+        env = build_worker_env("opencode", {})
+
+        self.assertNotIn("XDG_STATE_HOME", env)
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
+
+    def test_solver_uses_solver_local_cache_if_xdg_unset(self):
+        """OpenCode bekommt einen solver-lokalen Cache, aber keinen erzwungenen State/Auth-Pfad."""
+        os.environ.pop("XDG_STATE_HOME", None)
+        os.environ.pop("XDG_CACHE_HOME", None)
+        os.environ.pop("HOME", None)
+
+        # Simuliere build_worker_env, um solver-lokale Pfade zu prüfen
+        from solve_issues import build_worker_env
+        env = build_worker_env("opencode", {})
+
+        # Prüfe, ob solver-lokale Pfade verwendet werden
+        solver_base = Path(tempfile.gettempdir()) / "ai-issue-solver" / "opencode"
+        cache_dir = solver_base / "cache"
+
+        self.assertEqual(env["OPENCODE_CACHE_DIR"], str(cache_dir))
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
+        self.assertTrue((cache_dir / "tmp").is_dir())
+
+    def test_solver_leaves_opencode_state_to_default_home(self):
+        """Der Solver setzt keinen alternativen Auth-Pfad, der OpenCode-WAL-Dateien trennt."""
+        os.environ.pop("XDG_STATE_HOME", None)
+        os.environ.pop("XDG_CACHE_HOME", None)
+        home = self.repo_dir / "fake_home"
+        os.environ["HOME"] = str(home)
+
+        # Simuliere build_worker_env, um Isolation zu prüfen
+        from solve_issues import build_worker_env
+        env = build_worker_env("opencode", {})
+
+        global_state = home / ".local" / "share" / "opencode" / "auth.json"
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
+        self.assertNotIn(str(global_state), env.get("PATH", ""))
+
+    def test_solver_avoids_exposing_secrets_in_worker_env(self):
+        """Testet, dass Geheimnisse nicht in solver-lokalen Verzeichnissen exponiert werden."""
+        xdg_state = self.repo_dir / "xdg_state"
+        os.environ["XDG_STATE_HOME"] = str(xdg_state)
+        os.environ.pop("HOME", None)
+
+        # Simuliere build_worker_env mit Geheimnissen
+        from solve_issues import build_worker_env
+        config = {
+            "ANTHROPIC_API_KEY": "sk-test-key",
+            "MISTRAL_API_KEY": "mistral-test-key",
+        }
+        env = build_worker_env("claude", config)
+
+        # Prüfe, dass Geheimnisse nicht in solver-lokalen Pfaden landen
+        auth_path = xdg_state / "opencode" / "auth.json"
+        self.assertFalse(auth_path.exists())
+        self.assertNotIn("OPENCODE_AUTH_FILE", env)
+        self.assertNotIn("OPENCODE_STATE_DIR", env)
+        self.assertNotIn("OPENCODE_CACHE_DIR", env)
+
+    def test_clone_repo_uses_isolated_target_directories(self):
+        """Each run should clone into its own checkout path, not a shared repo cache."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_one = Path(tmpdir) / "run-one" / "demo"
+            target_two = Path(tmpdir) / "run-two" / "demo"
+
+            with patch("subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                )
+
+                result_one = clone_repo("test-owner", "demo", "secret-token", str(target_one), "develop")
+                result_two = clone_repo("test-owner", "demo", "secret-token", str(target_two), "develop")
+
+        self.assertTrue(result_one)
+        self.assertTrue(result_two)
+        clone_targets = [Path(call.args[0][-1]) for call in run.call_args_list]
+        self.assertEqual(clone_targets, [target_one, target_two])
+        self.assertNotEqual(clone_targets[0], clone_targets[1])
+
+    def test_clone_repo_removes_stale_target_directory_before_clone(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "run" / "demo"
+            target.mkdir(parents=True)
+            (target / "stale.txt").write_text("old\n", encoding="utf-8")
+
+            def fake_run(cmd, **kwargs):
+                self.assertEqual(Path(cmd[-1]), target)
+                self.assertFalse(target.exists())
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+            with patch("subprocess.run", side_effect=fake_run):
+                result = clone_repo("test-owner", "demo", "secret-token", str(target), "develop")
+
+        self.assertTrue(result)
+
+    def test_clone_repo_returns_sanitized_stderr_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "run" / "demo"
+
+            with patch("subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=128,
+                    stdout="",
+                    stderr="fatal: could not read https://secret-token@github.com/test-owner/demo.git\n",
+                )
+
+                result = clone_repo("test-owner", "demo", "secret-token", str(target), "missing")
+
+        self.assertFalse(result)
+        self.assertIn("***", result.stderr)
+        self.assertNotIn("secret-token", result.stderr)
 
 
 class GitStatusTests(unittest.TestCase):
@@ -1288,6 +1682,52 @@ class GitStatusTests(unittest.TestCase):
         self.assertNotIn("line 0", tail)
         self.assertIn("line 39", tail)
 
+    def test_run_health_persists_opencode_runtime_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_run_report(
+                repo="demo",
+                issue_number=64,
+                branch="ai/fix-issue-64",
+                model="opencode",
+                run_dir=Path(tmpdir) / "run",
+            )
+
+            write_run_health(
+                report,
+                "Edit README.md failed\nEdit README.md failed\nEdit README.md failed\n",
+            )
+
+            health = json.loads((report.path / "health.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(health["opencode_runtime"]["edit_loop"])
+        self.assertEqual(health["opencode_runtime"]["edit_failure_count"], 3)
+        self.assertIn("OpenCode Edit-Loop-Risiko erkannt", health["opencode_runtime"]["diagnostic_lines"][0])
+
+    def test_run_report_persists_opencode_runtime_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_run_report(
+                repo="demo",
+                issue_number=164,
+                branch="ai/fix-issue-164",
+                model="opencode",
+                run_dir=Path(tmpdir) / "run",
+            )
+            run_dir = write_run_report(
+                report,
+                "nonzero_without_changes",
+                worker_result=WorkerRunResult(
+                    1,
+                    "Failed to run the query 'PRAGMA wal_checkpoint(PASSIVE)'\n",
+                ),
+            )
+            summary = (Path(run_dir) / "summary.txt").read_text(encoding="utf-8")
+            metadata = json.loads((Path(run_dir) / "metadata.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(metadata["opencode_runtime"]["wal_failure"])
+        self.assertIn("opencode_runtime:", summary)
+        self.assertIn("OpenCode SQLite/WAL-Fehler erkannt.", summary)
+        self.assertIn("opencode.db-wal/opencode.db-shm", summary)
+
     def test_run_report_without_worker_records_partial_status(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             old_cwd = os.getcwd()
@@ -1446,6 +1886,125 @@ class GitStatusTests(unittest.TestCase):
             self.assertEqual(stale, [old_path])
             self.assertFalse(old_path.exists())
             self.assertTrue(fresh_path.exists())
+
+
+class OpenCodePreflightTests(unittest.TestCase):
+    """Tests für OpenCode Auth-Preflight und Diagnostic (Issue #139)."""
+
+    def setUp(self):
+        self.opencode_exe = "/usr/local/bin/opencode"
+
+    def test_check_opencode_auth_returns_true_when_authenticated(self):
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Credentials ~/.local/share/opencode/auth.json\nOpenCode Zen api\n1 credentials\n"
+        mock_result.stderr = ""
+
+        with unittest.mock.patch("subprocess.run", return_value=mock_result):
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = check_opencode_auth(self.opencode_exe)
+
+        self.assertTrue(result)
+
+    def test_check_opencode_auth_returns_false_when_not_authenticated(self):
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Credentials ~/.local/share/opencode/auth.json\n0 credentials\n"
+        mock_result.stderr = ""
+
+        printed = io.StringIO()
+        with unittest.mock.patch("subprocess.run", return_value=mock_result):
+            with contextlib.redirect_stdout(printed):
+                result = check_opencode_auth(self.opencode_exe)
+
+        self.assertFalse(result)
+        output = printed.getvalue()
+        self.assertIn("OpenCode ist nicht authentifiziert", output)
+        self.assertIn("opencode auth login", output)
+
+    def test_check_opencode_auth_returns_false_on_timeout(self):
+        with unittest.mock.patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired("opencode", 15)
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                result = check_opencode_auth(self.opencode_exe)
+
+        self.assertFalse(result)
+        self.assertIn("Auth-Check", printed.getvalue())
+
+    def test_check_opencode_auth_returns_false_on_file_not_found(self):
+        with unittest.mock.patch(
+            "subprocess.run", side_effect=FileNotFoundError()
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                result = check_opencode_auth(self.opencode_exe)
+
+        self.assertFalse(result)
+        self.assertIn("Auth-Check", printed.getvalue())
+
+    def test_run_opencode_diagnostic_returns_1_when_executable_missing(self):
+        with unittest.mock.patch(
+            "solve_issues.find_opencode_executable", return_value=None
+        ):
+            with contextlib.redirect_stdout(io.StringIO()):
+                exit_code = run_opencode_diagnostic()
+
+        self.assertEqual(exit_code, 1)
+
+    def test_run_opencode_diagnostic_reports_version_and_auth(self):
+        with unittest.mock.patch(
+            "solve_issues.find_opencode_executable", return_value=self.opencode_exe
+        ):
+            version_mock = unittest.mock.MagicMock()
+            version_mock.returncode = 0
+            version_mock.stdout = "opencode 0.1.0\n"
+            version_mock.stderr = ""
+
+            auth_mock = unittest.mock.MagicMock()
+            auth_mock.returncode = 0
+            auth_mock.stdout = "Credentials\nOpenCode Zen api\n1 credentials\n"
+            auth_mock.stderr = ""
+
+            with unittest.mock.patch(
+                "subprocess.run", side_effect=[version_mock, auth_mock]
+            ):
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    exit_code = run_opencode_diagnostic()
+
+        self.assertEqual(exit_code, 0)
+        output = printed.getvalue()
+        self.assertIn("OpenCode Diagnostic", output)
+        self.assertIn("0.1.0", output)
+        self.assertIn("Authentifiziert", output)
+
+
+class TestOpenRouterDirectWorkerPath(unittest.TestCase):
+    def test_run_openrouter_direct_worker_imports_repo_level_worker(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            direct_result = SimpleNamespace(
+                returncode=2,
+                output="[openrouter_direct] Keine Patches.",
+            )
+
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                with patch("workers.openrouter_worker.OpenRouterWorker") as worker_cls:
+                    worker_cls.return_value.run_direct.return_value = direct_result
+
+                    result = run_openrouter_direct_worker(
+                        prompt="Fix the issue",
+                        repo_dir=repo_dir,
+                        model_name="mistralai/mistral-large",
+                    )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.output, direct_result.output)
+        worker_cls.assert_called_once_with(
+            api_key="test-key",
+            model="mistralai/mistral-large",
+        )
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 
@@ -22,6 +23,7 @@ from status_dashboard import (  # noqa: E402
     read_runs,
     render_dashboard,
     render_repo_summary_section,
+    main as status_dashboard_main,
     write_dashboard,
 )
 
@@ -893,6 +895,30 @@ pr_url: https://github.com/other-owner/demo/pull/47
         self.assertIn('content="10"', html)
         self.assertIn("Auto-refresh: 10s", html)
 
+    def test_render_dashboard_contains_all_tab_ids(self):
+        """Alle 5 Tab-Content-IDs müssen im gerenderten HTML vorhanden sein."""
+        html = render_dashboard([], None, Path("reports/status-dashboard.html"))
+        for tab_id in ("overview", "model-comparison", "backlog", "run-list", "diagnostics"):
+            self.assertIn(f'id="{tab_id}"', html)
+
+    def test_main_generates_dashboard_with_default_cli_options(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            output_path = Path(tmpdir) / "status.html"
+            argv = [
+                "status_dashboard.py",
+                "--runs-dir",
+                str(runs_dir),
+                "--output",
+                str(output_path),
+            ]
+
+            with patch.object(sys, "argv", argv):
+                exit_code = status_dashboard_main()
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(output_path.exists())
+
     def test_read_runs_marks_running_run_unhealthy_after_timeout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runs_dir = Path(tmpdir) / "runs"
@@ -1148,6 +1174,37 @@ pr_url:
         self.assertIn('<span class="badge badge-failed">Failed</span>', html)
         self.assertIn('<section class="metric metric-superseded"><span>Superseded</span><strong>0</strong></section>', html)
         self.assertNotIn('<span class="badge badge-superseded">Superseded</span>', html)
+
+    def test_render_dashboard_shows_run_outcome_for_preserved_push_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir) / "runs"
+            self.write_summary(
+                runs_dir / "20260521-090807-demo-issue-73",
+                """status: push_failed
+repo: demo
+issue_number: 73
+branch: ai/fix-issue-73
+model: opencode
+worker_exit_code: 0
+pr_url:
+preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-73
+run_outcome_worker_status: succeeded
+run_outcome_has_changes: True
+run_outcome_test_status: passed
+run_outcome_delivery_status: push_failed
+run_outcome_failure_class: pipeline_failure
+run_outcome_recovery_status: preserved_worktree
+""",
+            )
+
+            html = render_dashboard(
+                read_runs(runs_dir),
+                "test-owner",
+                Path(tmpdir) / "status.html",
+            )
+
+        self.assertIn("Outcome: pipeline_failure / push_failed / preserved_worktree", html)
+        self.assertIn("Recovery-Worktree", html)
 
     def test_github_enrichment_keeps_failed_run_without_issue_failed(self):
         """Test that failed runs without issue number remain failed."""

@@ -1,0 +1,50 @@
+---
+title: "R Bullwhip Game Benchmark Guide"
+author: "Benchmark Team"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Benchmark-Ziel
+
+Dieses Benchmark evaluiert die Fähigkeit von KI-Modellen, eine **reproduzierbare Bullwhip-Simulation** in R zu implementieren. Die Lösung muss folgende Anforderungen erfüllen:
+
+1. **Korrekte Simulation**: Deterministische Ergebnisse bei festem Seed
+2. **Idiomatischer R-Code**: Nutzung von `tidyverse` und `base`
+3. **Testabdeckung**: `testthat`-Tests für alle Kernfunktionen
+4. **Dokumentation**: Klare Code-Kommentare und ggf. Quarto/Shiny
+5. **Reproduzierbarkeit**: `renv` oder `DESCRIPTION` für Abhängigkeiten
+
+# Evaluierungsprozess
+
+1. **Issue-Beschreibung**: Das Modell erhält eine klare Aufgabenstellung
+2. **Implementierung**: Das Modell generiert Code in einem leeren Repository
+3. **Validierung**: Die Lösung wird gegen die Referenzimplementierung getestet
+
+# Bewertungskriterien
+
+| Kriterium               | Gewicht | Beschreibung                                                                 |
+|-------------------------|---------|------------------------------------------------------------------------------|
+| Korrektheit             | 30%     | Deterministische Ergebnisse, korrekte Varianzverstärkung                     |
+| Idiomatischer Code      | 25%     | Nutzung von `tidyverse`, `base`, und R-Konventionen                          |
+| Testabdeckung           | 20%     | `testthat`-Tests für alle Kernfunktionen                                     |
+| Dokumentation           | 15%     | Klare Kommentare und ggf. Quarto/Shiny-Dokumentation                          |
+| Reproduzierbarkeit      | 10%     | `renv`/`DESCRIPTION` für Abhängigkeiten                                      |
+
+# Referenzimplementierung
+
+Die Referenzlösung liegt in `reference_solution/` vor und dient als Goldstandard für die Evaluierung.
+
+# Vergleichsmodelle
+
+Folgende Modelle werden evaluiert:
+- OpenCode + Mistral Large
+- OpenCode + Claude Sonnet
+- OpenRouter Direct + Mistral Large
+- DeepSeek
+- Qwen Coder
+- MiniMax/MiniMax-M1

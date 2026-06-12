@@ -170,6 +170,9 @@ class DashboardIssue:
     state: str
     created_at: str
     updated_at: str
+    priority: int | None = None
+    risk: str = "unbekannt"
+    cluster: str = "general"
 
 
 @dataclass(frozen=True)
@@ -200,6 +203,38 @@ class DashboardRun:
     lifecycle_state: str = ""
     lifecycle_needs_attention: bool = False
     lifecycle_note: str = ""
+
+    # Neue Felder für Kosten, Laufzeit und Priorisierung
+    runtime_seconds: int | None = None
+    cost_estimate: float | None = None
+    cost_confidence: str = "unavailable"
+    priority: int | None = None
+    provider: str = ""
+    run_outcome_worker_status: str = ""
+    run_outcome_has_changes: bool = False
+    run_outcome_test_status: str = ""
+    run_outcome_delivery_status: str = ""
+    run_outcome_failure_class: str = ""
+    run_outcome_recovery_status: str = ""
+    
+    # Provider-Scorecard Felder
+    provider_scorecard_requested_model: str = ""
+    provider_scorecard_actual_model: str = ""
+    provider_scorecard_fallback_source: str = ""
+    provider_scorecard_duration_seconds: int | None = None
+    provider_scorecard_worker_exit_code: int | None = None
+    provider_scorecard_run_status: str = ""
+    provider_scorecard_pr_url: str = ""
+    provider_scorecard_test_command: str = ""
+    provider_scorecard_test_result: str = ""
+    provider_scorecard_no_change: bool = False
+    provider_scorecard_fallback_used: bool = False
+    
+    # Kosteninformationen
+    provider_scorecard_estimated_cost: float | None = None
+    provider_scorecard_cost_currency: str | None = None
+    provider_scorecard_cost_confidence: str | None = None
+    provider_scorecard_cost_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +270,19 @@ class RepoSummary:
     archived: int
     unknown: int
     needs_attention: int
+
+    # Neue Felder für Kosten und Laufzeit
+    total_runtime_seconds: int = 0
+    total_cost_estimate: float = 0.0
+    avg_runtime_seconds: float = 0.0
+    avg_cost_estimate: float = 0.0
+    
+    # Provider-Scorecard Felder
+    total_provider_duration: int = 0
+    avg_provider_duration_seconds: float = 0.0
+    fallback_rate: float = 0.0
+    no_change_rate: float = 0.0
+    pr_rate: float = 0.0
 
 
 class DashboardGitHubClient:
@@ -596,8 +644,8 @@ def check_run_health(
 
 
 def read_runs(runs_dir: Path,
-              health_timeout_minutes: int = DEFAULT_HEALTH_TIMEOUT_MINUTES,
-              now_fn=datetime.now) -> list[DashboardRun]:
+               health_timeout_minutes: int = DEFAULT_HEALTH_TIMEOUT_MINUTES,
+               now_fn=datetime.now) -> list[DashboardRun]:
     """
     Liest alle Run-Reports aus dem angegebenen Verzeichnis.
 
@@ -656,6 +704,33 @@ def read_runs(runs_dir: Path,
         actual_model = fields.get("actual_model", "")
         if fallback_from and actual_model:
             model = f"{actual_model} (Fallback von {fallback_from})"
+
+        # Neue Felder für Laufzeit, Kosten und Priorisierung
+        runtime_seconds = int(fields.get("runtime_seconds", 0)) if fields.get("runtime_seconds") else None
+        cost_estimate = float(fields.get("cost_estimate", 0.0)) if fields.get("cost_estimate") else None
+        cost_confidence = fields.get("cost_confidence", "unavailable")
+        priority = int(fields.get("priority", 0)) if fields.get("priority") else None
+        provider = fields.get("provider", "")
+        run_outcome_worker_status = fields.get("run_outcome_worker_status", "")
+        run_outcome_has_changes = fields.get("run_outcome_has_changes", "").lower() in ("true", "1", "yes")
+        run_outcome_test_status = fields.get("run_outcome_test_status", "")
+        run_outcome_delivery_status = fields.get("run_outcome_delivery_status", "")
+        run_outcome_failure_class = fields.get("run_outcome_failure_class", "")
+        run_outcome_recovery_status = fields.get("run_outcome_recovery_status", "")
+        
+        # Provider-Scorecard Felder
+        provider_scorecard_requested_model = fields.get("provider_scorecard_requested_model", "")
+        provider_scorecard_actual_model = fields.get("provider_scorecard_actual_model", "")
+        provider_scorecard_fallback_source = fields.get("provider_scorecard_fallback_source", "")
+        provider_scorecard_duration_seconds = int(fields.get("provider_scorecard_duration_seconds", 0)) if fields.get("provider_scorecard_duration_seconds") else None
+        provider_scorecard_worker_exit_code = int(fields.get("provider_scorecard_worker_exit_code", 0)) if fields.get("provider_scorecard_worker_exit_code") else None
+        provider_scorecard_run_status = fields.get("provider_scorecard_run_status", "")
+        provider_scorecard_pr_url = fields.get("provider_scorecard_pr_url", "")
+        provider_scorecard_test_command = fields.get("provider_scorecard_test_command", "")
+        provider_scorecard_test_result = fields.get("provider_scorecard_test_result", "")
+        provider_scorecard_no_change = fields.get("provider_scorecard_no_change", "").lower() in ("true", "1", "yes")
+        provider_scorecard_fallback_used = fields.get("provider_scorecard_fallback_used", "").lower() in ("true", "1", "yes")
+
         runs.append(
             DashboardRun(
                 path=run_dir,
@@ -680,6 +755,28 @@ def read_runs(runs_dir: Path,
                 note=fields.get("note") or fields.get("cleanup_note", ""),
                 git_diff_stat=fields.get("git_diff_stat", ""),
                 output_tail=output_tail,
+                runtime_seconds=runtime_seconds,
+                cost_estimate=cost_estimate,
+                cost_confidence=cost_confidence,
+                priority=priority,
+                provider=provider,
+                run_outcome_worker_status=run_outcome_worker_status,
+                run_outcome_has_changes=run_outcome_has_changes,
+                run_outcome_test_status=run_outcome_test_status,
+                run_outcome_delivery_status=run_outcome_delivery_status,
+                run_outcome_failure_class=run_outcome_failure_class,
+                run_outcome_recovery_status=run_outcome_recovery_status,
+                provider_scorecard_requested_model=provider_scorecard_requested_model,
+                provider_scorecard_actual_model=provider_scorecard_actual_model,
+                provider_scorecard_fallback_source=provider_scorecard_fallback_source,
+                provider_scorecard_duration_seconds=provider_scorecard_duration_seconds,
+                provider_scorecard_worker_exit_code=provider_scorecard_worker_exit_code,
+                provider_scorecard_run_status=provider_scorecard_run_status,
+                provider_scorecard_pr_url=provider_scorecard_pr_url,
+                provider_scorecard_test_command=provider_scorecard_test_command,
+                provider_scorecard_test_result=provider_scorecard_test_result,
+                provider_scorecard_no_change=provider_scorecard_no_change,
+                provider_scorecard_fallback_used=provider_scorecard_fallback_used,
             )
         )
     return runs
@@ -1309,6 +1406,54 @@ def enrich_runs_with_github(runs: list[DashboardRun], owner: str | None, token: 
     return GitHubEnrichmentResult(enriched_runs, used_github=True, used_cache=False)
 
 
+def format_provider_scorecard(run: DashboardRun) -> list[str]:
+    """Formatiert die Provider-Scorecard für die Anzeige."""
+    lines = []
+    if not any(
+        field for field in [
+            run.provider_scorecard_requested_model,
+            run.provider_scorecard_actual_model,
+            run.provider_scorecard_duration_seconds,
+            run.provider_scorecard_fallback_used,
+            run.provider_scorecard_estimated_cost
+        ]
+    ):
+        return lines
+
+    lines.append("Provider Scorecard:")
+    if run.provider_scorecard_requested_model:
+        lines.append(f"  Requested: {run.provider_scorecard_requested_model}")
+    if run.provider_scorecard_actual_model:
+        lines.append(f"  Actual: {run.provider_scorecard_actual_model}")
+    if run.provider_scorecard_fallback_used:
+        lines.append(f"  Fallback: {run.provider_scorecard_fallback_source or 'unknown'} (used)")
+    elif run.provider_scorecard_fallback_source:
+        lines.append(f"  Fallback: {run.provider_scorecard_fallback_source} (not used)")
+    if run.provider_scorecard_duration_seconds:
+        lines.append(f"  Duration: {run.provider_scorecard_duration_seconds}s")
+    if run.provider_scorecard_worker_exit_code is not None:
+        lines.append(f"  Exit Code: {run.provider_scorecard_worker_exit_code}")
+    if run.provider_scorecard_run_status:
+        lines.append(f"  Status: {run.provider_scorecard_run_status}")
+    if run.provider_scorecard_no_change:
+        lines.append("  No Change: ✓")
+    if run.provider_scorecard_test_result:
+        lines.append(f"  Test: {run.provider_scorecard_test_result}")
+    
+    # Kosteninformationen anzeigen
+    if run.provider_scorecard_estimated_cost is not None:
+        cost_line = f"  Cost: {run.provider_scorecard_estimated_cost}"
+        if run.provider_scorecard_cost_currency:
+            cost_line += f" {run.provider_scorecard_cost_currency}"
+        if run.provider_scorecard_cost_confidence:
+            cost_line += f" ({run.provider_scorecard_cost_confidence} confidence)"
+        if run.provider_scorecard_cost_source:
+            cost_line += f" via {run.provider_scorecard_cost_source}"
+        lines.append(cost_line)
+    
+    return lines
+
+
 def format_datetime(value: datetime | None) -> str:
     if not value:
         return "unbekannt"
@@ -1325,7 +1470,7 @@ def compute_repo_summaries(runs: list[DashboardRun]) -> list[RepoSummary]:
     Returns:
         Liste von RepoSummary-Objekten, sortiert nach Repository-Namen
     """
-    repo_stats: dict[str, dict[str, int]] = {}
+    repo_stats: dict[str, dict[str, int | float]] = {}
 
     for run in runs:
         repo_name = run.repo or "Unbekannt"
@@ -1343,6 +1488,8 @@ def compute_repo_summaries(runs: list[DashboardRun]) -> list[RepoSummary]:
                 "archived": 0,
                 "unknown": 0,
                 "needs_attention": 0,
+                "total_runtime_seconds": 0,
+                "total_cost_estimate": 0.0,
             }
 
         stats = repo_stats[repo_name]
@@ -1356,25 +1503,77 @@ def compute_repo_summaries(runs: list[DashboardRun]) -> list[RepoSummary]:
         if run.lifecycle_needs_attention:
             stats["needs_attention"] += 1
 
+        # Summiere Laufzeit und Kosten
+        if run.runtime_seconds:
+            stats["total_runtime_seconds"] += run.runtime_seconds
+        if run.cost_estimate:
+            stats["total_cost_estimate"] += run.cost_estimate
+        
+        # Provider-Scorecard Statistiken
+        if run.provider_scorecard_duration_seconds:
+            stats.setdefault("total_provider_duration", 0)
+            stats["total_provider_duration"] += run.provider_scorecard_duration_seconds
+            stats.setdefault("provider_runs", 0)
+            stats["provider_runs"] += 1
+            
+            if run.provider_scorecard_fallback_used:
+                stats.setdefault("fallback_runs", 0)
+                stats["fallback_runs"] += 1
+            
+            if run.provider_scorecard_no_change:
+                stats.setdefault("no_change_runs", 0)
+                stats["no_change_runs"] += 1
+            
+            if run.pr_url:
+                stats.setdefault("pr_runs", 0)
+                stats["pr_runs"] += 1
+
     # Konvertiere zu RepoSummary-Objekten und sortiere nach Namen
-    summaries = [
-        RepoSummary(
-            name=repo_name,
-            total=stats["total"],
-            successful=stats["successful"],
-            failed=stats["failed"],
-            noop=stats["noop"],
-            recovered=stats["recovered"],
-            superseded=stats["superseded"],
-            queued=stats["queued"],
-            running=stats["running"],
-            unhealthy=stats["unhealthy"],
-            archived=stats["archived"],
-            unknown=stats["unknown"],
-            needs_attention=stats["needs_attention"],
+    summaries = []
+    for repo_name, stats in repo_stats.items():
+        total_runs = stats["total"]
+        avg_runtime = stats["total_runtime_seconds"] / total_runs if total_runs > 0 else 0
+        avg_cost = stats["total_cost_estimate"] / total_runs if total_runs > 0 else 0.0
+        
+        # Provider-Scorecard Statistiken
+        avg_provider_duration = 0
+        fallback_rate = 0.0
+        no_change_rate = 0.0
+        pr_rate = 0.0
+        
+        if "provider_runs" in stats and stats["provider_runs"] > 0:
+            avg_provider_duration = stats["total_provider_duration"] / stats["provider_runs"]
+            fallback_rate = (stats.get("fallback_runs", 0) / stats["provider_runs"]) * 100
+            no_change_rate = (stats.get("no_change_runs", 0) / stats["provider_runs"]) * 100
+            pr_rate = (stats.get("pr_runs", 0) / stats["provider_runs"]) * 100
+
+        summaries.append(
+            RepoSummary(
+                name=repo_name,
+                total=stats["total"],
+                successful=stats["successful"],
+                failed=stats["failed"],
+                noop=stats["noop"],
+                recovered=stats["recovered"],
+                superseded=stats["superseded"],
+                queued=stats["queued"],
+                running=stats["running"],
+                unhealthy=stats["unhealthy"],
+                archived=stats["archived"],
+                unknown=stats["unknown"],
+                needs_attention=stats["needs_attention"],
+                total_runtime_seconds=stats["total_runtime_seconds"],
+                total_cost_estimate=stats["total_cost_estimate"],
+                avg_runtime_seconds=avg_runtime,
+                avg_cost_estimate=avg_cost,
+                # Provider-Scorecard Felder
+                total_provider_duration=stats.get("total_provider_duration", 0),
+                avg_provider_duration_seconds=avg_provider_duration,
+                fallback_rate=fallback_rate,
+                no_change_rate=no_change_rate,
+                pr_rate=pr_rate,
+            )
         )
-        for repo_name, stats in repo_stats.items()
-    ]
 
     return sorted(summaries, key=lambda s: s.name.lower())
 
@@ -1396,6 +1595,212 @@ def render_issue_cell(run: DashboardRun) -> str:
     )
 
 
+def render_model_comparison_rows(runs: list[DashboardRun]) -> str:
+    """Generiert die Zeilen für den Modellvergleich."""
+    model_stats = {}
+
+    for run in runs:
+        model = run.model
+        if model not in model_stats:
+            model_stats[model] = {
+                "total": 0,
+                "successful": 0,
+                "pr_created": 0,
+                "noop": 0,
+                "failed": 0,
+                "runtime_seconds": [],
+                "cost_estimate": [],
+            }
+
+        stats = model_stats[model]
+        stats["total"] += 1
+
+        if run.category == "successful":
+            stats["successful"] += 1
+            if run.status.startswith("pr_created"):
+                stats["pr_created"] += 1
+        elif run.category == "noop":
+            stats["noop"] += 1
+        elif run.category == "failed":
+            stats["failed"] += 1
+
+        if run.runtime_seconds:
+            stats["runtime_seconds"].append(run.runtime_seconds)
+        if run.cost_estimate:
+            stats["cost_estimate"].append(run.cost_estimate)
+
+    rows = []
+    for model, stats in model_stats.items():
+        total = stats["total"]
+        successful = stats["successful"]
+        pr_created = stats["pr_created"]
+        noop = stats["noop"]
+        failed = stats["failed"]
+
+        success_rate = (successful / total * 100) if total > 0 else 0
+        pr_rate = (pr_created / total * 100) if total > 0 else 0
+        noop_rate = (noop / total * 100) if total > 0 else 0
+        fail_rate = (failed / total * 100) if total > 0 else 0
+
+        median_runtime = sorted(stats["runtime_seconds"])[len(stats["runtime_seconds"]) // 2] if stats["runtime_seconds"] else 0
+
+        avg_cost_per_success = sum(stats["cost_estimate"]) / successful if successful > 0 and stats["cost_estimate"] else 0
+
+        rows.append(f"""
+        <tr>
+          <td>{escape(model)}</td>
+          <td>{success_rate:.1f}%</td>
+          <td>{pr_rate:.1f}%</td>
+          <td>{noop_rate:.1f}%</td>
+          <td>{fail_rate:.1f}%</td>
+          <td>{median_runtime}s</td>
+          <td>${avg_cost_per_success:.2f}</td>
+        </tr>
+        """)
+
+    return "\n".join(rows)
+
+
+def render_backlog_rows(issues: list[DashboardIssue]) -> str:
+    """Generiert die Zeilen für das Backlog."""
+    rows = []
+    for issue in issues:
+        priority_badge = ""
+        if issue.priority == 1:
+            priority_badge = '<span class="priority-badge priority-high">Hoch</span>'
+        elif issue.priority == 2:
+            priority_badge = '<span class="priority-badge priority-medium">Mittel</span>'
+        elif issue.priority == 3:
+            priority_badge = '<span class="priority-badge priority-low">Niedrig</span>'
+
+        rows.append(f"""
+        <tr>
+          <td>{priority_badge}</td>
+          <td><div class="issue-number">#{escape(issue.number)}</div><div class="issue-title">{escape(issue.title)}</div></td>
+          <td>{escape(issue.repo or '-')}</td>
+          <td>{escape(issue.cluster)}</td>
+          <td>{escape(issue.risk)}</td>
+          <td>{escape(recommended_provider_for_issue(issue))}</td>
+          <td>
+            {render_link(issue.html_url, f"Issue #{issue.number}") if issue.html_url else ""}
+            {render_command_block(issue_solver_command(issue, recommended_provider_for_issue(issue), dry_run=True), "Dry-run")}
+            {render_command_block(issue_solver_command(issue, recommended_provider_for_issue(issue), dry_run=False), "Start")}
+          </td>
+        </tr>
+        """)
+
+    return "\n".join(rows)
+
+
+def render_charts_script(runs: list[DashboardRun]) -> str:
+    """Generiert das JavaScript für die Diagramme."""
+    model_stats = {}
+
+    for run in runs:
+        model = run.model
+        if model not in model_stats:
+            model_stats[model] = {
+                "successful": 0,
+                "failed": 0,
+                "runtime_seconds": [],
+                "cost_estimate": [],
+            }
+
+        stats = model_stats[model]
+        if run.category == "successful":
+            stats["successful"] += 1
+        elif run.category == "failed":
+            stats["failed"] += 1
+
+        if run.runtime_seconds:
+            stats["runtime_seconds"].append(run.runtime_seconds)
+        if run.cost_estimate:
+            stats["cost_estimate"].append(run.cost_estimate)
+
+    # Daten für Erfolgsquote-Diagramm
+    success_data = {}
+    for model, stats in model_stats.items():
+        total = stats["successful"] + stats["failed"]
+        success_rate = (stats["successful"] / total * 100) if total > 0 else 0
+        success_data[model] = success_rate
+
+    # Daten für Kosten- und Laufzeit-Diagramm
+    cost_runtime_data = []
+    for model, stats in model_stats.items():
+        avg_runtime = sum(stats["runtime_seconds"]) / len(stats["runtime_seconds"]) if stats["runtime_seconds"] else 0
+        avg_cost = sum(stats["cost_estimate"]) / len(stats["cost_estimate"]) if stats["cost_estimate"] else 0
+        cost_runtime_data.append({
+            "model": model,
+            "runtime": avg_runtime,
+            "cost": avg_cost
+        })
+
+    return f"""
+    // Erfolgsquote-Diagramm
+    const successCtx = document.getElementById('successRateChart').getContext('2d');
+    new Chart(successCtx, {{
+      type: 'bar',
+      data: {{
+        labels: {list(success_data.keys())},
+        datasets: [{{
+          label: 'Erfolgsquote (%)',
+          data: {list(success_data.values())},
+          backgroundColor: 'rgba(54, 162, 235, 0.5)',
+          borderColor: 'rgba(54, 162, 235, 1)',
+          borderWidth: 1
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        scales: {{
+          y: {{
+            beginAtZero: true,
+            max: 100
+          }}
+        }}
+      }}
+    }});
+
+    // Kosten- und Laufzeit-Diagramm
+    const costRuntimeCtx = document.getElementById('costRuntimeChart').getContext('2d');
+    new Chart(costRuntimeCtx, {{
+      type: 'scatter',
+      data: {{
+        datasets: [{{
+          label: 'Modelle',
+          data: {json.dumps(cost_runtime_data)},
+          backgroundColor: 'rgba(255, 99, 132, 0.5)',
+          parsing: {{
+            xAxisKey: 'runtime',
+            yAxisKey: 'cost'
+          }}
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        scales: {{
+          x: {{
+            type: 'linear',
+            position: 'bottom',
+            title: {{
+              display: true,
+              text: 'Durchschnittliche Laufzeit (Sekunden)'
+            }}
+          }},
+          y: {{
+            type: 'linear',
+            position: 'left',
+            title: {{
+              display: true,
+              text: 'Durchschnittliche Kosten (USD)'
+            }}
+          }}
+        }}
+      }}
+    }});
+    """
+
+
 def render_lifecycle_cell(run: DashboardRun) -> str:
     if not run.lifecycle_label:
         return "-"
@@ -1409,6 +1814,25 @@ def render_lifecycle_cell(run: DashboardRun) -> str:
         "</span>"
         f"{note}"
     )
+
+
+AGENT_KEYWORDS: list[tuple[str, str]] = [
+    ("research",   ["evaluate", "research", "analyse", "analyse", "benchmark", "evidence"]),
+    ("planner",    ["plan", "backlog", "priorit", "cleanup", "backlog"]),
+    ("cost",       ["cost", "budget", "provider scorecard"]),
+    ("supervisor", ["supervisor", "health", "monitor", "heartbeat"]),
+    ("reviewer",   ["review", "quality"]),
+    ("triage",     ["triage", "classify", "label", "route"]),
+]
+
+
+def agent_for_issue(title: str) -> str:
+    """Ermittelt den Agent aus dem Issue-Titel via Keyword-Heuristik."""
+    lower = title.lower()
+    for agent, keywords in AGENT_KEYWORDS:
+        if any(kw in lower for kw in keywords):
+            return agent
+    return "solver"
 
 
 def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> str:
@@ -1450,19 +1874,44 @@ def render_run_row(run: DashboardRun, owner: str | None, output_path: Path) -> s
         note_parts.append(f"Health: {escape(run.health_reason)}")
     if run.recovery_hint:
         note_parts.append(f"Hinweis: {escape(run.recovery_hint)}")
+    if run.run_outcome_failure_class:
+        note_parts.append(
+            "Outcome: "
+            f"{escape(run.run_outcome_failure_class)} / "
+            f"{escape(run.run_outcome_delivery_status or 'unknown')} / "
+            f"{escape(run.run_outcome_recovery_status or 'none')}"
+        )
     if run.preserved_worktree:
         note_parts.append(f"Recovery-Worktree: <code>{escape(run.preserved_worktree)}</code>")
     note = f"<div class=\"note\">{'<br>'.join(note_parts)}</div>" if note_parts else ""
     last_activity = escape(format_datetime(run.last_activity_at))
+
+    # Neue Felder für Laufzeit und Kosten
+    runtime_display = escape(str(run.runtime_seconds) + "s" if run.runtime_seconds else "-")
+    cost_display = escape(f"${run.cost_estimate:.2f} ({run.cost_confidence})" if run.cost_estimate else "-")
+
+    # Prioritätsanzeige
+    priority_badge = ""
+    if run.priority == 1:
+        priority_badge = '<span class="priority-badge priority-high">Hoch</span>'
+    elif run.priority == 2:
+        priority_badge = '<span class="priority-badge priority-medium">Mittel</span>'
+    elif run.priority == 3:
+        priority_badge = '<span class="priority-badge priority-low">Niedrig</span>'
+
+    agent = agent_for_issue(run.issue_title or "")
     return "\n".join([
-        "<tr>",
+        f'<tr data-repo="{escape(run.repo or "")}" data-agent="{escape(agent)}">',
         f'  <td><span class="badge badge-{escape(run.category)}">{escape(STATUS_LABELS[run.category])}</span></td>',
         f"  <td>{escape(format_datetime(run.created_at))}</td>",
         f"  <td>{escape(run.repo or '-')}</td>",
-        f"  <td>{render_issue_cell(run)}</td>",
+        f"  <td>{priority_badge}{render_issue_cell(run)}</td>",
         f"  <td><code>{escape(run.branch or '-')}</code></td>",
         f"  <td>{render_lifecycle_cell(run)}</td>",
         f"  <td>{escape(run.model or '-')}</td>",
+        f"  <td>{escape(run.provider or '-')}</td>",
+        f"  <td>{runtime_display}</td>",
+        f"  <td>{cost_display}</td>",
         f"  <td>{escape(run.worker_exit_code or '-')}</td>",
         f"  <td>{escape(run.status)}<div class=\"note\">Letzte Aktivitaet: {last_activity}</div>{note}{tail}</td>",
         f"  <td>{' '.join(actions)}</td>",
@@ -1530,6 +1979,16 @@ def render_unstarted_issue_row(issue: DashboardIssue) -> str:
         render_command_block(dry_run_command, "Dry-run"),
         render_command_block(start_command, "Start"),
     ])
+
+    # Prioritätsbadge hinzufügen
+    priority_badge = ""
+    if issue.priority == 1:
+        priority_badge = '<span class="priority-badge priority-high">Hoch</span>'
+    elif issue.priority == 2:
+        priority_badge = '<span class="priority-badge priority-medium">Mittel</span>'
+    elif issue.priority == 3:
+        priority_badge = '<span class="priority-badge priority-low">Niedrig</span>'
+
     return "\n".join([
         "<tr>",
         '  <td><span class="badge badge-queued">Open</span></td>',
@@ -1537,6 +1996,7 @@ def render_unstarted_issue_row(issue: DashboardIssue) -> str:
         f"  <td>{escape(issue.repo or '-')}</td>",
         f"  <td><div class=\"issue-number\">#{escape(issue.number)}</div>"
         f"<div class=\"issue-title\">{escape(issue.title)}</div></td>",
+        f"  <td>{priority_badge or '-'}</td>",
         f"  <td><code>{escape(provider)}</code></td>",
         f"  <td><code>{escape(cluster)}</code><div class=\"note\">Konfliktrisiko: {escape(risk)}</div></td>",
         f"  <td>{escape(issue.state or 'open')}</td>",
@@ -1560,6 +2020,7 @@ def render_unstarted_issues_section(unstarted_issues: list[DashboardIssue]) -> s
               <th>Aktualisiert</th>
               <th>Repo</th>
               <th>Issue</th>
+              <th>Priorität</th>
               <th>Provider</th>
               <th>Cluster</th>
               <th>State</th>
@@ -1592,6 +2053,10 @@ def render_repo_summary_row(summary: RepoSummary) -> str:
       <td>{summary.failed}</td>
       <td>{summary.noop}</td>
       <td>{summary.recovered}</td>
+      <td>{summary.total_runtime_seconds}s</td>
+      <td>${summary.total_cost_estimate:.2f}</td>
+      <td>{summary.avg_runtime_seconds:.1f}s</td>
+      <td>${summary.avg_cost_estimate:.2f}</td>
     </tr>
 """
 
@@ -1625,6 +2090,10 @@ def render_repo_summary_section(runs: list[DashboardRun]) -> str:
               <th>Fehlgeschlagen</th>
               <th>No-op</th>
               <th>Wiederhergestellt</th>
+              <th>Gesamtlaufzeit</th>
+              <th>Gesamtkosten</th>
+              <th>Durchschnittslaufzeit</th>
+              <th>Durchschnittskosten</th>
             </tr>
           </thead>
           <tbody>
@@ -1640,7 +2109,8 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
                      generated_at: datetime | None = None,
                      allow_shutdown: bool = False,
                      refresh_seconds: int | None = None,
-                     unstarted_issues: list[DashboardIssue] | None = None) -> str:
+                     unstarted_issues: list[DashboardIssue] | None = None,
+                     active_tab: str = "run-list") -> str:
     runs = [
         fallback_lifecycle_for_run(run)
         if run.category == "successful" and not run.lifecycle_label
@@ -1653,9 +2123,45 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
         counts[run.category] = counts.get(run.category, 0) + 1
 
     rows = "\n".join(render_run_row(run, owner, output_path) for run in runs)
+
+    # Repos mit aktuell laufenden Jobs ermitteln (für Default-Auswahl)
+    running_repos: dict[str, datetime] = {}
+    for run in runs:
+        if run.repo and run.category == "running" and run.created_at:
+            if run.repo not in running_repos or run.created_at > running_repos[run.repo]:
+                running_repos[run.repo] = run.created_at
+
+    if len(running_repos) == 1:
+        default_repos = [list(running_repos.keys())[0]]
+    elif len(running_repos) > 1:
+        default_repos = [max(running_repos, key=lambda r: running_repos[r])]
+    else:
+        default_repos = []
+
+    # Alle Repos nach letzter Aktivität sortieren (für Checkbox-Reihenfolge)
+    repo_activity: dict[str, datetime] = {}
+    for run in runs:
+        if run.repo:
+            ts = run.last_activity_at or run.created_at
+            if ts and (run.repo not in repo_activity or ts > repo_activity[run.repo]):
+                repo_activity[run.repo] = ts
+    repos_sorted = sorted(repo_activity, key=lambda r: repo_activity[r], reverse=True)
+
+    # Checkbox-HTML für die Repo-Übersicht
+    repo_checkboxes = "".join(
+        f'<label class="repo-checkbox"><input type="checkbox" value="{escape(r)}" onchange="onFilterChange()"'
+        f'{" checked" if r in default_repos else ""}>'
+        f'{escape(r)}</label>'
+        for r in repos_sorted
+    )
+
+    agent_filter_options = "".join(
+        f'<option value="{agent}">{agent}</option>'
+        for agent in sorted({agent_for_issue(run.issue_title or "") for run in runs if run.issue_title})
+    )
     if not rows:
         rows = (
-            '<tr><td colspan="10" class="empty">'
+            '<tr><td colspan="13" class="empty">'
             "Keine Run-Reports unter reports/runs/ gefunden."
             "</td></tr>"
         )
@@ -1737,6 +2243,8 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       --noop: #6b7280;
       --archived: #7c4a03;
       --unknown: #8a63d2;
+      --tab-active: #276ef1;
+      --tab-inactive: #d8dee6;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -1888,12 +2396,75 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       font-size: 11px;
       font-weight: 600;
     }}
+    .tabs {{
+      display: flex;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 20px;
+    }}
+    .tab {{
+      padding: 10px 16px;
+      cursor: pointer;
+      border-bottom: 3px solid transparent;
+      margin-right: 4px;
+      color: var(--muted);
+    }}
+    .tab.active {{
+      color: var(--tab-active);
+      border-bottom-color: var(--tab-active);
+      font-weight: 600;
+    }}
+    .tab-content {{ display: none; }}
+    .tab-content.active {{ display: block; }}
+    .filter-bar {{ padding: 12px 16px 4px; display: flex; align-items: center; gap: 8px; }}
+    .filter-bar label {{ color: var(--muted); font-size: 13px; }}
+    .filter-bar select {{ font-size: 13px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); }}
+    .repo-bar {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 12px 16px; overflow: hidden; }}
+    .repo-bar summary {{ padding: 10px 14px; cursor: pointer; font-weight: 600; font-size: 14px; user-select: none; }}
+    .repo-bar summary::marker {{ color: var(--muted); }}
+    .repo-bar-body {{ padding: 4px 14px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }}
+    .repo-checkbox {{ font-size: 13px; cursor: pointer; white-space: nowrap; }}
+    .repo-checkbox input {{ margin-right: 3px; vertical-align: middle; }}
+    .repo-all {{ font-weight: 600; }}
+    .repo-bar-sep {{ display: inline-block; width: 1px; height: 18px; background: var(--line); margin: 0 4px; }}
+    .repo-count {{ font-size: 12px; color: var(--muted); margin-left: auto; }}
+    .chart-container {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }}
+    .comparison-table {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    .comparison-table th, .comparison-table td {{
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+    }}
+    .comparison-table th {{
+      background: #fbfcfd;
+      font-weight: 600;
+    }}
+    .priority-badge {{
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-right: 4px;
+    }}
+    .priority-high {{ background: var(--failed); color: #fff; }}
+    .priority-medium {{ background: var(--unhealthy); color: #fff; }}
+    .priority-low {{ background: var(--success); color: #fff; }}
     @media (max-width: 720px) {{
       header, main {{ padding-left: 16px; padding-right: 16px; }}
       h1 {{ font-size: 22px; }}
       .repo-summary th, .repo-summary td {{ padding: 6px 8px; font-size: 12px; }}
     }}
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
   <header>
@@ -1908,47 +2479,292 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     </div>
   </header>
   <main>
-    <section class="metrics" aria-label="Status-Zusammenfassung">
-      {cards}
-    </section>
-    {repo_summary_section}
-    {unstarted_section}
-    <section class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Status</th>
-            <th>Zeit</th>
-            <th>Repo</th>
-            <th>Issue</th>
-            <th>Branch</th>
-            <th>Lifecycle</th>
-            <th>Modell</th>
-            <th>Exit</th>
-            <th>Details</th>
-            <th>Links</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows}
-        </tbody>
-      </table>
-    </section>
+    <div class="tabs">
+      <div class="tab {'active' if active_tab == 'overview' else ''}" onclick="switchTab('overview')">Übersicht</div>
+      <div class="tab {'active' if active_tab == 'model-comparison' else ''}" onclick="switchTab('model-comparison')">Modellvergleich</div>
+      <div class="tab {'active' if active_tab == 'backlog' else ''}" onclick="switchTab('backlog')">Backlog/Priorisierung</div>
+      <div class="tab {'active' if active_tab == 'run-list' else ''}" onclick="switchTab('run-list')">Run-Liste</div>
+      <div class="tab {'active' if active_tab == 'diagnostics' else ''}" onclick="switchTab('diagnostics')">Diagnose</div>
+    </div>
+
+    <details class="repo-bar" id="repo-bar" open>
+      <summary>Repository-Übersicht ⏷ <span id="repo-summary-label">{escape(repos_sorted[0] if repos_sorted else "")}</span></summary>
+      <div class="repo-bar-body">
+        <label class="repo-checkbox repo-all"><input type="checkbox" id="repo-all" checked onchange="toggleAllRepos(this.checked)">Alle</label>
+        {repo_checkboxes}
+        <span class="repo-bar-sep"></span>
+        <label for="agent-filter">Agent:</label>
+        <select id="agent-filter" onchange="onFilterChange()">
+          <option value="">Alle</option>
+          {agent_filter_options}
+        </select>
+        <span id="repo-count" class="repo-count">1 Repo ausgewählt</span>
+      </div>
+    </details>
+
+    <div id="overview" class="tab-content {'active' if active_tab == 'overview' else ''}">
+      <section class="metrics" aria-label="Status-Zusammenfassung">
+        {cards}
+      </section>
+      {repo_summary_section}
+      {unstarted_section}
+    </div>
+
+    <div id="model-comparison" class="tab-content {'active' if active_tab == 'model-comparison' else ''}">
+      <h2>Modellvergleich</h2>
+      <div class="chart-container">
+        <h3>Erfolgsquote nach Modell</h3>
+        <canvas id="successRateChart" width="400" height="200"></canvas>
+      </div>
+      <div class="table-wrap">
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Modell</th>
+              <th>Erfolgsquote</th>
+              <th>PR-Erstellungsrate</th>
+              <th>Keine-Änderungen-Rate</th>
+              <th>Fehlerquote</th>
+              <th>Mediane Laufzeit</th>
+              <th>Geschätzte Kosten pro erfolgreicher PR</th>
+            </tr>
+          </thead>
+          <tbody>
+            {render_model_comparison_rows(runs)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="backlog" class="tab-content {'active' if active_tab == 'backlog' else ''}">
+      <h2>Backlog/Priorisierung</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Priorität</th>
+              <th>Issue</th>
+              <th>Repository</th>
+              <th>Cluster</th>
+              <th>Risiko</th>
+              <th>Empfohlener Provider</th>
+              <th>Aktionen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {render_backlog_rows(unstarted_issues or [])}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="run-list" class="tab-content {'active' if active_tab == 'run-list' else ''}">
+      <h2>Run-Liste</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Zeit</th>
+              <th>Repo</th>
+              <th>Issue</th>
+              <th>Branch</th>
+              <th>Lifecycle</th>
+              <th>Modell</th>
+              <th>Provider</th>
+              <th>Laufzeit</th>
+              <th>Kosten</th>
+              <th>Exit</th>
+              <th>Details</th>
+              <th>Links</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="diagnostics" class="tab-content {'active' if active_tab == 'diagnostics' else ''}">
+      <h2>Diagnose</h2>
+      <div class="chart-container">
+        <h3>Kosten- und Laufzeittrends</h3>
+        <canvas id="costRuntimeChart" width="400" height="200"></canvas>
+      </div>
+    </div>
   </main>
   {shutdown_script}
+  <script>
+    function parseUrlParams() {{
+      const params = new URLSearchParams(location.search);
+      return {{
+        tab: params.get('tab') || '',
+        repo: params.get('repo') || '',
+        agent: params.get('agent') || ''
+      }};
+    }}
+
+    function updateUrlParams(tab, repo, agent) {{
+      const params = new URLSearchParams();
+      if (tab) params.set('tab', tab);
+      if (repo) params.set('repo', repo);
+      if (agent) params.set('agent', agent);
+      const newUrl = location.pathname + '?' + params.toString() + location.hash;
+      history.replaceState(null, '', newUrl);
+    }}
+
+    function getSelectedRepos() {{
+      return [...document.querySelectorAll('#repo-bar .repo-checkbox input:not(#repo-all):checked')]
+        .map(cb => cb.value);
+    }}
+
+    function updateRepoLabel(repos) {{
+      const label = document.getElementById('repo-summary-label');
+      const count = document.getElementById('repo-count');
+      const all = document.getElementById('repo-all');
+      if (label) label.textContent = repos.length ? repos.join(', ') : '\u2013';
+      if (count) count.textContent = repos.length + ' Repo(s) ausgew\u00e4hlt';
+      if (all) all.checked = repos.length === document.querySelectorAll('#repo-bar .repo-checkbox:not(#repo-all)').length;
+    }}
+
+    function toggleAllRepos(checked) {{
+      document.querySelectorAll('#repo-bar .repo-checkbox:not(#repo-all) input').forEach(cb => {{
+        cb.checked = checked;
+      }});
+      onFilterChange();
+    }}
+
+    function applyFilters(repos, agent) {{
+      document.querySelectorAll('#run-list table tbody tr').forEach(row => {{
+        const matchRepo = !repos.length || repos.includes(row.dataset.repo || '');
+        const matchAgent = !agent || row.dataset.agent === agent;
+        row.style.display = (matchRepo && matchAgent) ? '' : 'none';
+      }});
+    }}
+
+    function getActiveTab() {{
+      const active = document.querySelector('.tab.active');
+      if (active) {{
+        const match = active.getAttribute('onclick')?.match(/'([^']+)'/);
+        if (match) return match[1];
+      }}
+      return 'run-list';
+    }}
+
+    function switchTab(tabId) {{
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      [...document.querySelectorAll('.tab')].forEach(t => {{
+        const onclick = t.getAttribute('onclick') || '';
+        if (onclick.includes("'" + tabId + "'")) t.classList.add('active');
+      }});
+      const repos = getSelectedRepos();
+      const agent = document.getElementById('agent-filter').value;
+      updateUrlParams(tabId, repos.length === 1 ? repos[0] : '', agent !== '' ? agent : '');
+    }}
+
+    function onFilterChange() {{
+      const repos = getSelectedRepos();
+      const agent = document.getElementById('agent-filter').value;
+      applyFilters(repos, agent);
+      updateRepoLabel(repos);
+      updateUrlParams(
+        getActiveTab(),
+        repos.length === 1 ? repos[0] : '',
+        agent !== '' ? agent : ''
+      );
+    }}
+
+    function findDefaultRepo() {{
+      const rows = document.querySelectorAll('#run-list table tbody tr');
+      const runningByRepo = {{}};
+      rows.forEach(row => {{
+        const badge = row.querySelector('.badge-running');
+        if (badge) {{
+          const repo = row.dataset.repo;
+          const timeCell = row.querySelector('td:nth-child(2)');
+          if (repo && timeCell) {{
+            const time = timeCell.textContent.trim();
+            if (!runningByRepo[repo] || time > runningByRepo[repo]) {{
+              runningByRepo[repo] = time;
+            }}
+          }}
+        }}
+      }});
+      const repos = Object.keys(runningByRepo);
+      if (repos.length === 1) return repos[0];
+      if (repos.length > 1) {{
+        return repos.reduce((a, b) => runningByRepo[a] > runningByRepo[b] ? a : b);
+      }}
+      return '';
+    }}
+
+    document.addEventListener('DOMContentLoaded', function() {{
+      {render_charts_script(runs)}
+      const params = parseUrlParams();
+
+      // Tab aus URL-Parameter oder Default "run-list"
+      const tabId = params.tab || 'run-list';
+      const tabEl = document.getElementById(tabId);
+      if (tabEl) {{
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tabEl.classList.add('active');
+        [...document.querySelectorAll('.tab')].forEach(t => {{
+          const onclick = t.getAttribute('onclick') || '';
+          if (onclick.includes("'" + tabId + "'")) t.classList.add('active');
+        }});
+      }}
+
+      // Repo aus URL oder Default (Repo mit laufenden Jobs)
+      const allCheckboxes = [...document.querySelectorAll('#repo-bar .repo-checkbox:not(#repo-all) input')];
+      const urlRepo = params.repo;
+      const runningRepo = findDefaultRepo();
+      const selectedRepo = urlRepo || runningRepo;
+
+      if (selectedRepo) {{
+        allCheckboxes.forEach(cb => {{ cb.checked = cb.value === selectedRepo; }});
+        document.getElementById('repo-all').checked = allCheckboxes.every(cb => cb.checked);
+      }} else {{
+        allCheckboxes.forEach(cb => {{ cb.checked = true; }});
+        document.getElementById('repo-all').checked = true;
+      }}
+
+      // Agent aus URL oder Default (Alle)
+      const agentValue = params.agent || '';
+      const sel = document.getElementById('agent-filter');
+      if (agentValue && [...sel.options].some(o => o.value === agentValue)) {{
+        sel.value = agentValue;
+      }}
+
+      const selected = getSelectedRepos();
+      applyFilters(selected, document.getElementById('agent-filter').value);
+      updateRepoLabel(selected);
+
+      // URL-Parameter beim initialen Laden setzen, falls noch nicht vorhanden
+      updateUrlParams(
+        tabId,
+        selected.length === 1 ? selected[0] : '',
+        document.getElementById('agent-filter').value || ''
+      );
+    }});
+  </script>
 </body>
 </html>
 """
 
 
 def write_dashboard(runs: list[DashboardRun], output_path: Path,
-                    owner: str | None = None,
-                    allow_shutdown: bool = False,
-                    refresh_seconds: int | None = None,
-                    github_enrich: bool = False,
-                    github_token: str | None = None,
-                    github_cache_path: Path = DEFAULT_GITHUB_CACHE,
-                    github_cache_ttl_seconds: int = DEFAULT_GITHUB_CACHE_TTL_SECONDS) -> Path:
+                     owner: str | None = None,
+                     allow_shutdown: bool = False,
+                     refresh_seconds: int | None = None,
+                     github_enrich: bool = False,
+                     github_token: str | None = None,
+                     github_cache_path: Path = DEFAULT_GITHUB_CACHE,
+                     github_cache_ttl_seconds: int = DEFAULT_GITHUB_CACHE_TTL_SECONDS,
+                     active_tab: str = "run-list") -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_owner = owner or infer_owner_from_runs(runs)
     unstarted_issues: list[DashboardIssue] = []
@@ -1980,6 +2796,7 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
             allow_shutdown=allow_shutdown,
             refresh_seconds=refresh_seconds,
             unstarted_issues=unstarted_issues,
+            active_tab=active_tab,
         ),
         encoding="utf-8",
     )
@@ -2061,12 +2878,24 @@ def main() -> int:
         default=DEFAULT_GITHUB_CACHE_TTL_SECONDS,
         help=f"GitHub-Cache-TTL in Sekunden, Standard: {DEFAULT_GITHUB_CACHE_TTL_SECONDS}; -1 nutzt Cache ohne Ablauf",
     )
+    parser.add_argument(
+        "--tab",
+        default="run-list",
+        help="Standard-Tab beim Öffnen des Dashboards",
+    )
     args = parser.parse_args()
 
     config = load_env()
     owner = args.owner or config.get("GITHUB_USER")
     runs_dir = Path(args.runs_dir)
     output_path = Path(args.output)
+    allow_shutdown = False
+    refresh_seconds = None
+    github_enrich = args.github_enrich
+    github_token = config.get("GITHUB_TOKEN")
+    github_cache_path = Path(args.github_cache)
+    github_cache_ttl_seconds = args.github_cache_ttl_seconds
+    active_tab = args.tab
     if args.health_timeout_minutes < 1:
         print("Fehler: --health-timeout-minutes muss mindestens 1 sein", file=sys.stderr)
         return 2
@@ -2100,10 +2929,13 @@ def main() -> int:
         runs,
         output_path,
         owner=owner,
-        github_enrich=args.github_enrich,
-        github_token=config.get("GITHUB_TOKEN"),
-        github_cache_path=Path(args.github_cache),
-        github_cache_ttl_seconds=args.github_cache_ttl_seconds,
+        allow_shutdown=allow_shutdown,
+        refresh_seconds=refresh_seconds,
+        github_enrich=github_enrich,
+        github_token=github_token,
+        github_cache_path=github_cache_path,
+        github_cache_ttl_seconds=github_cache_ttl_seconds,
+        active_tab=active_tab,
     )
     print(f"   Dashboard: {output_path}")
     return 0

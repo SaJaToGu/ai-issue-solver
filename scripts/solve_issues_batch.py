@@ -76,7 +76,9 @@ class IssueJobResult:
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.delayed and not self.unhealthy
+        # Check if the run resulted in no changes
+        no_changes = "no_changes" in self.output.lower() or "nonzero_without_changes" in self.output.lower()
+        return self.returncode == 0 and not self.delayed and not self.unhealthy and not no_changes
 
     @property
     def delayed(self) -> bool:
@@ -120,11 +122,15 @@ def get_result_badge(result: IssueJobResult) -> str:
     if result.delayed:
         return "[DELAYED]"
     if result.returncode == 0:
-        # Pruefe ob es Warnungen wie turn-limit in der Ausgabe gibt
+        # Pruefe ob es Warnungen wie turn-limit oder no_changes in der Ausgabe gibt
         output_lower = result.output.lower()
-        if "turn limit" in output_lower or "turn-limit" in output_lower:
+        if "turn limit" in output_lower or "turn-limit" in output_lower or "no_changes" in output_lower or "nonzero_without_changes" in output_lower:
             return "[WARNING]"
         return "[OK]"
+    # Check for special cases that should be warnings even with non-zero return code
+    if "nonzero_without_changes" in result.output.lower():
+        return "[WARNING]"
+    return "[FAIL]"
     return "[FAIL]"
 
 
@@ -209,6 +215,8 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
         cmd.append("--defer-codex-rate-limit")
     if run_report_dir:
         cmd.extend(["--run-report-dir", str(run_report_dir)])
+    verbosity = getattr(args, "verbosity", "quiet")
+    cmd.extend(["--verbosity", verbosity])
 
     return cmd
 
@@ -670,7 +678,7 @@ def run_issue_job_with_optional_fallback(
     )
     if queued_report:
         annotate_fallback_run_report(
-            queued_report.path, args.model, args.fallback_model
+            queued_report.path, args.model, f"{args.fallback_model}/{args.fallback_model_name}" if args.fallback_model_name else args.fallback_model
         )
     return replace(
         fallback_result,
@@ -993,6 +1001,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=positive_int,
         default=1,
         help="Maximale Retry-Versuche fuer unhealthy Jobs bei --unhealthy-action retry, Standard: 1",
+    )
+    parser.add_argument(
+        "--verbosity",
+        choices=("quiet", "normal", "verbose"),
+        default="quiet",
+        help="Worker-Ausgabe: quiet=keine Live-Ausgabe (Standard), normal=gefiltert, verbose=alles",
     )
     return parser.parse_args(argv)
 

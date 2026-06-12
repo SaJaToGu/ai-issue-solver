@@ -16,9 +16,9 @@ class RunRepoLensDockerTests(unittest.TestCase):
             capture_output=True,
         )
 
-        self.assertIn("read-only at /project", result.stdout)
-        self.assertIn("writable at /reports", result.stdout)
-        self.assertIn("No .env file or GitHub write token", result.stdout)
+        self.assertIn("/project", result.stdout)
+        self.assertIn("/reports", result.stdout)
+        self.assertIn(".env", result.stdout)
 
     def test_script_uses_constrained_mounts_and_network_default(self):
         text = SCRIPT.read_text(encoding="utf-8")

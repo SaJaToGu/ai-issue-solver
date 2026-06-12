@@ -20,6 +20,8 @@ SECRET_KEYS = {
     "ANTHROPIC_API_KEY",
     "MISTRAL_API_KEY",
     "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENCODE_API_KEY",
 }
 
 
@@ -47,8 +49,8 @@ def load_env(env_file: str = None) -> dict:
 
     # Umgebungsvariablen haben Vorrang
     for key in ["GITHUB_TOKEN", "GITHUB_USER", "ANTHROPIC_API_KEY",
-                "MISTRAL_API_KEY", "OPENAI_API_KEY", "OLLAMA_HOST",
-                "OLLAMA_MODEL"]:
+                "MISTRAL_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+                "OPENCODE_API_KEY", "OLLAMA_HOST", "OLLAMA_MODEL"]:
         if key in os.environ:
             config[key] = os.environ[key]
 
@@ -98,8 +100,32 @@ def require_config_value(config: dict, key: str, description: str | None = None)
 
 
 def require_github_config(config: dict, require_user: bool = True) -> tuple[str, str | None]:
-    """Validiert GitHub-Zugangsdaten für API-Aufrufe."""
-    token = require_config_value(config, "GITHUB_TOKEN", "GitHub Token")
+    """Validiert GitHub-Zugangsdaten für API-Aufrufe.
+    
+    Falls GITHUB_TOKEN ein Platzhalter ist, wird versucht, den Token via `gh auth token` zu laden.
+    """
+    token = config.get("GITHUB_TOKEN")
+    if is_placeholder_value(token):
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            token = result.stdout.strip()
+            if not token:
+                print_err("GitHub Token fehlt und 'gh auth token' hat keinen Token zurückgegeben.")
+                print("   Prüfe, ob 'gh auth login' ausgeführt wurde.")
+                raise SystemExit(1)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print_err("GitHub Token fehlt und 'gh auth token' ist nicht verfügbar.")
+            print("   Setze GITHUB_TOKEN in config/.env oder führe 'gh auth login' aus.")
+            raise SystemExit(1)
+    else:
+        token = require_config_value(config, "GITHUB_TOKEN", "GitHub Token")
+    
     user = None
     if require_user:
         user = require_config_value(config, "GITHUB_USER", "GitHub User")
@@ -169,3 +195,7 @@ def print_warn(text: str):
 
 def print_err(text: str):
     print(f"    ❌ {text}")
+
+
+def clean_path_candidate(candidate: str) -> str:
+    return candidate.strip().strip(" \t\r\n'\"“”‘’.,;:()[]{}<>")

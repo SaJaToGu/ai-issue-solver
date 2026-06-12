@@ -33,16 +33,108 @@ from utils import (
 
 
 DEFAULT_LABELS = {
-    "analysis": {"color": "1d76db", "description": "Repository analysis and findings"},
-    "automation": {"color": "5319e7", "description": "Automation and worker behavior"},
-    "codex": {"color": "5319e7", "description": "Codex worker integration"},
-    "documentation": {"color": "0075ca", "description": "Documentation improvements"},
-    "github": {"color": "24292f", "description": "GitHub API and workflow"},
-    "good-first-issue": {"color": "7057ff", "description": "Good first issue"},
-    "quality": {"color": "0e8a16", "description": "Quality improvements"},
-    "safety": {"color": "d93f0b", "description": "Safety and confirmation behavior"},
-    "setup": {"color": "fbca04", "description": "Setup and configuration"},
-    "workflow": {"color": "c5def5", "description": "Project workflow"},
+    # Theme labels
+    "theme/dashboard": {"color": "006b75", "description": "Dashboard UI/UX and data visualization"},
+    "theme/model": {"color": "006b75", "description": "Model selection and provider integration"},
+    "theme/cost": {"color": "006b75", "description": "Budget tracking and cost analysis"},
+    "theme/provider": {"color": "006b75", "description": "Provider-specific features and APIs"},
+    "theme/workflow": {"color": "006b75", "description": "Workflow automation and process"},
+    "theme/backlog": {"color": "006b75", "description": "Backlog management and prioritization"},
+    "theme/supervisor": {"color": "006b75", "description": "Process monitoring and job management"},
+    "theme/distributed-workers": {"color": "006b75", "description": "Worker distribution and scaling"},
+    "theme/github": {"color": "006b75", "description": "GitHub API and integration"},
+    "theme/quality": {"color": "006b75", "description": "Code quality and testing"},
+    "theme/research": {"color": "006b75", "description": "Research tasks and evidence collection"},
+    "theme/codex": {"color": "006b75", "description": "Codex-specific features and sandboxing"},
+    
+    # Area labels
+    "area/pwa": {"color": "1d76db", "description": "Progressive Web App (dashboard front-end)"},
+    "area/reports": {"color": "1d76db", "description": "Run reports and analytics"},
+    "area/runs": {"color": "1d76db", "description": "Solver runs and job execution"},
+    "area/prs": {"color": "1d76db", "description": "Pull request handling and workflow"},
+    "area/issues": {"color": "1d76db", "description": "Issue lifecycle and management"},
+    "area/labels": {"color": "1d76db", "description": "Label taxonomy and classification"},
+    "area/model-selection": {"color": "1d76db", "description": "Model selection logic and policies"},
+    "area/provider-interface": {"color": "1d76db", "description": "Provider abstraction layer"},
+    "area/budget": {"color": "1d76db", "description": "Budget tracking and cost controls"},
+    "area/worker-node": {"color": "1d76db", "description": "Worker node management"},
+    "area/opencode": {"color": "1d76db", "description": "OpenCode CLI integration"},
+    "area/openrouter": {"color": "1d76db", "description": "OpenRouter API integration"},
+    "area/mistral": {"color": "1d76db", "description": "Mistral provider integration"},
+    "area/minimax": {"color": "1d76db", "description": "MiniMax provider integration"},
+    "area/anthropic": {"color": "1d76db", "description": "Anthropic (Claude) provider integration"},
+    
+    # Kind labels
+    "kind/feature": {"color": "0e8a16", "description": "New functionality"},
+    "kind/bug": {"color": "d73a4a", "description": "Bug fixes"},
+    "kind/refactor": {"color": "006b75", "description": "Code refactoring"},
+    "kind/docs": {"color": "0075ca", "description": "Documentation updates"},
+    "kind/test": {"color": "c5def5", "description": "Test coverage and validation"},
+    "kind/analysis": {"color": "1d76db", "description": "Data analysis and metrics"},
+    "kind/automation": {"color": "5319e7", "description": "Automation scripts"},
+    "kind/research": {"color": "5319e7", "description": "Research tasks"},
+    "kind/cleanup": {"color": "fbca04", "description": "Code cleanup and maintenance"},
+    
+    # State labels
+    "state/backlog": {"color": "ededed", "description": "Issue is in the backlog"},
+    "state/ready": {"color": "c2e0c6", "description": "Issue is ready for implementation"},
+    "state/in-progress": {"color": "c5def5", "description": "Issue is actively being worked on"},
+    "state/blocked": {"color": "d93f0b", "description": "Issue is blocked"},
+    "state/review": {"color": "fbca04", "description": "Issue is under review"},
+    "state/on-hold": {"color": "ededed", "description": "Issue is temporarily paused"},
+    "state/duplicate": {"color": "cfd3d7", "description": "Issue is a duplicate"},
+    "state/wontfix": {"color": "000000", "description": "Issue will not be addressed"},
+    
+    # Priority labels
+    "priority/1-critical": {"color": "d93f0b", "description": "Critical priority"},
+    "priority/2-high": {"color": "d73a4a", "description": "High priority"},
+    "priority/3-medium": {"color": "fbca04", "description": "Medium priority"},
+    "priority/4-low": {"color": "0e8a16", "description": "Low priority"},
+    
+    # Agent labels
+    "agent/triage": {"color": "5319e7", "description": "Initial classification and routing"},
+    "agent/supervisor": {"color": "5319e7", "description": "Process monitoring and job management"},
+    "agent/cost": {"color": "5319e7", "description": "Budget tracking and cost analysis"},
+    "agent/research": {"color": "5319e7", "description": "Research and evidence collection"},
+    "agent/planner": {"color": "5319e7", "description": "Backlog shaping and issue planning"},
+    "agent/solver": {"color": "5319e7", "description": "Implementation and coding work"},
+    "agent/reviewer": {"color": "5319e7", "description": "PR review and quality assurance"},
+    
+    # Legacy labels (mapped to new taxonomy)
+    "automation": {"color": "5319e7", "description": "Automation and worker behavior (legacy)"},
+    "quality": {"color": "0e8a16", "description": "Quality improvements (legacy)"},
+    "codex": {"color": "5319e7", "description": "Codex worker integration (legacy)"},
+    "documentation": {"color": "0075ca", "description": "Documentation improvements (legacy)"},
+    "github": {"color": "24292f", "description": "GitHub API and workflow (legacy)"},
+    "good-first-issue": {"color": "7057ff", "description": "Good first issue (legacy)"},
+    "safety": {"color": "d93f0b", "description": "Safety and confirmation behavior (legacy)"},
+    "setup": {"color": "fbca04", "description": "Setup and configuration (legacy)"},
+    "workflow": {"color": "c5def5", "description": "Project workflow (legacy)"},
+    "analysis": {"color": "1d76db", "description": "Repository analysis and findings (legacy)"},
+}
+
+# Maps flat legacy labels from NEXT_BACKLOG.md to the new taxonomy.
+# Source of truth: docs/label_taxonomy.md
+LABEL_MAPPING: dict[str, list[str]] = {
+    "automation":      ["kind/automation"],
+    "quality":         ["theme/quality"],
+    "workflow":        ["theme/workflow"],
+    "github":          ["theme/github"],
+    "provider":        ["theme/provider"],
+    "research":        ["theme/research", "kind/research"],
+    "dashboard":       ["theme/dashboard"],
+    "opencode":        ["area/opencode"],
+    "sandbox":         ["theme/codex"],
+    "analysis":        ["kind/analysis"],
+    "codex":           ["theme/codex"],
+    "docs":            ["kind/docs"],
+    "documentation":   ["kind/docs"],
+    "bug":             ["kind/bug"],
+    "refactor":        ["kind/refactor"],
+    "backlog":         ["theme/backlog"],
+    "safety":          ["theme/quality"],
+    "setup":           ["kind/feature"],
+    # New-taxonomy labels pass through unchanged
 }
 
 
@@ -84,6 +176,71 @@ class GitHubClient:
         raise_for_github_response(resp, "Issues prüfen")
         return any(item.get("title") == title for item in resp.json())
 
+    def normalize_title(self, title: str) -> str:
+        """Normalisiert einen Titel für den Vergleich: lowercase, ohne Leerzeichen und Sonderzeichen."""
+        import re
+        return re.sub(r'[^a-z0-9]', '', title.lower())
+
+    def find_matching_issue(self, repo: str, title: str) -> dict | None:
+        """Findet ein bestehendes Issue mit exaktem oder normalisiertem Titel."""
+        normalized_title = self.normalize_title(title)
+        issues_url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
+        page = 1
+
+        while True:
+            resp = self.session.get(
+                issues_url,
+                params={"state": "all", "per_page": 100, "page": page},
+            )
+            raise_for_github_response(resp, "Issues prüfen")
+            items = resp.json()
+            if not items:
+                break
+
+            for item in items:
+                if "pull_request" in item:
+                    continue
+                item_title = item.get("title", "")
+                if item_title == title:
+                    return item
+                if self.normalize_title(item_title) == normalized_title:
+                    return item
+
+            if len(items) < 100:
+                break
+            page += 1
+
+        return None
+
+    def get_issues_by_title(self, repo: str, titles: list[str]) -> dict[str, dict]:
+        wanted = set(titles)
+        found: dict[str, dict] = {}
+        issues_url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
+        page = 1
+
+        while True:
+            resp = self.session.get(
+                issues_url,
+                params={"state": "all", "per_page": 100, "page": page},
+            )
+            raise_for_github_response(resp, "Issues prüfen")
+            items = resp.json()
+            if not items:
+                break
+
+            for item in items:
+                if "pull_request" in item:
+                    continue
+                title = item.get("title") or ""
+                if title in wanted:
+                    found[title] = item
+
+            if len(items) < 100:
+                break
+            page += 1
+
+        return found
+
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> str:
         issues_url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
         resp = self.session.post(
@@ -92,6 +249,16 @@ class GitHubClient:
         )
         raise_for_github_response(resp, f"Issue erstellen: {title}")
         return resp.json()["html_url"]
+
+
+def find_closed_issues_in_backlog(issues: list[dict], github_issues: dict[str, dict]) -> list[str]:
+    """Identify closed GitHub issues still present in the backlog."""
+    closed = []
+    for issue in issues:
+        title = issue["title"]
+        if title in github_issues and github_issues[title].get("state") == "closed":
+            closed.append(title)
+    return closed
 
 
 def parse_backlog(path: Path) -> list[dict]:
@@ -151,6 +318,17 @@ def main() -> int:
         action="store_true",
         help="Bestätigt bewusst, dass echte GitHub-Issues erstellt werden dürfen",
     )
+    parser.add_argument(
+        "--only-new",
+        action="store_true",
+        help="Nur neue Issues erstellen (Standard: true)",
+        default=True,
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Erzwingt die Erstellung von Issues, auch wenn sie bereits existieren",
+    )
     args = parser.parse_args()
 
     real_create = args.apply and args.confirm_create
@@ -180,6 +358,7 @@ def main() -> int:
         if args.apply:
             print("   → --apply ist gesetzt, für echte Issues fehlt zusätzlich --confirm-create")
         print("   → Für echte Issues: python scripts/create_backlog_issues.py --apply --confirm-create")
+        print("   → Optionen: --only-new (Standard), --force (erzwingt Erstellung)")
         return 0
 
     config = load_env()
@@ -193,26 +372,76 @@ def main() -> int:
 
     client = GitHubClient(token, owner)
 
-    print_step(2, f"Erstelle Issues in {owner}/{args.repo}")
+    print_step(2, f"Prüfe bestehende Issues in {owner}/{args.repo}")
+    new_issues = []
+    existing_open = []
+    existing_closed = []
+
+    for issue in issues:
+        matching_issue = client.find_matching_issue(args.repo, issue["title"])
+        if matching_issue:
+            if matching_issue.get("state") == "open":
+                existing_open.append((issue["title"], matching_issue["number"]))
+            else:
+                existing_closed.append((issue["title"], matching_issue["number"]))
+        else:
+            new_issues.append(issue)
+
+    # Filter based on flags
+    if args.only_new:
+        issues_to_create = new_issues
+    elif args.force:
+        issues_to_create = issues
+    else:
+        issues_to_create = new_issues
+
+    print_step(3, f"Erstelle Issues in {owner}/{args.repo}")
     created = 0
     skipped = 0
 
-    for issue in issues:
-        if client.issue_exists(args.repo, issue["title"]):
-            print_warn(f"Bereits vorhanden: {issue['title']}")
-            skipped += 1
-            continue
+    # Warn about closed issues still in backlog
+    if existing_closed:
+        print_warn("Geschlossene Issues im Backlog gefunden:")
+        for title, number in existing_closed:
+            print_warn(f"   - {title} (GitHub #{number})")
+        print_warn("Bitte bereinige das Backlog mit scripts/cleanup_backlog.py")
 
+    # Show dry-run summary
+    if not real_create:
+        print()
+        print_warn("DRY-RUN: Keine echten GitHub-Issues wurden erstellt.")
+        print(f"   → Würde erstellen: {len(issues_to_create)}")
+        print(f"   → Bereits vorhanden (offen): {len(existing_open)}")
+        print(f"   → Bereits vorhanden (geschlossen): {len(existing_closed)}")
+        if args.only_new:
+            print("   → --only-new: Nur neue Issues werden vorgeschlagen")
+        if args.force:
+            print("   → --force: Alle Issues würden erstellt (auch bestehende)")
+        return 0
+
+    # Create issues
+    for issue in issues_to_create:
+        # Map legacy labels to new taxonomy and ensure they exist
+        mapped_labels = []
         for label in issue["labels"]:
-            client.ensure_label(args.repo, label)
+            for new_label in LABEL_MAPPING.get(label, [label]):
+                client.ensure_label(args.repo, new_label)
+                mapped_labels.append(new_label)
 
-        url = client.create_issue(args.repo, issue["title"], issue["body"], issue["labels"])
+        url = client.create_issue(args.repo, issue["title"], issue["body"], mapped_labels)
         print_ok(f"{issue['title']} -> {url}")
         created += 1
 
-    print_step(3, "Fertig")
+    # Log skipped issues
+    for title, number in existing_open:
+        print_warn(f"Übersprungen (bereits offen): {title} (GitHub #{number})")
+        skipped += 1
+
+    print_step(4, "Fertig")
     print(f"   Erstellt: {created}")
     print(f"   Übersprungen: {skipped}")
+    if existing_closed:
+        print(f"   Geschlossen (nicht erstellt): {len(existing_closed)}")
     return 0
 
 

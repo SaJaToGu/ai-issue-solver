@@ -10,6 +10,10 @@ Alle Schritte schreiben eigene Logs in reports/overnight/<timestamp>/.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
+import platform
+import shutil
 from dataclasses import dataclass
 from datetime import datetime
 import re
@@ -137,6 +141,17 @@ def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[st
         command.append("--dry-run")
     if args.close_issues:
         command.append("--close-issues")
+    if args.worker_health_timeout_minutes is not None:
+        command.extend([
+            "--worker-health-timeout-minutes",
+            str(args.worker_health_timeout_minutes),
+        ])
+    if args.unhealthy_action:
+        command.extend(["--unhealthy-action", args.unhealthy_action])
+    if args.unhealthy_retries is not None:
+        command.extend(["--unhealthy-retries", str(args.unhealthy_retries)])
+    if args.verbosity:
+        command.extend(["--verbosity", args.verbosity])
     return command
 
 
@@ -152,6 +167,55 @@ def build_dashboard_command(args: argparse.Namespace, dashboard_script: Path) ->
     if args.owner:
         command.extend(["--owner", args.owner])
     return command
+
+
+def build_caffeinate_command(pid: int | None = None) -> list[str]:
+    command = ["caffeinate", "-dimsu"]
+    if pid is not None:
+        command.extend(["-w", str(pid)])
+    return command
+
+
+def can_use_caffeinate(system_name: str | None = None, which_fn=shutil.which) -> bool:
+    return (system_name or platform.system()) == "Darwin" and bool(which_fn("caffeinate"))
+
+
+@contextlib.contextmanager
+def keep_awake(enabled: bool, log_path: Path):
+    if not enabled:
+        yield
+        return
+
+    write_log_header(log_path, "caffeinate", build_caffeinate_command(os.getpid()))
+    if not can_use_caffeinate():
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write("skipped: caffeinate ist nur auf macOS mit installiertem caffeinate verfuegbar\n")
+        print_warn("caffeinate nicht verfuegbar; fahre ohne Sleep-Schutz fort")
+        yield
+        return
+
+    process: subprocess.Popen | None = None
+    try:
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write("status: started\n")
+            log_file.flush()
+            process = subprocess.Popen(
+                build_caffeinate_command(os.getpid()),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+        print_ok("caffeinate aktiv: der Mac bleibt fuer diesen Nachtlauf wach")
+        yield
+    finally:
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"finished_at: {datetime.now().isoformat(timespec='seconds')}\n")
 
 
 def write_log_header(log_path: Path, name: str, command: list[str] | None) -> None:
@@ -293,8 +357,10 @@ def classify_status(status: str, worker_exit_code: str = "") -> str:
     if status in {"pr_created", "pr_created_from_existing_branch", "cleanup_successful"}:
         return "successful"
     # No-op Staende
-    if status in {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr", "cleanup_noop"}:
+    if status in {"skip_existing_pr", "skip_merged_pr", "skip_closed_pr", "cleanup_noop"}:
         return "noop"
+    if status in {"no_changes", "nonzero_without_changes"}:
+        return "failed"
     # Fehlgeschlagene Staende
     if status in {
         "branch_create_failed", "checkout_failed", "clone_failed",
@@ -349,8 +415,31 @@ def detect_warning_markers(run_dir: Path) -> str:
     return ",".join(sorted(set(markers)))
 
 
-def collect_issue_outcomes(runs_dir: Path) -> list[IssueOutcome]:
+def parse_run_dir_timestamp(run_dir: Path) -> datetime | None:
+    """Liest den Startzeitpunkt aus Run-Verzeichnisnamen wie YYYYMMDD-HHMMSS-..."""
+    match = re.match(r"^(\d{8}-\d{6})", run_dir.name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+
+def collect_issue_outcomes(
+    runs_dir: Path,
+    *,
+    repo: str | None = None,
+    issue_numbers: set[int] | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    include_incomplete: bool = False,
+) -> list[IssueOutcome]:
     """Sammelt IssueOutcome-Objekte aus allen Run-Reports in runs_dir.
+
+    Optional kann die Sammlung auf eine Overnight-Session eingeschraenkt werden:
+    Repo, Issue-Nummern und Zeitfenster verhindern, dass alte Reports in der
+    finalen Nachtlauf-Summary auftauchen.
 
     Sortiert nach Run-Verzeichnisname (zeitlich absteigend).
     """
@@ -363,25 +452,41 @@ def collect_issue_outcomes(runs_dir: Path) -> list[IssueOutcome]:
         if not run_dir.is_dir():
             continue
 
+        run_started_at = parse_run_dir_timestamp(run_dir)
+        if started_at and run_started_at and run_started_at < started_at:
+            continue
+        if finished_at and run_started_at and run_started_at > finished_at:
+            continue
+
         summary_path = run_dir / "summary.txt"
         if not summary_path.exists():
             continue
 
         fields = parse_summary_file(summary_path)
+        run_repo = fields.get("repo") or fields.get("selected_repo", "")
+        issue_number = fields.get("issue_number") or fields.get("issue", "")
+
+        if repo and run_repo != repo:
+            continue
+        if issue_numbers:
+            if not issue_number.isdigit() or int(issue_number) not in issue_numbers:
+                continue
 
         status = fields.get("status", "")
         exit_code = fields.get("worker_exit_code", "")
         category = classify_status(status, exit_code)
 
-        # Skip queued/running runs - diese haben noch kein Ergebnis
-        if category in {"queued", "running", "unhealthy", "unknown"}:
+        # Standardmaessig unvollstaendige Runs aus Dashboards/Reports ausblenden.
+        # Die Overnight-Summary blendet sie ein, damit abgebrochene Health-Stopps
+        # sichtbar bleiben.
+        if not include_incomplete and category in {"queued", "running", "unhealthy", "unknown"}:
             continue
 
         warning_markers = detect_warning_markers(run_dir)
 
         outcome = IssueOutcome(
-            repo=fields.get("repo") or fields.get("selected_repo", ""),
-            issue_number=fields.get("issue_number") or fields.get("issue", ""),
+            repo=run_repo,
+            issue_number=issue_number,
             issue_title=fields.get("issue_title", ""),
             status=status,
             category=category,
@@ -422,9 +527,15 @@ def write_final_summary(
         f"duration: {format_duration((finished_at - started_at).total_seconds())}",
         f"session_dir: {session_dir}",
         f"model: {args.model}",
+        f"model_name: {args.model_name or ''}",
         f"workers: {args.workers}",
+        f"worker_health_timeout_minutes: {args.worker_health_timeout_minutes or ''}",
+        f"unhealthy_action: {args.unhealthy_action or ''}",
+        f"unhealthy_retries: {args.unhealthy_retries or ''}",
+        f"verbosity: {args.verbosity or ''}",
         f"base_branch: {args.base_branch}",
         f"repo: {args.repo or ''}",
+        f"issues: {', '.join(str(issue) for issue in args.issue or [])}",
         f"label: {args.label}",
         f"dry_run: {args.dry_run}",
         f"dashboard: {args.dashboard_output}",
@@ -452,9 +563,17 @@ def write_final_summary(
 
     # Issue-Outcomes hinzufuegen, falls runs_dir verfuegbar
     if runs_dir and runs_dir.exists():
-        outcomes = collect_issue_outcomes(runs_dir)
+        issue_numbers = set(args.issue or []) or None
+        outcomes = collect_issue_outcomes(
+            runs_dir,
+            repo=args.repo,
+            issue_numbers=issue_numbers,
+            started_at=started_at,
+            finished_at=finished_at,
+            include_incomplete=True,
+        )
         if outcomes:
-            lines.extend(["", "issues:"])
+            lines.extend(["", "issue_outcomes:"])
             for outcome in outcomes:
                 lines.extend([
                     f"- issue: {outcome.issue_number}",
@@ -513,6 +632,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--dry-run", action="store_true", help="Batch-Solver nur simulieren")
     parser.add_argument("--close-issues", action="store_true", help="An Batch-Solver weiterreichen")
+    parser.add_argument(
+        "--worker-health-timeout-minutes",
+        type=positive_int,
+        help="An Batch-Solver weiterreichen: Minuten ohne Worker-Ausgabe bis zur Health-Warnung",
+    )
+    parser.add_argument(
+        "--unhealthy-action",
+        choices=["warn", "stop", "retry"],
+        help="An Batch-Solver weiterreichen: Aktion bei unhealthy Worker",
+    )
+    parser.add_argument(
+        "--unhealthy-retries",
+        type=positive_int,
+        help="An Batch-Solver weiterreichen: Retry-Versuche fuer unhealthy Jobs",
+    )
+    parser.add_argument(
+        "--verbosity",
+        choices=["quiet", "normal", "verbose"],
+        help="An Batch-Solver weiterreichen: Worker-Ausgabe",
+    )
     parser.add_argument("--skip-pull", action="store_true", help="Git-Pull des Basis-Branches ueberspringen")
     parser.add_argument("--skip-tests", action="store_true", help="Testlauf vor dem Batch ueberspringen")
     parser.add_argument(
@@ -540,6 +679,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Zielpfad fuer das Dashboard, Standard: {DEFAULT_DASHBOARD_OUTPUT}",
     )
     parser.add_argument("--owner", help="GitHub Owner fuer Dashboard-Links")
+    parser.add_argument(
+        "--caffeinate",
+        action="store_true",
+        help="macOS waehrend des Nachtlaufs mit caffeinate wach halten",
+    )
     return parser.parse_args(argv)
 
 
@@ -553,66 +697,66 @@ def main(argv: list[str] | None = None) -> int:
 
     print_step(1, f"Log-Verzeichnis: {session_dir}")
 
-    if args.skip_pull:
-        print_warn("Git-Pull uebersprungen")
-        steps.append(skipped_step("pull", session_dir / "pull.log", "--skip-pull"))
-    else:
-        print_step(2, f"Pull von origin/{args.base_branch}")
-        pull_result = run_logged_command(
-            "pull",
-            build_pull_command(args.base_branch),
+    with keep_awake(args.caffeinate, session_dir / "caffeinate.log"):
+        if args.skip_pull:
+            print_warn("Git-Pull uebersprungen")
+            steps.append(skipped_step("pull", session_dir / "pull.log", "--skip-pull"))
+        else:
+            print_step(2, f"Pull von origin/{args.base_branch}")
+            pull_result = run_logged_command(
+                "pull",
+                build_pull_command(args.base_branch),
+                project_root,
+                session_dir / "pull.log",
+            )
+            steps.append(pull_result)
+            if not pull_result.ok:
+                print_err("Pull fehlgeschlagen; Batch wird nicht gestartet")
+
+        can_continue = all(step.ok for step in steps)
+
+        if args.skip_tests:
+            print_warn("Tests uebersprungen")
+            steps.append(skipped_step("tests", session_dir / "tests.log", "--skip-tests"))
+        elif can_continue:
+            print_step(3, f"Tests: {command_to_text(args.test_command)}")
+            test_result = run_logged_command(
+                "tests",
+                args.test_command,
+                project_root,
+                session_dir / "tests.log",
+            )
+            steps.append(test_result)
+            if not test_result.ok:
+                print_err("Tests fehlgeschlagen; Batch wird nicht gestartet")
+        else:
+            steps.append(skipped_step("tests", session_dir / "tests.log", "Pull fehlgeschlagen"))
+
+        can_continue = all(step.ok for step in steps)
+
+        if can_continue:
+            print_step(4, f"Batch-Solver mit {args.workers} Worker(n)")
+            batch_result = run_logged_command(
+                "batch",
+                build_batch_command(args, Path("scripts") / "solve_issues_batch.py"),
+                project_root,
+                session_dir / "batch.log",
+            )
+            steps.append(batch_result)
+        else:
+            steps.append(skipped_step("batch", session_dir / "batch.log", "Preflight fehlgeschlagen"))
+
+        print_step(5, "Dashboard regenerieren")
+        dashboard_result = run_logged_command(
+            "dashboard",
+            build_dashboard_command(args, Path("scripts") / "status_dashboard.py"),
             project_root,
-            session_dir / "pull.log",
+            session_dir / "dashboard.log",
         )
-        steps.append(pull_result)
-        if not pull_result.ok:
-            print_err("Pull fehlgeschlagen; Batch wird nicht gestartet")
-
-    can_continue = all(step.ok for step in steps)
-
-    if args.skip_tests:
-        print_warn("Tests uebersprungen")
-        steps.append(skipped_step("tests", session_dir / "tests.log", "--skip-tests"))
-    elif can_continue:
-        print_step(3, f"Tests: {command_to_text(args.test_command)}")
-        test_result = run_logged_command(
-            "tests",
-            args.test_command,
-            project_root,
-            session_dir / "tests.log",
-        )
-        steps.append(test_result)
-        if not test_result.ok:
-            print_err("Tests fehlgeschlagen; Batch wird nicht gestartet")
-    else:
-        steps.append(skipped_step("tests", session_dir / "tests.log", "Pull fehlgeschlagen"))
-
-    can_continue = all(step.ok for step in steps)
-
-    if can_continue:
-        print_step(4, f"Batch-Solver mit {args.workers} Worker(n)")
-        batch_result = run_logged_command(
-            "batch",
-            build_batch_command(args, Path("scripts") / "solve_issues_batch.py"),
-            project_root,
-            session_dir / "batch.log",
-        )
-        steps.append(batch_result)
-    else:
-        steps.append(skipped_step("batch", session_dir / "batch.log", "Preflight fehlgeschlagen"))
-
-    print_step(5, "Dashboard regenerieren")
-    dashboard_result = run_logged_command(
-        "dashboard",
-        build_dashboard_command(args, Path("scripts") / "status_dashboard.py"),
-        project_root,
-        session_dir / "dashboard.log",
-    )
-    steps.append(dashboard_result)
+        steps.append(dashboard_result)
 
     finished_at = datetime.now()
     summary_path = session_dir / "summary.txt"
-    # Uebergibe args.runs_dir, um Issue-Outcomes in die Summary aufzunehmen
     write_final_summary(summary_path, session_dir, args, steps, started_at, finished_at, args.runs_dir)
 
     failed_steps = [step for step in steps if not step.ok]

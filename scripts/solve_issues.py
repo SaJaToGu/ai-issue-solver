@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
-import json
 import os
 import re
 import shutil
@@ -42,8 +41,16 @@ try:
 except ModuleNotFoundError:
     requests = None
 
-sys.path.insert(0, str(Path(__file__).parent))
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(PROJECT_ROOT))
+
+# Worker-Adapter-Paket liegt im Projekt-Root (nicht in scripts/)
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from utils import (
+    clean_path_candidate,
     is_placeholder_value,
     load_env,
     print_banner,
@@ -53,7 +60,107 @@ from utils import (
     handle_github_request_error,
     raise_for_github_response,
     require_config_value,
+    require_github_config,
 )
+from solver_repository import (
+    branch_has_changes_against_base,
+    checkout_existing_remote_branch,
+    clone_repo,
+    commit_and_push,
+    create_branch,
+    git_status_porcelain,
+)
+from solver_reporting import (  # noqa: F401 (re-exports used by tests/batch)
+    PRESERVED_WORKTREE_RETENTION_DAYS,
+    RUN_REPORTS_ROOT,
+    RunReport,
+    cleanup_preserved_worktrees,
+    create_run_report,
+    detect_opencode_runtime_diagnostics,
+    format_git_change_summary,
+    format_worker_output_tail,
+    preserve_worker_worktree,
+    print_opencode_runtime_diagnostics,
+    safe_run_repo_name,
+    should_preserve_worktree,
+    should_surface_worker_line,
+    write_run_health,
+    write_run_report,
+    write_worker_diagnostics,
+)
+from solver_run_resources import (  # noqa: F401 (re-exports used by tests)
+    LOCKS_ROOT,
+    LOCK_STALE_SECONDS,
+    RunResources,
+    RunResourceDiagnostics,
+    ResourceLock,
+    cleanup_stale_locks,
+    create_run_resources,
+    detect_branch_name_conflict,
+    format_resource_diagnostics_summary_lines,
+    make_run_id,
+    write_resource_diagnostics_to_report,
+)
+
+
+def ensure_solver_directories() -> tuple[Path, Path]:
+    """
+    Erstellt und verwaltet solver-lokale Verzeichnisse für XDG_STATE_HOME und XDG_CACHE_HOME.
+
+    Falls XDG_*_HOME-Umgebungsvariablen nicht gesetzt sind, werden solver-lokale Verzeichnisse
+    unter einem temporären Präfix (z. B. /tmp/opencode/state bzw. /tmp/opencode/cache) erstellt.
+
+    Returns:
+        Tuple[Path, Path]: Pfade zu (state_dir, cache_dir)
+    """
+    # Temporäres Verzeichnis für solver-lokale Daten (beschreibbar und plattformneutral)
+    solver_base = Path(tempfile.gettempdir()) / "ai-issue-solver" / "opencode"
+    solver_base.mkdir(parents=True, exist_ok=True)
+
+    # XDG_STATE_HOME (für Zustandsdateien wie Chat-History, Authentifizierung)
+    xdg_state_home = os.getenv("XDG_STATE_HOME")
+    if xdg_state_home:
+        state_dir = Path(xdg_state_home) / "opencode"
+    else:
+        state_dir = solver_base / "state"
+
+    # XDG_CACHE_HOME (für Cache-Dateien wie Modelle, temporäre Daten)
+    xdg_cache_home = os.getenv("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        cache_dir = Path(xdg_cache_home) / "opencode"
+    else:
+        cache_dir = solver_base / "cache"
+
+    # Verzeichnisse erstellen, falls nicht vorhanden
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "tmp").mkdir(parents=True, exist_ok=True)
+
+    return state_dir, cache_dir
+
+
+def prepare_opencode_worker_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Bereitet die Umgebung für OpenCode vor, inklusive solver-lokalem Cache.
+
+    Args:
+        base_env: Basis-Umgebung, falls vorhanden. Standardmäßig wird os.environ verwendet.
+
+    Returns:
+        dict[str, str]: Angepasste Umgebung mit solver-lokalem Cache-Pfad.
+    """
+    _state_dir, cache_dir = ensure_solver_directories()
+    env = dict(base_env if base_env is not None else os.environ)
+
+    # Nur Cache isolieren. State/Auth nicht überschreiben, damit OpenCode seine
+    # bestehende SQLite-Datenbank inklusive WAL-Dateien konsistent findet.
+    # OPENCODE_SERVER_PASSWORD wird von OpenCode Desktop gesetzt und verhindert,
+    # dass CLI `opencode run` eine neue Session startet (GitHub issue #24747).
+    env.pop("XDG_STATE_HOME", None)
+    env.pop("OPENCODE_SERVER_PASSWORD", None)
+    env["OPENCODE_CACHE_DIR"] = str(cache_dir)
+
+    return env
 
 
 # ─────────────────────────────────────────────────────────────
@@ -109,29 +216,35 @@ MODEL_CONFIGS = {
         "display_name": "OpenCode CLI",
         "env_key": None,
         "env_var": None,
+        "default_model_name": "opencode/deepseek-v4-flash-free",
+        "free_models": [
+            "opencode/deepseek-v4-flash-free",
+            "opencode/mimo-v2.5-free",
+            "opencode/minimax-m3-free",
+            "opencode/nemotron-3-ultra-free",
+        ],
+    },
+    "openrouter": {
+        "display_name": "OpenRouter (aider, legacy)",
+        "aider_flags": [
+            "--model", "{model_name}",
+        ],
+        "env_key": "OPENROUTER_API_KEY",
+        "env_var": "OPENROUTER_API_KEY",
+        "default_model_name": "openrouter/openai/gpt-4o-mini",
+    },
+    "openrouter_direct": {
+        "display_name": "OpenRouter (Direct)",
+        "env_key": "OPENROUTER_API_KEY",
+        "env_var": "OPENROUTER_API_KEY",
+        "default_model_name": "mistralai/mistral-large",
     },
 }
 
-WORKER_OUTPUT_TAIL_LINES = 25
-WORKER_OUTPUT_TAIL_CHARS = 4000
-RUN_REPORTS_ROOT = Path("reports") / "runs"
 VIBE_LOG_PATH = Path(".vibe") / "logs" / "vibe.log"
 VIBE_LOG_SNIPPET_LINES = 15
 VIBE_LOG_SNIPPET_CHARS = 2000
-PRESERVED_WORKTREES_ROOT = Path("reports") / "preserved-worktrees"
-PRESERVED_WORKTREE_RETENTION_DAYS = 14
-GIT_SUMMARY_MAX_STATUS_LINES = 20
-GIT_SUMMARY_MAX_STAT_LINES = 12
-GIT_SUMMARY_STAT_GRAPH_WIDTH = 30
 CODEX_RATE_LIMIT_RETRY_LIMIT = 3
-PRESERVE_WORKTREE_STATUSES = {
-    "nonzero_without_changes",
-    "pr_failed",
-    "pr_failed_from_existing_branch",
-    "push_failed",
-    "rate_limit_deferred",
-    "validation_failed",
-}
 CONFLICT_MARKER_RE = re.compile(r"^\s*(?:<{7}\s|>{7}\s|={7}\s*$)")
 COMMON_REPO_FILES = {
     ".dockerignore",
@@ -153,6 +266,19 @@ COMMON_REPO_FILES = {
     "setup.py",
     "tsconfig.json",
 }
+SECRET_WORKER_PATHS = {
+    ".env",
+    "config/.env",
+}
+SECRET_WORKER_PREFIXES = (
+    ".env.",
+    "config/.env.",
+)
+SAFE_SECRET_EXAMPLE_PATHS = {
+    ".env.example",
+    "config/config.example.env",
+}
+SECRET_WORKER_PATH_REPLACEMENT = "config/config.example.env"
 WORKER_SIDE_EFFECT_PATTERNS = {
     ".aider*",
     ".aider/**",
@@ -169,6 +295,7 @@ NONZERO_GENERIC_SIDE_EFFECT_FILES = {
 PATH_CANDIDATE_RE = re.compile(
     r"(?<![\w:/.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.@+~-]+(?:\.[A-Za-z0-9_.+-]+)?"
 )
+ABSOLUTE_PATH_RE = re.compile(r"(?<![\w:/.-])/[^\s`'\"<>|]+")
 CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 CODEX_RATE_LIMIT_RESET_RE = re.compile(
     r"rate limit will be reset on\s+(.+?)(?:\.|\n|$)",
@@ -180,34 +307,6 @@ CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
 )
 VIBE_TURN_LIMIT_RE = re.compile(
     r"<vibe_stop_event>Turn limit of \d+ reached</vibe_stop_event>",
-    re.IGNORECASE,
-)
-WORKER_LIVE_OUTPUT_RE = re.compile(
-    r"("
-    r"\b(task|aufgabe|plan|planung|planning|reasoning|reasoning summary|"
-    r"summary|zusammenfassung|warn(?:ing)?|warnung|error|fehler|failed|failure|"
-    r"done|fertig|completed|abgeschlossen|result|ergebnis|final|rate limit|"
-    r"retry|blocked|blockiert|commit|test|tests)\b"
-    r"|^\s*(?:===|##|###|\[.*\])"
-    r")",
-    re.IGNORECASE,
-)
-WORKER_NOISY_OUTPUT_RE = re.compile(
-    r"("
-    r"^\s*(?:diff --git|index [0-9a-f]+\.\.|@@ |[+-]{3}\s|[+-](?!\s*(?:warning|error|failed)\b))"
-    r"|^\s*(?:apply_patch|cat >|sed -n|python - <<|npm |pip |git diff|git status)"
-    r")",
-    re.IGNORECASE,
-)
-WORKER_NOISY_FRAGMENT_RE = re.compile(
-    r"("
-    r"^\s*[+-]?\s*[A-Za-z_]\w*\s*:\s*[A-Za-z_][\w\[\], .|\"']*\s*=\s*"
-    r"|^\s*[+]?\s*f\.write\("
-    r"|^\s*[+-]?\s*(?:self\.)?assert[A-Za-z_]*\("
-    r"|^\s*[A-Za-z_][\w.\[\]0-9]*\)$"
-    r"|^\s*\"[^\"]+\"\s*:\s*$"
-    r"|^\s*[\"'][^\"']+[\"']\)?[,]?\s*$"
-    r")",
     re.IGNORECASE,
 )
 
@@ -230,16 +329,6 @@ class WorkerAssessment:
 class WorkerValidation:
     ok: bool
     errors: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class RunReport:
-    path: Path
-    repo: str
-    issue_number: int
-    issue_title: str
-    branch: str
-    model: str
 
 
 @dataclass(frozen=True)
@@ -302,6 +391,28 @@ class GitHubClient:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         })
+
+    def are_issues_enabled(self, repo: str) -> bool:
+        """Prüft, ob Issues für das Repository aktiviert sind."""
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}")
+            raise_for_github_response(resp, f"Repo-Status prüfen: {repo}")
+            repo_data = resp.json()
+            return repo_data.get("has_issues", False)
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"Repo-Status prüfen: {repo}")
+            return False
+
+    def validate_token_permissions(self) -> bool:
+        """Prüft, ob das Token die erforderlichen Berechtigungen hat (z. B. 'repo')."""
+        try:
+            resp = self.session.get(f"{self.BASE}/user")
+            raise_for_github_response(resp, "Token-Berechtigungen prüfen")
+            scopes = resp.headers.get("X-OAuth-Scopes", "")
+            return "repo" in scopes
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, "Token-Berechtigungen prüfen")
+            return False
 
     def get_repos(self) -> list:
         try:
@@ -480,6 +591,36 @@ class GitHubClient:
         return None
 
 
+def preflight_checks(config: dict, repo: str, issue_number: int | None = None) -> tuple[str, str | None]:
+    """Prueft GitHub-Zugang, Ziel-Repo und optional die konkrete Issue vor dem Worker-Start."""
+    print_step(0, "Preflight-Checks")
+    token, user = require_github_config(config, require_user=True)
+    client = GitHubClient(token, user)
+
+    repo_info = client.get_repo(repo)
+    if not repo_info:
+        print_err(f"Ziel-Repository nicht gefunden: {user}/{repo}")
+        raise SystemExit(1)
+    print(f"   ✅ Repo erreichbar: {user}/{repo}")
+
+    if not repo_info.get("has_issues", False):
+        print_err(f"Issues sind fuer {user}/{repo} nicht aktiviert")
+        raise SystemExit(1)
+    print("   ✅ Issues sind aktiviert")
+
+    if issue_number is not None:
+        issue = client.get_single_issue(repo, issue_number)
+        if not issue or "pull_request" in issue:
+            print_err(f"Issue nicht gefunden: {repo}#{issue_number}")
+            raise SystemExit(1)
+        if issue.get("state") != "open":
+            print_err(f"Issue ist nicht offen: {repo}#{issue_number}")
+            raise SystemExit(1)
+        print(f"   ✅ Issue offen: #{issue_number} {issue.get('title', '')}")
+
+    return token, user
+
+
 # ─────────────────────────────────────────────────────────────
 # Aider Integration
 # ─────────────────────────────────────────────────────────────
@@ -595,6 +736,8 @@ def find_opencode_executable(repo_path: str | None = None) -> str | None:
         ])
 
     candidates.append(Path.home() / ".local" / "bin" / "opencode")
+    candidates.append(Path.home() / ".local" / "share" / "opencode" / "opencode")
+    candidates.append(Path.home() / ".opencode" / "bin" / "opencode")
 
     for candidate in candidates:
         if candidate.exists() and os.access(candidate, os.X_OK):
@@ -603,8 +746,121 @@ def find_opencode_executable(repo_path: str | None = None) -> str | None:
     return shutil.which("opencode")
 
 
-def clean_path_candidate(candidate: str) -> str:
-    return candidate.strip().strip(" \t\r\n'\"“”‘’.,;:()[]{}<>")
+def check_opencode_auth(opencode_exe: str) -> bool:
+    """Prüft ob OpenCode authentisiert ist; gibt True zurück wenn alles ok.
+
+    Führt `opencode auth list` aus und interpretiert das Ergebnis.
+    Bei Fehlern wird nur eine Warnung ausgegeben, kein Abbruch.
+    """
+    try:
+        result = subprocess.run(
+            [opencode_exe, "auth", "list"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        stderr_lower = result.stderr.lower() if result.stderr else ""
+        stdout_lower = result.stdout.lower() if result.stdout else ""
+        combined = stderr_lower + stdout_lower
+
+        if result.returncode == 0 and "credentials" in combined and "0 credentials" not in combined:
+            return True
+
+        print_warn("OpenCode ist nicht authentifiziert!")
+        print("   → Anmelden mit: opencode auth login")
+        print("   → Oder Provider-Token via OPENCODE_API_KEY setzen")
+        return False
+    except FileNotFoundError:
+        print_warn("OpenCode Auth-Check fehlgeschlagen: executable nicht gefunden")
+        return False
+    except subprocess.TimeoutExpired:
+        print_warn("OpenCode Auth-Check hat nicht innerhalb von 15s geantwortet")
+        return False
+    except OSError as exc:
+        print_warn(f"OpenCode Auth-Check fehlgeschlagen: {exc}")
+        return False
+
+
+def run_opencode_diagnostic() -> int:
+    """Führt eine strukturierte OpenCode-Diagnose aus und gibt das Ergebnis aus.
+
+    Prüft:
+    1. Ob das opencode-Executable gefunden wird
+    2. Ob es ausführbar ist (opencode --version)
+    3. Ob der Benutzer authentifiziert ist (opencode auth list)
+
+    Returns:
+        0 wenn alles ok, 1 bei Problemen
+    """
+    print("OpenCode Diagnostic")
+    print("=" * 50)
+
+    opencode_exe = find_opencode_executable()
+    if not opencode_exe:
+        print_err("OpenCode CLI nicht gefunden")
+        print("   Installieren: https://opencode.ai/docs/installation")
+        print("   Danach `opencode` im PATH verfügbar machen")
+        return 1
+
+    print(f"  Executable: {opencode_exe}")
+
+    try:
+        version_result = subprocess.run(
+            [opencode_exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if version_result.returncode == 0:
+            version = (version_result.stdout or version_result.stderr).strip()
+            print(f"  Version:    {version or '(keine Ausgabe)'}")
+        else:
+            print_warn("OpenCode --version fehlgeschlagen")
+            print(f"    exit code: {version_result.returncode}")
+            print(f"    stderr:    {version_result.stderr[:200]}")
+            return 1
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print_err(f"OpenCode --version fehlgeschlagen: {exc}")
+        return 1
+
+    try:
+        auth_result = subprocess.run(
+            [opencode_exe, "auth", "list"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        auth_stdout = (auth_result.stdout or "").strip()
+        auth_stderr = (auth_result.stderr or "").strip()
+        combined = (auth_stdout + auth_stderr).lower()
+
+        if auth_result.returncode == 0 and "credentials" in combined and "0 credentials" not in combined:
+            print("  Auth:       ✅ Authentifiziert")
+            if auth_stdout:
+                for line in auth_stdout.splitlines():
+                    print(f"    {line}")
+        elif auth_result.returncode == 0 and "0 credentials" in combined:
+            print("  Auth:       ⚠️  Nicht authentifiziert")
+            print("    → opencode auth login")
+        else:
+            print_warn(f"OpenCode Auth-Status unbekannt (exit {auth_result.returncode})")
+            if auth_stderr:
+                print(f"    {auth_stderr[:200]}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print_warn(f"OpenCode Auth-Check fehlgeschlagen: {exc}")
+
+    print()
+    print("  Verwendung:")
+    print(f"    python scripts/solve_issues.py --model opencode")
+    print(f"    python scripts/solve_issues.py --model opencode --model-name opencode/deepseek-v4-flash-free")
+    print(f"    python scripts/solve_issues.py --model opencode --model-name mistral/mistral-small-2603")
+    print(f"    python scripts/solve_issues.py --model opencode --model-name claude-sonnet-4-20250514")
+    print(f"    python scripts/solve_issues.py --model opencode --model-name gpt-4o")
+    print(f"    python scripts/solve_issues.py --model opencode --dry-run")
+    print(f"  Freie OpenCode-Modelle (kein API-Key nötig): opencode/deepseek-v4-flash-free, opencode/mimo-v2.5-free, opencode/minimax-m3-free, opencode/nemotron-3-ultra-free")
+    print("=" * 50)
+
+    return 0
 
 
 def is_relative_to(path: Path, parent: Path) -> bool:
@@ -622,6 +878,68 @@ def looks_like_repo_file(path: str) -> bool:
         or basename in COMMON_REPO_FILES
         or "." in basename
     )
+
+
+def normalize_repo_relative_path_text(path_text: str) -> str:
+    normalized = Path(path_text).as_posix()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def clean_worker_secret_path_candidate(candidate: str) -> str:
+    return candidate.strip().strip(" \t\r\n'\"“”‘’,;:()[]{}<>")
+
+
+def is_secret_worker_path(path_text: str) -> bool:
+    normalized = normalize_repo_relative_path_text(clean_worker_secret_path_candidate(path_text))
+    if not normalized or normalized in SAFE_SECRET_EXAMPLE_PATHS:
+        return False
+    return (
+        normalized in SECRET_WORKER_PATHS
+        or any(normalized.startswith(prefix) for prefix in SECRET_WORKER_PREFIXES)
+    )
+
+
+def sanitize_worker_prompt_secret_paths(text: str, repo_path: str) -> str:
+    """Entfernt echte Secret-Dateipfade aus Worker-Prompts."""
+    repo_root = Path(repo_path).resolve()
+
+    def replacement(path_text: str, trailing: str = "") -> str:
+        return f"{SECRET_WORKER_PATH_REPLACEMENT}{trailing}"
+
+    def replace_absolute(match: re.Match) -> str:
+        raw_path, trailing = _split_trailing_path_punctuation(match.group(0))
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            return match.group(0)
+
+        resolved = candidate.resolve(strict=False)
+        if not is_relative_to(resolved, repo_root):
+            return match.group(0)
+
+        relative = resolved.relative_to(repo_root).as_posix()
+        if is_secret_worker_path(relative):
+            return replacement(relative, trailing)
+        return match.group(0)
+
+    sanitized = ABSOLUTE_PATH_RE.sub(replace_absolute, text)
+
+    for candidate in sorted(
+        collect_issue_path_candidates(sanitized),
+        key=len,
+        reverse=True,
+    ):
+        cleaned = clean_worker_secret_path_candidate(candidate)
+        if not is_secret_worker_path(cleaned):
+            continue
+        sanitized = re.sub(
+            rf"(?<![\w./-]){re.escape(cleaned)}(?![\w./-])",
+            SECRET_WORKER_PATH_REPLACEMENT,
+            sanitized,
+        )
+
+    return sanitized
 
 
 def collect_issue_path_candidates(text: str) -> list[str]:
@@ -653,6 +971,9 @@ def normalize_aider_target(candidate: str, repo_path: str) -> str | None:
     if not looks_like_repo_file(candidate):
         return None
 
+    if is_secret_worker_path(candidate):
+        return None
+
     repo_root = Path(repo_path).resolve()
     target = (repo_root / path).resolve()
     if not is_relative_to(target, repo_root):
@@ -661,7 +982,7 @@ def normalize_aider_target(candidate: str, repo_path: str) -> str | None:
     if target.exists():
         if not target.is_file():
             return None
-    elif path.parent != Path(".") and not (repo_root / path.parent).is_dir():
+    else:
         return None
 
     return target.relative_to(repo_root).as_posix()
@@ -691,11 +1012,24 @@ def build_aider_command(model: str, model_name: str, prompt: str, repo_path: str
 
     targets = file_targets if file_targets is not None else infer_aider_targets(prompt, repo_path)
 
+    aider = find_aider_executable() or "aider"
+
+    # Solver-lokale Pfade für Chat- und Input-History verwenden
+    state_dir, _ = ensure_solver_directories()
+    chat_history_file = state_dir / "aider.chat.history.md"
+    input_history_file = state_dir / "aider.input.history"
+
     cmd = [
-        "aider",
+        aider,
         *flags,
         "--yes",                   # Automatisch ja sagen
         "--no-auto-commits",       # Wir committen selbst
+        "--no-check-update",       # Kein Schreibzugriff auf ~/.aider/caches nötig
+        "--no-analytics",          # Keine Telemetrie im nicht-interaktiven Worker
+        "--no-gitignore",          # Keine automatischen .gitignore-Nebenwirkungen
+        "--chat-history-file", str(chat_history_file),
+        "--input-history-file", str(input_history_file),
+        "--map-tokens", "0",       # Kein repo-lokaler .aider.tags.cache
         "--subtree-only",          # Repo-Kontext auf den geklonten Arbeitsbaum begrenzen
         "--message", prompt,       # Direkt-Prompt (kein interaktiver Modus)
         *targets,
@@ -718,13 +1052,32 @@ def build_worker_env(model: str, config: dict, base_env: dict[str, str] | None =
         env["OLLAMA_API_BASE"] = ollama_host
 
     if model == "opencode":
+        env = prepare_opencode_worker_environment(env)
         env.pop("GITHUB_TOKEN", None)
         env.pop("GH_TOKEN", None)
+    else:
+        # Entferne OpenCode-spezifische Variablen für nicht-OpenCode-Worker
+        env.pop("OPENCODE_AUTH_FILE", None)
+        env.pop("OPENCODE_STATE_DIR", None)
+        env.pop("OPENCODE_CACHE_DIR", None)
+
+    if model in ("openrouter", "openrouter_direct"):
+        # OpenRouter benoetigt explizit OPENROUTER_API_KEY in der Umgebung
+        # und wir entfernen andere Provider-Keys zur Sicherheit
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("MISTRAL_API_KEY", None)
+        env.pop("OPENAI_API_KEY", None)
 
     return env
 
 
-def build_codex_command(prompt: str, repo_path: str, model_name: str | None = None) -> list:
+def build_codex_command(
+    prompt: str,
+    repo_path: str,
+    model_name: str | None = None,
+    additional_dirs: list[str] | None = None,
+    sandbox_mode: str = "workspace-write",
+) -> list:
     codex = find_codex_executable()
     if not codex:
         raise FileNotFoundError("codex")
@@ -733,10 +1086,13 @@ def build_codex_command(prompt: str, repo_path: str, model_name: str | None = No
         codex,
         "exec",
         "--cd", repo_path,
-        "--sandbox", "workspace-write",
+        "--sandbox", sandbox_mode,
     ]
     if model_name:
         cmd.extend(["--model", model_name])
+    if additional_dirs:
+        for dir_path in additional_dirs:
+            cmd.extend(["--add-dir", dir_path])
     cmd.append(prompt)
     return cmd
 
@@ -757,6 +1113,64 @@ def build_vibe_command(prompt: str, repo_path: str,
     ]
 
 
+OPENCODE_REPO_RELATIVE_INSTRUCTIONS = """OpenCode wurde bereits mit `--dir` im geklonten Repository gestartet.
+Verwende fuer Dateioperationen ausschliesslich repo-relative Pfade wie `scripts/datei.py`.
+Wenn eine Pfadangabe auf dieses Repository zeigt, nutze den entsprechenden relativen Pfad und nicht den absoluten temporaeren Worktree-Pfad.
+Lies, kopiere oder bearbeite keine echten Secret-Dateien wie `.env`, `.env.*`, `config/.env` oder `config/.env.*`.
+Nutze fuer Konfigurationsbeispiele ausschliesslich sichere Beispiel-Dateien wie `config/config.example.env` oder `.env.example`.
+
+WICHTIG: Gib NIEMALS absolute Pfade ausserhalb des Repositories an (z. B. `/tmp/ai-solver-xyz/`). Solche Pfade werden ignoriert oder durch Platzhalter ersetzt."""
+
+
+def _split_trailing_path_punctuation(path_text: str) -> tuple[str, str]:
+    trailing = ""
+    while path_text and path_text[-1] in ".,;:)]}":
+        trailing = path_text[-1] + trailing
+        path_text = path_text[:-1]
+    return path_text, trailing
+
+
+def relativize_repo_absolute_paths(text: str, repo_path: str) -> str:
+    """Ersetzt absolute repo-interne Pfade im Prompt durch repo-relative Pfade.
+    Entfernt absolute Pfade ausserhalb des Repos (z. B. temporaere Worktree-Pfade),
+    behält aber URLs und Backticks bei. Repo-interne Pfade in /var/folders/ werden relativiert."""
+    repo_root = Path(repo_path).resolve()
+
+    def replace_match(match: re.Match) -> str:
+        raw_path, trailing = _split_trailing_path_punctuation(match.group(0))
+        # Backticks extrahieren und später wieder hinzufügen
+        leading_backtick = "`" if match.group(0).startswith("`") else ""
+        trailing_backtick = "`" if match.group(0).endswith("`") else ""
+        raw_path = raw_path.strip("`")
+
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            return match.group(0)
+
+        # URLs behalten, aber /var/folders/ nur, wenn sie außerhalb des Repos liegen
+        if raw_path.startswith(('http://', 'https://')):
+            return match.group(0)
+
+        resolved = candidate.resolve(strict=False)
+        if not is_relative_to(resolved, repo_root):
+            # Alle externen Pfade entfernen, einschließlich /var/folders/
+            return f"{leading_backtick}<EXTERNAL_PATH_REMOVED>{trailing_backtick}{trailing}"
+
+        relative = resolved.relative_to(repo_root).as_posix()
+        if is_secret_worker_path(relative):
+            return f"{leading_backtick}{SECRET_WORKER_PATH_REPLACEMENT}{trailing_backtick}{trailing}"
+        return f"{leading_backtick}{relative}{trailing_backtick}{trailing}"
+
+    return ABSOLUTE_PATH_RE.sub(replace_match, text)
+
+
+def build_opencode_prompt(prompt: str, repo_path: str) -> str:
+    """Bereitet den Prompt so vor, dass OpenCode repo-relative Pfade nutzt."""
+    sanitized_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_path)
+    normalized_prompt = relativize_repo_absolute_paths(sanitized_prompt, repo_path)
+    return f"{OPENCODE_REPO_RELATIVE_INSTRUCTIONS}\n\n{normalized_prompt}"
+
+
 def build_opencode_command(prompt: str, repo_path: str,
                            model_name: str | None = None) -> list:
     opencode = find_opencode_executable(repo_path)
@@ -770,7 +1184,7 @@ def build_opencode_command(prompt: str, repo_path: str,
     ]
     if model_name:
         cmd.extend(["--model", model_name])
-    cmd.append(prompt)
+    cmd.append(build_opencode_prompt(prompt, repo_path))
     return cmd
 
 
@@ -779,8 +1193,76 @@ def get_worker_display_name(model: str) -> str:
     return MODEL_CONFIGS[model]["display_name"]
 
 
-def build_worker_command(model: str, model_name: str, prompt: str, repo_path: str,
-                           file_targets: list[str] | None = None) -> list:
+def preflight_temp_dir_check(temp_dir: str) -> list[str]:
+    """Prüft Schreibrechte im Temp-Verzeichnis und gibt zusätzliche --add-dir-Pfade zurück."""
+    additional_dirs = []
+    if not os.access(temp_dir, os.W_OK):
+        # Versuche, workspace-temp im ursprünglichen Verzeichnis zu erstellen
+        workspace_temp = os.path.join(temp_dir, "workspace-temp")
+        try:
+            os.makedirs(workspace_temp, exist_ok=True)
+            if os.access(workspace_temp, os.W_OK):
+                additional_dirs.append(workspace_temp)
+        except OSError as exc:
+            print_warn(f"Konnte workspace-temp nicht erstellen: {exc}")
+            # Fallback auf /tmp, falls das ursprüngliche Verzeichnis nicht beschreibbar ist
+            fallback_temp = os.path.join("/tmp", "ai-issue-solver-workspace")
+            try:
+                os.makedirs(fallback_temp, exist_ok=True)
+                if os.access(fallback_temp, os.W_OK):
+                    additional_dirs.append(fallback_temp)
+                    print_warn(f"Verwende Fallback-Verzeichnis: {fallback_temp}")
+            except OSError as fallback_exc:
+                print_warn(f"Konnte Fallback-Verzeichnis nicht erstellen: {fallback_exc}")
+    return additional_dirs
+
+
+def get_worker_adapter(model: str):
+    """
+    Factory-Funktion: Gibt den passenden WorkerAdapter für ein Modell zurück.
+
+    Kapselt die Zuordnung von Modell-Namen zu Adapter-Klassen, sodass
+    ``solve_issue()`` provider-agnostisch arbeiten kann.
+
+    Args:
+        model: Provider-Name (codex, opencode, mistral-vibe, openrouter_direct
+               oder ein Aider-Provider: claude, openai, mistral, ollama, openrouter).
+
+    Returns:
+        WorkerAdapter-Instanz für den angegebenen Provider.
+
+    Raises:
+        ValueError: Bei unbekanntem Provider-Namen.
+    """
+    from workers.codex_adapter import CodexAdapter
+    from workers.opencode_adapter import OpenCodeAdapter
+    from workers.mistral_vibe_adapter import MistralVibeAdapter
+    from workers.openrouter_direct_adapter import OpenRouterDirectAdapter
+    from workers.aider_adapter import AiderAdapter, AIDER_MODEL_CONFIGS
+
+    if model == "codex":
+        return CodexAdapter()
+    elif model == "opencode":
+        return OpenCodeAdapter()
+    elif model == "mistral-vibe":
+        return MistralVibeAdapter()
+    elif model == "openrouter_direct":
+        return OpenRouterDirectAdapter()
+    elif model in AIDER_MODEL_CONFIGS:
+        return AiderAdapter(provider=model)
+    else:
+        raise ValueError(f"Unbekannter Worker-Provider: '{model}'")
+
+
+def build_worker_command(
+    model: str,
+    model_name: str,
+    prompt: str,
+    repo_path: str,
+    file_targets: list[str] | None = None,
+    additional_dirs: list[str] | None = None,
+    config: dict | None = None,
+) -> list[str] | str:
     """Baut den KI-Worker-Befehl basierend auf dem Modell.
 
     Zentralisiert die Command-Konstruktion für alle unterstützten Worker.
@@ -788,29 +1270,44 @@ def build_worker_command(model: str, model_name: str, prompt: str, repo_path: st
     Für model_name wird None an die Builder weitergegeben, falls nicht gesetzt.
 
     Args:
-        model: Das zu verwendende Modell (codex, claude, openai, mistral, ollama, mistral-vibe, opencode)
+        model: Das zu verwendende Modell (codex, claude, openai, mistral, ollama, mistral-vibe, opencode, openrouter_direct)
         model_name: Spezifischer Modellname oder leerer String
         prompt: Der Prompt für den Worker
         repo_path: Pfad zum Repository
         file_targets: Optionale Liste von Dateizielen (nur für aider relevant)
+        additional_dirs: Zusätzliche Verzeichnisse für Codex Sandbox (nur für codex relevant)
+        config: Konfigurationsdaten für API-Keys und Einstellungen
 
     Returns:
-        Die Befehlszeile als Liste von String-Argumenten
+        list[str]: Die Befehlszeile als Liste von String-Argumenten (für CLI-Worker).
+
+    Raises:
+        ValueError: Wenn model == "openrouter_direct" — dieser Worker hat einen eigenen
+                    Ausführungspfad über run_openrouter_direct_worker().
     """
     effective_model_name = model_name if model_name else None
+    safe_prompt = sanitize_worker_prompt_secret_paths(prompt, repo_path)
+    config = config or {}
 
     if model == "codex":
-        return build_codex_command(prompt, repo_path, effective_model_name)
+        return build_codex_command(safe_prompt, repo_path, effective_model_name, additional_dirs)
     elif model == "mistral-vibe":
-        return build_vibe_command(prompt, repo_path)
+        return build_vibe_command(safe_prompt, repo_path)
     elif model == "opencode":
-        return build_opencode_command(prompt, repo_path, effective_model_name)
+        return build_opencode_command(safe_prompt, repo_path, effective_model_name)
+    elif model == "openrouter_direct":
+        # openrouter_direct hat einen eigenen Ausführungspfad — siehe run_openrouter_direct_worker()
+        raise ValueError(
+            "openrouter_direct darf nicht über build_worker_command aufgerufen werden. "
+            "Verwende stattdessen run_openrouter_direct_worker()."
+        )
     else:
-        return build_aider_command(model, model_name, prompt, repo_path, file_targets)
+        return build_aider_command(model, model_name, safe_prompt, repo_path, file_targets)
 
 
 def run_worker_command(cmd: list, repo_dir: str, env: dict,
-                       run_report: RunReport | None = None) -> WorkerRunResult:
+                       run_report: RunReport | None = None,
+                       verbosity: str = "normal") -> WorkerRunResult:
     """Fuehrt den KI-Worker aus, zeigt verdichteten Output und haelt Rohdaten fest."""
     try:
         process = subprocess.Popen(
@@ -829,19 +1326,45 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict,
     output_parts = []
     suppressed_lines = 0
     last_activity_at = datetime.now()
+    if run_report:
+        write_run_health(
+            run_report,
+            status="running",
+            phase="worker_running",
+            worker_pid=process.pid,
+        )
     if process.stdout:
         for line in process.stdout:
             output_parts.append(line)
-            if should_surface_worker_line(line):
-                print(f"        | {line}", end="")
+            if verbosity == "verbose":
+                if line.strip():
+                    print(f"        | {line}", end="")
                 last_activity_at = datetime.now()
                 if run_report:
-                    write_run_health(run_report, "".join(output_parts), last_activity_at)
+                    write_run_health(run_report, "".join(output_parts), last_activity_at,
+                                     phase="worker_running", worker_pid=process.pid)
+            elif verbosity == "normal":
+                if should_surface_worker_line(line):
+                    print(f"        | {line}", end="")
+                    last_activity_at = datetime.now()
+                    if run_report:
+                        write_run_health(run_report, "".join(output_parts), last_activity_at,
+                                         phase="worker_running", worker_pid=process.pid)
+                else:
+                    suppressed_lines += 1
             else:
-                suppressed_lines += 1
+                # quiet: nichts drucken, aber Aktivitaet tracken
+                if should_surface_worker_line(line):
+                    last_activity_at = datetime.now()
+                    if run_report:
+                        write_run_health(run_report, "".join(output_parts), last_activity_at,
+                                         phase="worker_running", worker_pid=process.pid)
+                else:
+                    suppressed_lines += 1
         process.stdout.close()
 
-    print_worker_suppression_summary(suppressed_lines)
+    if verbosity != "quiet":
+        print_worker_suppression_summary(suppressed_lines)
 
     return WorkerRunResult(
         returncode=process.wait(),
@@ -850,16 +1373,75 @@ def run_worker_command(cmd: list, repo_dir: str, env: dict,
     )
 
 
-def should_surface_worker_line(line: str) -> bool:
-    """Filtert laute Detailausgabe und laesst relevante Statuszeilen live durch."""
-    stripped = line.strip()
-    if not stripped:
-        return False
-    if WORKER_NOISY_OUTPUT_RE.search(stripped):
-        return False
-    if WORKER_NOISY_FRAGMENT_RE.search(stripped):
-        return False
-    return bool(WORKER_LIVE_OUTPUT_RE.search(stripped))
+def run_openrouter_direct_worker(
+    prompt: str,
+    repo_dir: str,
+    model_name: str,
+    api_key: str | None = None,
+    verbosity: str = "normal",
+) -> WorkerRunResult:
+    """Fuehrt den OpenRouter-Direct-Worker aus und gibt ein WorkerRunResult zurueck.
+
+    Dieser Worker ruft die OpenRouter API direkt auf, extrahiert Unified-Diff-Patches
+    aus der Modellantwort und wendet sie im Repository-Verzeichnis an.
+
+    Returncode-Semantik (aus DirectRunResult):
+        0  — Mindestens ein Patch erfolgreich angewendet.
+        1  — Patches gefunden, aber alle fehlgeschlagen oder API-Fehler.
+        2  — Modell hat Prosa ohne auswertbare Diffs zurueckgegeben.
+
+    Args:
+        prompt: Eingabe-Prompt fuer das Modell (bereits sanitiert).
+        repo_dir: Absoluter Pfad zum Ziel-Repository-Verzeichnis.
+        model_name: OpenRouter Modell-String (z. B. "mistralai/mistral-large").
+        api_key: Optionaler API-Key; wird sonst aus OPENROUTER_API_KEY gelesen.
+
+    Returns:
+        WorkerRunResult mit Returncode und kombiniertem Log-Output.
+    """
+    from workers.openrouter_worker import OpenRouterWorker, DirectRunResult
+
+    # Fehlender API-Key fruehzeitig abfangen
+    effective_key = api_key or os.getenv("OPENROUTER_API_KEY")
+    if not effective_key:
+        error_msg = "[openrouter_direct] FEHLER: OPENROUTER_API_KEY ist nicht gesetzt."
+        print_err(error_msg)
+        return WorkerRunResult(returncode=1, output=error_msg)
+
+    worker = OpenRouterWorker(api_key=effective_key, model=model_name)
+
+    direct_result: DirectRunResult = worker.run_direct(
+        prompt=prompt,
+        repo_dir=repo_dir,
+    )
+
+    # Ausgabe live anzeigen (zeilenweise gefiltert)
+    suppressed_lines = 0
+    last_activity_at = datetime.now()
+    for line in direct_result.output.splitlines(keepends=True):
+        if verbosity == "verbose":
+            if line.strip():
+                print(f"        | {line}", end="")
+            last_activity_at = datetime.now()
+        elif verbosity == "normal":
+            if should_surface_worker_line(line):
+                print(f"        | {line}", end="")
+                last_activity_at = datetime.now()
+            else:
+                suppressed_lines += 1
+        else:
+            if should_surface_worker_line(line):
+                last_activity_at = datetime.now()
+            else:
+                suppressed_lines += 1
+    if verbosity != "quiet":
+        print_worker_suppression_summary(suppressed_lines)
+
+    return WorkerRunResult(
+        returncode=direct_result.returncode,
+        output=direct_result.output,
+        last_activity_at=last_activity_at,
+    )
 
 
 def print_worker_suppression_summary(count: int) -> None:
@@ -869,7 +1451,7 @@ def print_worker_suppression_summary(count: int) -> None:
 
 def read_vibe_log_snippet(repo_dir: str) -> str:
     """Liest ein kompakter Snippet aus der Vibe-Log-Datei, falls vorhanden.
-    
+
     Sucht nach .vibe/logs/vibe.log im Arbeitsverzeichnis und extrahiert die
     letzten relevanten Zeilen. Gibt einen leeren String zurueck, wenn die
     Datei nicht existiert oder nicht lesbar ist.
@@ -877,28 +1459,28 @@ def read_vibe_log_snippet(repo_dir: str) -> str:
     vibe_log = Path(repo_dir) / VIBE_LOG_PATH
     if not vibe_log.exists():
         return ""
-    
+
     try:
         content = vibe_log.read_text(encoding="utf-8", errors="replace")
     except (OSError, UnicodeDecodeError):
         return ""
-    
+
     if not content.strip():
         return ""
-    
+
     lines = content.strip().splitlines()
     # Filtere relevante Zeilen (aehnlich wie bei Worker-Output)
     relevant_lines = [line for line in lines if line.strip() and should_surface_worker_line(line)]
-    
+
     if not relevant_lines:
         # Falls keine relevanten Zeilen gefunden, nimm die letzten Zeilen
         relevant_lines = lines[-VIBE_LOG_SNIPPET_LINES:] if len(lines) > VIBE_LOG_SNIPPET_LINES else lines
     else:
         # Nimm die letzten relevanten Zeilen
         relevant_lines = relevant_lines[-VIBE_LOG_SNIPPET_LINES:]
-    
+
     snippet = "\n".join(relevant_lines)
-    
+
     # Begrenze auf maximale Laenge
     if len(snippet) > VIBE_LOG_SNIPPET_CHARS:
         snippet = snippet[-VIBE_LOG_SNIPPET_CHARS:]
@@ -906,424 +1488,8 @@ def read_vibe_log_snippet(repo_dir: str) -> str:
         last_newline = snippet.rfind("\n")
         if last_newline > 0:
             snippet = snippet[last_newline + 1:]
-    
+
     return snippet
-
-
-def git_status_porcelain(repo_dir: str) -> str:
-    result = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=repo_dir, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print_warn("Git-Status konnte nicht gelesen werden")
-        return ""
-    return result.stdout
-
-
-def git_output(repo_dir: str, args: list[str]) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo_dir,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
-
-
-def changed_status_paths(status_lines: list[str]) -> list[str]:
-    paths = []
-    for line in status_lines:
-        if len(line) < 4:
-            continue
-        paths.append(line[3:])
-    return paths
-
-
-def count_file_lines(path: Path) -> int:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return 0
-    if not data:
-        return 0
-    return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
-
-
-def pluralize_de(count: int, singular: str, plural: str) -> str:
-    return singular if count == 1 else plural
-
-
-def format_untracked_file_stats(repo_dir: str, status_lines: list[str]) -> tuple[list[tuple[str, int]], int]:
-    repo_root = Path(repo_dir)
-    stats = []
-    insertions = 0
-    for status_line in status_lines:
-        if not status_line.startswith("?? "):
-            continue
-        relative_path = status_line[3:]
-        path = repo_root / relative_path
-        if not path.is_file():
-            continue
-        line_count = count_file_lines(path)
-        insertions += line_count
-        stats.append((relative_path, line_count))
-    return stats, insertions
-
-
-def format_untracked_diff_stat_lines(untracked_stats: list[tuple[str, int]],
-                                     path_width: int = 0) -> list[str]:
-    if not untracked_stats:
-        return []
-    path_width = max(path_width, max(len(path) for path, _line_count in untracked_stats))
-    lines = []
-    for relative_path, line_count in untracked_stats:
-        pluses = "+" * min(max(line_count, 1), GIT_SUMMARY_STAT_GRAPH_WIDTH)
-        lines.append(f"{relative_path:<{path_width}} | {line_count:>3} {pluses}")
-    return lines
-
-
-def normalize_diff_stat_lines(stat_lines: list[str],
-                              untracked_stats: list[tuple[str, int]]) -> list[str]:
-    file_lines = []
-    summary_lines = []
-    path_width = 0
-    for line in stat_lines:
-        if "|" not in line:
-            summary_lines.append(line)
-            continue
-        path_width = max(path_width, len(line.split("|", 1)[0].rstrip()))
-        file_lines.append(line)
-
-    untracked_lines = format_untracked_diff_stat_lines(untracked_stats, path_width)
-    return file_lines + untracked_lines + summary_lines
-
-
-def format_git_change_summary(repo_dir: str, git_status: str | None = None) -> list[str]:
-    status = git_status if git_status is not None else git_status_porcelain(repo_dir)
-    status_lines = [line for line in status.splitlines() if line.strip()]
-    if not status_lines:
-        return []
-
-    summary = ["Git-Änderungsübersicht:"]
-    untracked_stats, untracked_insertions = format_untracked_file_stats(
-        repo_dir,
-        status_lines,
-    )
-    stat = git_output(repo_dir, ["diff", "--stat", "HEAD", "--"])
-    stat_lines = normalize_diff_stat_lines(
-        [line for line in stat.splitlines() if line.strip()],
-        untracked_stats,
-    )
-    if stat_lines:
-        for line in stat_lines[:GIT_SUMMARY_MAX_STAT_LINES]:
-            summary.append(f"  {line}")
-        if len(stat_lines) > GIT_SUMMARY_MAX_STAT_LINES:
-            summary.append(
-                f"  ... {len(stat_lines) - GIT_SUMMARY_MAX_STAT_LINES} weitere Stat-Zeilen"
-            )
-    else:
-        changed_paths = changed_status_paths(status_lines)
-        for path in changed_paths[:GIT_SUMMARY_MAX_STATUS_LINES]:
-            summary.append(f"  {path}")
-        if len(changed_paths) > GIT_SUMMARY_MAX_STATUS_LINES:
-            summary.append(
-                f"  ... {len(changed_paths) - GIT_SUMMARY_MAX_STATUS_LINES} weitere Dateien"
-            )
-
-    if untracked_insertions:
-        summary.append(
-            f"  {len(untracked_stats)} neue "
-            f"{pluralize_de(len(untracked_stats), 'Datei', 'Dateien')}, "
-            f"{untracked_insertions} "
-            f"{pluralize_de(untracked_insertions, 'eingefuegte Zeile', 'eingefuegte Zeilen')}"
-        )
-    return summary
-
-
-def print_git_change_summary(repo_dir: str, git_status: str) -> None:
-    for line in format_git_change_summary(repo_dir, git_status):
-        print(f"      {line}")
-
-
-def safe_run_repo_name(repo: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", repo).strip("-") or "repo"
-
-
-def create_run_report(repo: str, issue_number: int, branch: str, model: str,
-                      now_fn=datetime.now,
-                      issue_title: str = "",
-                      run_dir: Path | str | None = None) -> RunReport | None:
-    if run_dir is None:
-        timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
-        run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
-        exist_ok = False
-    else:
-        run_dir = Path(run_dir)
-        exist_ok = True
-    try:
-        run_dir.mkdir(parents=True, exist_ok=exist_ok)
-    except OSError as exc:
-        print_warn(f"Run-Report konnte nicht angelegt werden: {exc}")
-        return None
-    return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
-
-
-def write_run_health(report: RunReport, output: str = "",
-                     last_activity_at: datetime | None = None,
-                     status: str = "running") -> None:
-    """Speichert leichte Health-Daten, ohne den eigentlichen Summary-Report umzubauen."""
-    last_activity_at = last_activity_at or datetime.now()
-    tail = format_worker_output_tail(output)
-    payload = {
-        "status": status,
-        "last_activity_at": last_activity_at.isoformat(timespec="seconds"),
-        "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
-        "output_tail": tail,
-    }
-    try:
-        (report.path / "health.json").write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        if tail:
-            (report.path / "output-tail.log").write_text(tail + "\n", encoding="utf-8")
-    except OSError as exc:
-        print_warn(f"Run-Health konnte nicht gespeichert werden: {exc}")
-
-
-def preserved_worktree_cleanup_command(retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS) -> str:
-    return (
-        "python scripts/solve_issues.py --cleanup-preserved-worktrees "
-        f"--retention-days {retention_days}"
-    )
-
-
-def preserved_worktree_recovery_note(path: Path, branch: str, base_branch: str | None = None) -> str:
-    diff_base = f"origin/{base_branch}...HEAD" if base_branch else "origin/main...HEAD"
-    return "\n".join([
-        "Manuelle Recovery:",
-        f"  cd {path}",
-        "  git status --short",
-        f"  git diff --stat {diff_base}",
-        f"  git push origin HEAD:{branch}",
-        "  # Danach PR manuell erstellen oder den Solver erneut starten.",
-    ])
-
-
-def write_preserved_worktree_readme(path: Path, repo: str, issue_number: int,
-                                    branch: str, status: str,
-                                    base_branch: str | None = None) -> None:
-    content = "\n".join([
-        "# Preserved AI Solver Worktree",
-        "",
-        f"- Repository: `{repo}`",
-        f"- Issue: `#{issue_number}`",
-        f"- Branch: `{branch}`",
-        f"- Failure status: `{status}`",
-        "",
-        preserved_worktree_recovery_note(path, branch, base_branch),
-        "",
-        "Aufraeumen:",
-        "",
-        f"```bash\n{preserved_worktree_cleanup_command()}\n```",
-        "",
-    ])
-    (path / "RECOVERY.md").write_text(content, encoding="utf-8")
-
-
-def sanitize_preserved_remote(repo_dir: Path, owner: str, repo: str) -> None:
-    public_url = f"https://github.com/{owner}/{repo}.git"
-    subprocess.run(
-        ["git", "remote", "set-url", "origin", public_url],
-        cwd=repo_dir,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(
-        ["git", "config", "--unset-all", "remote.origin.pushurl"],
-        cwd=repo_dir,
-        capture_output=True,
-        text=True,
-    )
-
-
-def unique_preserved_worktree_path(report: RunReport, repo: str) -> Path:
-    base = PRESERVED_WORKTREES_ROOT / report.path.name / safe_run_repo_name(repo)
-    candidate = base
-    suffix = 2
-    while candidate.exists():
-        candidate = base.with_name(f"{base.name}-{suffix}")
-        suffix += 1
-    return candidate
-
-
-def worktree_has_recoverable_changes(repo_dir: str, base_branch: str) -> bool:
-    return bool(git_status_porcelain(repo_dir).strip()) or branch_has_changes_against_base(
-        repo_dir, base_branch
-    )
-
-
-def should_preserve_worktree(status: str, repo_dir: str, base_branch: str,
-                             changes_exist: bool = False) -> bool:
-    if status not in PRESERVE_WORKTREE_STATUSES:
-        return False
-    return changes_exist or worktree_has_recoverable_changes(repo_dir, base_branch)
-
-
-def preserve_worker_worktree(repo_dir: str, report: RunReport, owner: str, repo: str,
-                             issue_number: int, branch: str, status: str,
-                             base_branch: str) -> Path | None:
-    source = Path(repo_dir)
-    if not source.exists():
-        return None
-
-    destination = unique_preserved_worktree_path(report, repo)
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        sanitize_preserved_remote(source, owner, repo)
-        shutil.move(str(source), str(destination))
-    except (OSError, shutil.Error) as exc:
-        print_warn(f"Worktree konnte nicht gesichert werden: {exc}")
-        return None
-
-    try:
-        write_preserved_worktree_readme(
-            destination,
-            repo=repo,
-            issue_number=issue_number,
-            branch=branch,
-            status=status,
-            base_branch=base_branch,
-        )
-    except OSError as exc:
-        print_warn(f"Recovery-Hinweis konnte nicht geschrieben werden: {exc}")
-    print_warn(f"Worktree fuer Recovery gesichert: {destination}")
-    return destination
-
-
-def write_run_report(report: RunReport, status: str,
-                     worker_result: WorkerRunResult | None = None,
-                     pr_url: str | None = None,
-                     note: str | None = None,
-                     preserved_worktree_path: Path | str | None = None,
-                     base_branch: str | None = None,
-                     git_change_summary: list[str] | None = None,
-                     vibe_log_snippet: str | None = None) -> Path | None:
-    worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
-    worker_output = "" if worker_result is None else worker_result.output
-    output_tail = format_worker_output_tail(worker_output)
-    last_activity_at = worker_result.last_activity_at if worker_result else None
-    pr_value = pr_url or ""
-    preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
-    cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
-    vibe_snippet = vibe_log_snippet or ""
-
-    try:
-        if worker_result is not None:
-            (report.path / "worker-output.log").write_text(worker_output, encoding="utf-8")
-        if output_tail:
-            (report.path / "output-tail.log").write_text(output_tail + "\n", encoding="utf-8")
-
-        metadata = {
-            "status": status,
-            "selected_repo": report.repo,
-            "repo": report.repo,
-            "issue_number": report.issue_number,
-            "issue": report.issue_number,
-            "issue_title": report.issue_title,
-            "branch": report.branch,
-            "model": report.model,
-            "worker_exit_code": worker_exit_code,
-            "last_activity_at": last_activity_at.isoformat(timespec="seconds") if last_activity_at else "",
-            "last_report_update_at": datetime.now().isoformat(timespec="seconds"),
-            "pr_url": pr_value,
-            "note": note or "",
-            "preserved_worktree": preserved_value,
-            "cleanup_command": cleanup_command,
-            "git_change_summary": git_change_summary or [],
-            "vibe_log_snippet": vibe_snippet,
-        }
-        (report.path / "metadata.json").write_text(
-            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
-        summary_lines = [
-            f"status: {status}",
-            f"selected_repo: {report.repo}",
-            f"repo: {report.repo}",
-            f"issue_number: {report.issue_number}",
-            f"issue: {report.issue_number}",
-            f"issue_title: {report.issue_title}",
-            f"branch: {report.branch}",
-            f"model: {report.model}",
-            f"worker_exit_code: {worker_exit_code}",
-            f"last_activity_at: {last_activity_at.isoformat(timespec='seconds') if last_activity_at else ''}",
-            f"last_report_update_at: {datetime.now().isoformat(timespec='seconds')}",
-            f"pr_url: {pr_value}",
-            f"preserved_worktree: {preserved_value}",
-        ]
-        if cleanup_command:
-            summary_lines.append(f"cleanup_command: {cleanup_command}")
-            summary_lines.extend([
-                "",
-                preserved_worktree_recovery_note(Path(preserved_value), report.branch, base_branch),
-            ])
-        if note:
-            summary_lines.extend(["", f"note: {note}"])
-        if worker_result is not None:
-            summary_lines.extend(["", "Der vollstaendige Worker-Output liegt in worker-output.log."])
-        if git_change_summary:
-            summary_lines.extend(["", "git_diff_stat:", *git_change_summary])
-        if output_tail:
-            summary_lines.extend(["", "output_tail:", output_tail])
-        if vibe_snippet:
-            summary_lines.extend(["", "vibe_log_snippet:", vibe_snippet])
-
-        (report.path / "summary.txt").write_text(
-            "\n".join(summary_lines) + "\n",
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        print_warn(f"Run-Report konnte nicht gespeichert werden: {exc}")
-        return None
-    return report.path
-
-
-def write_worker_diagnostics(result: WorkerRunResult, repo: str, issue_number: int,
-                             model: str, branch: str = "",
-                             issue_title: str = "",
-                             pr_url: str | None = None,
-                             status: str = "worker_finished") -> Path | None:
-    report = create_run_report(repo, issue_number, branch, model, issue_title=issue_title)
-    if not report:
-        return None
-    return write_run_report(report, status, worker_result=result, pr_url=pr_url)
-
-
-def cleanup_preserved_worktrees(root: Path = PRESERVED_WORKTREES_ROOT,
-                                retention_days: int = PRESERVED_WORKTREE_RETENTION_DAYS,
-                                dry_run: bool = True,
-                                now_fn=time.time) -> list[Path]:
-    if not root.exists():
-        return []
-
-    cutoff = now_fn() - max(retention_days, 0) * 24 * 60 * 60
-    stale_paths: list[Path] = []
-    for path in sorted(item for item in root.iterdir() if item.is_dir()):
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        if mtime <= cutoff:
-            stale_paths.append(path)
-            if not dry_run:
-                shutil.rmtree(path)
-    return stale_paths
-
 
 
 def changed_paths_from_status(git_status: str) -> list[Path]:
@@ -1406,6 +1572,12 @@ def validate_worker_changes(repo_dir: str, git_status: str | None = None) -> Wor
 
     for relative_path in changed_paths:
         path = repo_root / relative_path
+        if not path.exists():
+            errors.append(f"{relative_path}: Datei konnte nicht erstellt werden (Schreibrechte?)")
+            continue
+        if not os.access(path, os.W_OK):
+            errors.append(f"{relative_path}: Keine Schreibrechte")
+            continue
         if not path.is_file():
             continue
         marker_line = conflict_marker_line(path)
@@ -1505,21 +1677,6 @@ def sleep_until_codex_reset(rate_limit: CodexRateLimit,
         print("      Reset-Zeit ist bereits erreicht; setze sofort fort.")
 
 
-def format_worker_output_tail(output: str) -> str:
-    cleaned = output.strip()
-    if not cleaned:
-        return ""
-
-    lines = cleaned.splitlines()
-    surfaced_lines = [line for line in lines if should_surface_worker_line(line)]
-    tail_lines = surfaced_lines[-WORKER_OUTPUT_TAIL_LINES:] if surfaced_lines else lines[-WORKER_OUTPUT_TAIL_LINES:]
-    tail = "\n".join(tail_lines)
-    if len(tail) > WORKER_OUTPUT_TAIL_CHARS:
-        tail = tail[-WORKER_OUTPUT_TAIL_CHARS:]
-        return f"...\n{tail}"
-    return tail
-
-
 def print_worker_assessment(result: WorkerRunResult, assessment: WorkerAssessment) -> None:
     if assessment.reason == "changed":
         return
@@ -1534,105 +1691,14 @@ def print_worker_assessment(result: WorkerRunResult, assessment: WorkerAssessmen
         print_warn(
             f"KI-Worker exit code: {result.returncode}; keine Änderungen erzeugt"
         )
+        if assessment.reason == "nonzero_without_changes" and "Schreibrechte" in "\n".join(result.output.splitlines()):
+            print_warn("  → Mögliche Ursache: Fehlende Schreibrechte im Sandbox-Verzeichnis")
 
     tail = format_worker_output_tail(result.output)
     if tail:
         print("      Letzte Worker-Ausgabe:")
         for line in tail.splitlines():
             print(f"        | {line}")
-
-
-def clone_repo(owner: str, repo: str, token: str, target_dir: str,
-               base_branch: str) -> bool:
-    url = f"https://{token}@github.com/{owner}/{repo}.git"
-    result = subprocess.run(
-        ["git", "clone", "--branch", base_branch, "--single-branch", url, target_dir],
-        capture_output=True, text=True
-    )
-    return result.returncode == 0
-
-
-def create_branch(repo_dir: str, branch_name: str) -> bool:
-    result = subprocess.run(
-        ["git", "checkout", "-b", branch_name],
-        cwd=repo_dir, capture_output=True, text=True
-    )
-    return result.returncode == 0
-
-
-def checkout_existing_remote_branch(repo_dir: str, branch_name: str) -> bool:
-    fetch = subprocess.run(
-        ["git", "fetch", "origin", f"{branch_name}:refs/remotes/origin/{branch_name}"],
-        cwd=repo_dir, capture_output=True, text=True
-    )
-    if fetch.returncode != 0:
-        return False
-
-    result = subprocess.run(
-        ["git", "checkout", "-B", branch_name, f"origin/{branch_name}"],
-        cwd=repo_dir, capture_output=True, text=True
-    )
-    return result.returncode == 0
-
-
-def branch_has_changes_against_base(repo_dir: str, base_branch: str) -> bool:
-    base_ref = f"origin/{base_branch}"
-    verify = subprocess.run(
-        ["git", "rev-parse", "--verify", base_ref],
-        cwd=repo_dir, capture_output=True, text=True
-    )
-    if verify.returncode != 0:
-        base_ref = base_branch
-
-    result = subprocess.run(
-        ["git", "diff", "--quiet", f"{base_ref}...HEAD", "--"],
-        cwd=repo_dir, capture_output=True, text=True
-    )
-    if result.returncode not in (0, 1):
-        result = subprocess.run(
-            ["git", "diff", "--quiet", base_ref, "HEAD", "--"],
-            cwd=repo_dir, capture_output=True, text=True
-        )
-    return result.returncode == 1
-
-
-def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
-                    owner: str, repo: str) -> bool:
-    # Alle Änderungen stagen
-    subprocess.run(["git", "add", "-A"], cwd=repo_dir, capture_output=True)
-
-    # Prüfen ob es Änderungen gibt
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"],
-        cwd=repo_dir, capture_output=True
-    )
-    if result.returncode == 0:
-        print_warn("Keine Änderungen zu committen")
-        return False
-
-    # Commit
-    result = subprocess.run(
-        ["git", "commit", "-m", message],
-        cwd=repo_dir, capture_output=True, text=True,
-        env={**os.environ,
-             "GIT_AUTHOR_NAME": "AI Issue Solver",
-             "GIT_AUTHOR_EMAIL": "ai@github.com",
-             "GIT_COMMITTER_NAME": "AI Issue Solver",
-             "GIT_COMMITTER_EMAIL": "ai@github.com"}
-    )
-    if result.returncode != 0:
-        print_warn("Commit fehlgeschlagen")
-        if result.stderr.strip():
-            print(f"      Git meldet: {result.stderr.strip().splitlines()[0][:200]}")
-        return False
-
-    # Push
-    remote_url = f"https://{token}@github.com/{owner}/{repo}.git"
-    result = subprocess.run(
-        ["git", "push", remote_url, branch],
-        cwd=repo_dir, capture_output=True, text=True
-    )
-    return result.returncode == 0
 
 
 def retry_branch_name(issue_number: int, now_fn=datetime.now,
@@ -1807,7 +1873,19 @@ def print_branch_recovery_plan(plan: BranchRecoveryPlan) -> None:
 
 
 def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
-                        model: str, close_issues: bool) -> str:
+                         model: str, model_name: str | None = None, close_issues: bool = True,
+                         fallback_from: str | None = None) -> str:
+    display_name = MODEL_CONFIGS[model]['display_name']
+    effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
+
+    # Konkreten Modellnamen anhängen, falls nicht bereits im Display-Namen enthalten
+    if effective_model_name and effective_model_name not in display_name:
+        display_name = f"{display_name} ({effective_model_name})"
+
+    # Fallback-Informationen hinzufügen, falls zutreffend
+    if fallback_from:
+        display_name = f"{display_name} (Fallback von {fallback_from})"
+
     return f"""## 🤖 AI-generierter Fix für Issue #{number}
 
 Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_owner}/ai-issue-solver) erstellt.
@@ -1816,7 +1894,7 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 {"Closes" if close_issues else "Refs"} #{number}: {title}
 
 ### Verwendetes Modell
-`{MODEL_CONFIGS[model]['display_name']}`
+`{display_name}`
 
 ### Änderungen
 *(bitte vor dem Merge reviewen)*
@@ -1827,13 +1905,15 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 
 
 def create_issue_pull_request(client: GitHubClient, repo: str, number: int, title: str,
-                              model: str, config: dict, branch_name: str,
-                              base_branch: str, close_issues: bool,
-                              dry_run: bool = False) -> dict | None:
+                               model: str, config: dict, branch_name: str,
+                               base_branch: str, close_issues: bool,
+                               model_name: str | None = None,
+                               fallback_from: str | None = None,
+                               dry_run: bool = False) -> dict | None:
     pr = client.create_pull_request(
         repo=repo,
         title=f"[AI] Fix: {title}",
-        body=build_issue_pr_body(config["owner"], repo, number, title, model, close_issues),
+        body=build_issue_pr_body(config["owner"], repo, number, title, model, model_name, close_issues, fallback_from),
         head=branch_name,
         base=base_branch,
         dry_run=dry_run,
@@ -1842,10 +1922,17 @@ def create_issue_pull_request(client: GitHubClient, repo: str, number: int, titl
         print(f"      🔀 PR erstellt: {pr.get('html_url', '?')}")
 
     if close_issues and pr:
+        display_name = MODEL_CONFIGS[model]['display_name']
+        effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
+        if effective_model_name and effective_model_name not in display_name:
+            display_name = f"{display_name} ({effective_model_name})"
+        if fallback_from:
+            display_name = f"{display_name} (Fallback von {fallback_from})"
+
         close_comment = (
             "✅ Dieses Issue wurde automatisch durch den AI Issue Solver bearbeitet.\n\n"
             f"PR: {pr.get('html_url', '?') if pr else '(kein PR)'}\n"
-            f"Modell: {MODEL_CONFIGS[model]['display_name']}"
+            f"Modell: {display_name}"
         )
         client.close_issue_with_comment(repo, number, close_comment)
 
@@ -1861,11 +1948,19 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 token: str, dry_run: bool, base_branch: str,
                 close_issues: bool,
                 defer_codex_rate_limit: bool = False,
-                run_report_dir: Path | str | None = None) -> bool:
+                run_report_dir: Path | str | None = None,
+                verbosity: str = "normal",
+                auto_model: bool = False,
+                max_cost: str = "expensive",
+                skip_pr: bool = False,
+                branch_suffix: str | None = None,
+                continue_: bool = False) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
     default_branch_name = f"ai/fix-issue-{number}"
+    if branch_suffix:
+        default_branch_name = f"{default_branch_name}/{branch_suffix}"
 
     print(f"\n   🔧 Issue #{number}: {title}")
     print(f"      Modell: {MODEL_CONFIGS[model]['display_name']}")
@@ -1896,7 +1991,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     )
     if run_report:
         write_run_report(run_report, "started")
-        write_run_health(run_report, status="running")
+        write_run_health(run_report, status="running", phase="clone")
         print(f"      Run-Report: {run_report.path}")
     if recovery_plan.action.startswith("skip"):
         if recovery_plan.pull_request and recovery_plan.pull_request.html_url:
@@ -1911,18 +2006,103 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             )
         return True
 
-    # Repo klonen
-    tmpdir = tempfile.mkdtemp(prefix="ai-solver-")
+    # Solver-lokale Verzeichnisse vorbereiten
+    state_dir, cache_dir = ensure_solver_directories()
+
+    # Ressourcen-Diagnosen für Locking-Ereignisse
+    resource_diagnostics = RunResourceDiagnostics()
+
+    # Temporäres Verzeichnis im solver-lokalen Cache erstellen
+    tmpdir = tempfile.mkdtemp(prefix="ai-solver-", dir=str(cache_dir / "tmp"))
     preserved_worktree: Path | None = None
+
+    # Per-Run-Ressourcenmodell aufbauen
+    provider_label = f"{model}/{model_name}" if model_name else model
+    run_resources = create_run_resources(
+        repo=repo,
+        issue_number=number,
+        branch_name=recovery_plan.branch,
+        provider=provider_label,
+        base_branch=base_branch,
+        temp_base=Path(tmpdir).parent,
+        report_path=run_report.path if run_report else Path(tmpdir),
+        cleanup_on_exit=True,
+    )
+
+    # Branch-Namens-Konflikt frühzeitig erkennen (parallele Runs auf gleichem Branch)
+    branch_conflict = detect_branch_name_conflict(
+        branch_name=recovery_plan.branch,
+        repo=repo,
+        issue_number=number,
+        own_run_id=run_resources.run_id,
+    )
+    if branch_conflict:
+        resource_diagnostics.branch_conflict_detected = True
+        resource_diagnostics.branch_conflict_message = branch_conflict
+        print_warn(f"Branch-Konflikt erkannt: {branch_conflict}")
+        if run_report:
+            write_resource_diagnostics_to_report(
+                run_report.path, run_resources, resource_diagnostics
+            )
+            write_run_report(
+                run_report,
+                "branch_conflict",
+                note=branch_conflict,
+            )
+        return False
+
+    # Issue-Level-Lock erwerben (verhindert doppelten PR bei parallelen Same-Issue-Runs)
+    issue_lock = ResourceLock(
+        key=run_resources.issue_key,
+        resources=run_resources,
+    )
+
     try:
+        # Issue-Level-Lock erwerben: verhindert parallele PR-Erstellung für dasselbe Issue
+        with issue_lock.acquire(resource_diagnostics) as lock_acquired:
+            if not lock_acquired:
+                lock_failure_msg = (
+                    f"Lock-Akquisition fehlgeschlagen für {run_resources.issue_key}: "
+                    "ein anderer Run arbeitet möglicherweise an demselben Issue"
+                )
+                print_warn(lock_failure_msg)
+                if run_report:
+                    write_resource_diagnostics_to_report(
+                        run_report.path, run_resources, resource_diagnostics
+                    )
+                    write_run_report(
+                        run_report,
+                        "lock_failed",
+                        note=lock_failure_msg,
+                        resource_diagnostics=resource_diagnostics,
+                    )
+                return False
+
         repo_dir = os.path.join(tmpdir, repo)
         print(f"      📥 Klone {repo} ...", end=" ", flush=True)
 
-        if not clone_repo(config["owner"], repo, token, repo_dir, base_branch):
+        # Preflight-Check für Schreibrechte im Temp-Verzeichnis
+        additional_dirs = []
+        if model == "codex":
+            additional_dirs = preflight_temp_dir_check(tmpdir)
+            if additional_dirs:
+                print(f"      📁 Zusätzliche Verzeichnisse für Codex Sandbox: {additional_dirs}")
+
+        clone_result = clone_repo(config["owner"], repo, token, repo_dir, base_branch)
+        if not clone_result:
             print_err("Klonen fehlgeschlagen")
+            clone_error = clone_result.stderr.strip() or clone_result.stdout.strip()
+            if clone_error:
+                print("      Git-Clone-Ausgabe:")
+                for line in clone_error.splitlines()[-8:]:
+                    print(f"        | {line}")
             print(f"      Prüfe, ob der Branch '{base_branch}' in {repo} existiert.")
             if run_report:
-                write_run_report(run_report, "clone_failed", note=f"base_branch: {base_branch}", vibe_log_snippet=None)
+                note = f"base_branch: {base_branch}"
+                if clone_error:
+                    note = f"{note}\nclone_output:\n{clone_error}"
+                write_run_report(run_report, "clone_failed", note=note, vibe_log_snippet=None,
+                                 resource_diagnostics=resource_diagnostics)
             return False
         print("✅")
 
@@ -1932,58 +2112,73 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             if not checkout_existing_remote_branch(repo_dir, branch_name):
                 print_err(f"Vorhandener Branch konnte nicht ausgecheckt werden: {branch_name}")
                 if run_report:
-                    write_run_report(run_report, "checkout_failed")
+                    write_run_report(run_report, "checkout_failed",
+                                     resource_diagnostics=resource_diagnostics)
                 return False
             if branch_has_changes_against_base(repo_dir, base_branch):
-                git_status = git_status_porcelain(repo_dir)
-                git_change_summary = format_git_change_summary(repo_dir, git_status)
-                print(
-                    "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
-                    "erstelle fehlenden PR."
-                )
-                pr = create_issue_pull_request(
-                    client=client,
-                    repo=repo,
-                    number=number,
-                    title=title,
-                    model=model,
-                    config=config,
-                    branch_name=branch_name,
-                    base_branch=base_branch,
-                    close_issues=close_issues,
-                    dry_run=dry_run,
-                )
-                status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
-                if not pr and run_report and should_preserve_worktree(
-                    status,
-                    repo_dir,
-                    base_branch,
-                    changes_exist=True,
-                ):
-                    preserved_worktree = preserve_worker_worktree(
-                        repo_dir=repo_dir,
-                        report=run_report,
-                        owner=config["owner"],
-                        repo=repo,
-                        issue_number=number,
-                        branch=branch_name,
-                        status=status,
-                        base_branch=base_branch,
+                if continue_:
+                    print(
+                        "      [CONTINUE] Vorhandene Änderungen gefunden; "
+                        "setze Arbeit auf bestehendem Branch fort..."
                     )
-                if run_report:
-                    write_run_report(
-                        run_report,
+                else:
+                    git_status = git_status_porcelain(repo_dir)
+                    git_change_summary = format_git_change_summary(repo_dir, git_status)
+                    print(
+                        "      Vorhandener Branch enthält bereits Änderungen gegen den Zielbranch; "
+                        "erstelle fehlenden PR."
+                    )
+                    if skip_pr:
+                        print("      [SKIP_PR] Überspringe PR-Erstellung (Benchmark-Modus)")
+                        pr = None
+                        status = "pr_skipped"
+                    else:
+                        pr = create_issue_pull_request(
+                            client=client,
+                            repo=repo,
+                            number=number,
+                            title=title,
+                            model=model,
+                            config=config,
+                            branch_name=branch_name,
+                            base_branch=base_branch,
+                            close_issues=close_issues,
+                            model_name=model_name,
+                            dry_run=dry_run,
+                        )
+                        status = "pr_created_from_existing_branch" if pr else "pr_failed_from_existing_branch"
+                    if not pr and run_report and should_preserve_worktree(
                         status,
-                        pr_url=pr.get("html_url") if pr else None,
-                        preserved_worktree_path=preserved_worktree,
-                        base_branch=base_branch,
-                        git_change_summary=git_change_summary,
-                    )
-                return bool(pr)
+                        repo_dir,
+                        base_branch,
+                        changes_exist=True,
+                    ):
+                        preserved_worktree = preserve_worker_worktree(
+                            repo_dir=repo_dir,
+                            report=run_report,
+                            owner=config["owner"],
+                            repo=repo,
+                            issue_number=number,
+                            branch=branch_name,
+                            status=status,
+                            base_branch=base_branch,
+                        )
+                    if run_report:
+                        write_run_report(
+                            run_report,
+                            status,
+                            pr_url=pr.get("html_url") if pr else None,
+                            preserved_worktree_path=preserved_worktree,
+                            base_branch=base_branch,
+                            git_change_summary=git_change_summary,
+                            resource_diagnostics=resource_diagnostics,
+                        )
+                    return bool(pr)
         elif not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
             if run_report:
-                write_run_report(run_report, "branch_create_failed")
+                write_run_report(run_report, "branch_create_failed",
+                                 resource_diagnostics=resource_diagnostics)
             return False
 
         # Prompt bauen
@@ -1993,48 +2188,53 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             body=body or "(kein Beschreibungstext)"
         )
 
-        # API-Key bzw. lokale Endpoint-Variablen setzen
-        env = build_worker_env(model, config["config"])
+        # Worker-Adapter instanziieren und Umgebung vorbereiten
+        adapter = get_worker_adapter(model)
+        env = adapter.build_env(config["config"])
 
         # KI-Worker ausführen
-        display_name = get_worker_display_name(model)
+        display_name = adapter.get_display_name()
         print(f"      🤖 Starte {display_name} ...", flush=True)
-        cmd = build_worker_command(model, model_name, prompt, repo_dir)
 
-        rate_limit_retries = 0
-        rate_limit_deferred_note = None
-        diagnostic_outputs = []
-        while True:
-            result = run_worker_command(cmd, repo_dir, env, run_report=run_report)
-            diagnostic_outputs.append(result.output)
-            rate_limit = detect_codex_rate_limit(result.output) if model == "codex" else None
-            if not rate_limit:
-                break
-            if defer_codex_rate_limit:
-                if rate_limit.reset_text:
-                    print_warn(
-                        "Codex-Rate-Limit erreicht; "
-                        f"Batch-Runner soll nach {rate_limit.reset_text} neu einplanen"
-                    )
-                else:
-                    print_warn(
-                        "Codex-Rate-Limit erreicht; "
-                        "Batch-Runner soll diesen Job verzögern"
-                    )
-                break
-            if not rate_limit.reset_at:
-                rate_limit_deferred_note = "Codex-Rate-Limit ohne verwertbare Reset-Zeit"
-                sleep_until_codex_reset(rate_limit)
-                break
-            rate_limit_retries += 1
-            if rate_limit_retries > CODEX_RATE_LIMIT_RETRY_LIMIT:
-                rate_limit_deferred_note = (
-                    f"Codex-Rate-Limit nach {CODEX_RATE_LIMIT_RETRY_LIMIT} "
-                    "Retries weiter aktiv"
-                )
-                print_warn("Codex-Rate-Limit wurde mehrfach erreicht; breche dieses Issue ab")
-                break
-            sleep_until_codex_reset(rate_limit)
+        if run_report:
+            write_run_health(run_report, status="running", phase="worker_running")
+
+        # Adapter-spezifische Parameter
+        adapter_kwargs: dict = {}
+        if model == "codex":
+            adapter_kwargs["additional_dirs"] = additional_dirs
+        if model == "codex" and defer_codex_rate_limit:
+            from workers.codex_adapter import CodexAdapter
+            adapter = CodexAdapter(defer_rate_limit=True)
+            # Umgebung neu aufbauen (Adapter wurde ersetzt)
+            env = adapter.build_env(config["config"])
+
+        # Effektiven Modell-Namen bestimmen
+        effective_model_name = model_name or MODEL_CONFIGS[model].get("default_model_name") or None
+
+        # Worker über Adapter ausführen
+        result, adapter_diagnostics = adapter.run(
+            prompt=sanitize_worker_prompt_secret_paths(prompt, repo_dir),
+            repo_path=repo_dir,
+            env=env,
+            model_name=effective_model_name,
+            verbosity=verbosity,
+            run_report=run_report,
+            **adapter_kwargs,
+        )
+
+        # Modellauswahl-Metadaten im Report speichern (falls vorhanden)
+        model_selection_metadata = None
+        if auto_model:
+            from model_selection import select_model_for_issue
+            model_selection_metadata = select_model_for_issue(
+                issue=issue,
+                repo_type="python",  # TODO: Dynamisch ermitteln
+                max_cost_tier=max_cost,
+            )
+
+        diagnostic_outputs = list(adapter_diagnostics.all_outputs)
+        rate_limit_deferred_note = adapter_diagnostics.rate_limit_note or None
 
         diagnostic_result = result
         if len(diagnostic_outputs) > 1:
@@ -2043,6 +2243,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 for index, output in enumerate(diagnostic_outputs, start=1)
             )
             diagnostic_result = WorkerRunResult(result.returncode, combined_output)
+
+        if run_report:
+            write_run_health(run_report, result.output if result else "",
+                             result.last_activity_at if result else None,
+                             status="running", phase="validating")
 
         git_status = git_status_porcelain(repo_dir)
         git_change_summary = format_git_change_summary(repo_dir, git_status)
@@ -2055,14 +2260,12 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             issue_text=f"{title}\n\n{body or ''}",
         )
         print_worker_assessment(result, assessment)
-        
-        # Vibe-Log-Snippet lesen (nur fuer Mistral Vibe Modelle)
-        vibe_log_snippet = ""
-        if model == "mistral-vibe":
-            vibe_log_snippet = read_vibe_log_snippet(repo_dir)
-            if vibe_log_snippet:
-                print(f"      📝 Vibe-Log-Snippet gesammelt ({len(vibe_log_snippet)} Zeichen)")
-        
+        # OpenCode Runtime-Diagnostics werden bereits vom OpenCodeAdapter ausgegeben.
+        # Zur Vollständigkeit: falls ein anderer Adapter diesen Code aufruft, hier nicht doppeln.
+
+        # Vibe-Log-Snippet aus Adapter-Diagnostics verwenden (MistralVibeAdapter sammelt es bereits)
+        vibe_log_snippet = adapter_diagnostics.vibe_log_snippet
+
         if rate_limit_deferred_note:
             status = "rate_limit_deferred"
             if run_report and should_preserve_worktree(
@@ -2082,6 +2285,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                 )
             if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
                 write_run_report(
                     run_report,
                     status,
@@ -2091,6 +2297,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
                 )
             return False
         if not assessment.should_continue:
@@ -2112,6 +2319,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                 )
             if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
                 write_run_report(
                     run_report,
                     status,
@@ -2120,6 +2330,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
                 )
             return False
 
@@ -2146,6 +2357,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                 )
             if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
                 write_run_report(
                     run_report,
                     status,
@@ -2155,10 +2369,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
                 )
             return False
 
         # Committen & pushen
+        if run_report:
+            write_run_health(run_report, status="running", phase="committing")
         print(f"      📤 Commit & Push ...", end=" ", flush=True)
         commit_msg = f"fix: Löse Issue #{number} — {title}\n\nAutomatisch gelöst mit AI Issue Solver (Modell: {model})\nIssue: https://github.com/{config['owner']}/{repo}/issues/{number}"
 
@@ -2184,6 +2401,9 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                 )
             if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
                 write_run_report(
                     run_report,
                     status,
@@ -2192,29 +2412,39 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     base_branch=base_branch,
                     git_change_summary=git_change_summary,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
                 )
             return False
         print("✅")
 
-        pr = create_issue_pull_request(
-            client=client,
-            repo=repo,
-            number=number,
-            title=title,
-            model=model,
-            config=config,
-            branch_name=branch_name,
-            base_branch=base_branch,
-            close_issues=close_issues,
-            dry_run=dry_run,
-        )
-        # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
-        is_vibe_turn_limit = (
-            model == "mistral-vibe"
-            and pr
+        if run_report:
+            write_run_health(run_report, status="running", phase="creating_pr")
+        if skip_pr:
+            print("      [SKIP_PR] Überspringe PR-Erstellung (Benchmark-Modus)")
+            pr = None
+            status = "pr_skipped" if assessment.has_changes else "no_changes"
+        else:
+            pr = create_issue_pull_request(
+                client=client,
+                repo=repo,
+                number=number,
+                title=title,
+                model=model,
+                config=config,
+                branch_name=branch_name,
+                base_branch=base_branch,
+                close_issues=close_issues,
+                model_name=effective_model_name,
+                fallback_from=model_selection_metadata.get('fallback_from') if model_selection_metadata else None,
+                dry_run=dry_run,
+            )
+            # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
+            is_vibe_turn_limit = (
+                model == "mistral-vibe"
+                and pr
             and VIBE_TURN_LIMIT_RE.search(diagnostic_result.output)
         )
-        status = "pr_created_with_warning" if is_vibe_turn_limit else ("pr_created" if pr else "pr_failed")
+            status = "pr_created_with_warning" if is_vibe_turn_limit else ("pr_created" if pr else "pr_failed")
         if not pr and run_report and should_preserve_worktree(
             status,
             repo_dir,
@@ -2231,22 +2461,44 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 status=status,
                 base_branch=base_branch,
             )
-        if run_report:
-            write_run_report(
-                run_report,
-                status,
-                worker_result=diagnostic_result,
-                pr_url=pr.get("html_url") if pr else None,
-                preserved_worktree_path=preserved_worktree,
-                base_branch=base_branch,
-                git_change_summary=git_change_summary,
-                vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
-            )
+            if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    pr_url=pr.get("html_url") if pr else None,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
+                    model_selection_metadata=model_selection_metadata,
+                )
         return bool(pr)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     return True
+
+
+def print_solver_directories() -> None:
+    """
+    Dokumentiert die solver-lokalen Verzeichnisstrukturen und Umgebungsvariablen.
+    """
+    _state_dir, cache_dir = ensure_solver_directories()
+
+    print("\n📁 Solver-lokale Verzeichnisstruktur:")
+    print(f"   XDG_CACHE_HOME/opencode: {cache_dir}")
+    print("\n🔧 Wichtige Umgebungsvariablen:")
+    print(f"   OPENCODE_CACHE_DIR: {cache_dir}")
+    print("\n📝 Verwendung:")
+    print("   - OpenCode State/Auth: Standardpfad der OpenCode-Installation")
+    print("   - OpenCode Cache: $OPENCODE_CACHE_DIR")
+    print("   - Isolierte Run-Checkouts: $OPENCODE_CACHE_DIR/tmp/ai-solver-*/<repo>")
+    print("   - Temporäre Dateien: $OPENCODE_CACHE_DIR/tmp/")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2259,18 +2511,51 @@ def main():
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
         "--model", choices=list(MODEL_CONFIGS.keys()),
-        help="KI-Modell: codex, mistral-vibe, opencode, claude, openai, mistral oder ollama"
+        help="KI-Modell: codex, mistral-vibe, opencode, openrouter, claude, openai, mistral oder ollama"
     )
     parser.add_argument(
         "--model-name",
         help=(
-            "Spezifisches Modell (für Codex optional, für Mistral z.B. "
-            "'magistral-small-2509', für Ollama z.B. 'deepseek-coder:6.7b')"
+            "Spezifisches Modell (z.B. 'opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', "
+            "'mistral/mistral-small-2603', "
+            "'claude-sonnet-4-20250514', 'gpt-4o', 'deepseek-coder:6.7b', "
+            "'openrouter/openai/gpt-4o-mini')"
         )
+    )
+    parser.add_argument(
+        "--auto-model",
+        action="store_true",
+        help="Modell automatisch basierend auf Issue-Typ, Risiko und Kosten auswählen"
+    )
+    parser.add_argument(
+        "--max-cost",
+        choices=["cheap", "medium", "expensive"],
+        default="expensive",
+        help="Maximales Kosten-Tier für die automatische Modellauswahl (Standard: expensive)"
+    )
+    parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="OpenCode-Diagnose: Version, Auth-Status und Modellbeispiele anzeigen",
     )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
+    parser.add_argument(
+        "--skip-pr",
+        action="store_true",
+        help="Benchmark-Modus: Commit & Push ausführen aber keinen PR erstellen",
+    )
+    parser.add_argument(
+        "--branch-suffix",
+        help="Optionaler Suffix für den Branch-Namen (z.B. Modell-Name für Ensemble-Läufe)",
+    )
+    parser.add_argument(
+        "--continue-run",
+        action="store_true",
+        dest="continue_",
+        help="Vorhandenen Branch mit Änderungen weiterbearbeiten statt PR zu erstellen",
+    )
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
     parser.add_argument(
         "--base-branch",
@@ -2291,6 +2576,12 @@ def main():
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--verbosity",
+        choices=("quiet", "normal", "verbose"),
+        default="normal",
+        help="Worker-Ausgabe: quiet=keine Live-Ausgabe, normal=gefiltert (Standard), verbose=alles",
+    )
+    parser.add_argument(
         "--cleanup-preserved-worktrees",
         action="store_true",
         help="Alte gesicherte Recovery-Worktrees unter reports/preserved-worktrees aufraeumen",
@@ -2300,6 +2591,11 @@ def main():
         type=int,
         default=PRESERVED_WORKTREE_RETENTION_DAYS,
         help=f"Aufbewahrung fuer gesicherte Worktrees in Tagen (Default: {PRESERVED_WORKTREE_RETENTION_DAYS})",
+    )
+    parser.add_argument(
+        "--cleanup-stale-locks",
+        action="store_true",
+        help="Veraltete Lock-Dateien unter reports/locks bereinigen",
     )
     args = parser.parse_args()
 
@@ -2317,6 +2613,23 @@ def main():
             print("   Ohne --dry-run ausfuehren, um diese Worktrees zu loeschen.")
         return
 
+    if args.cleanup_stale_locks:
+        stale_locks = cleanup_stale_locks(dry_run=args.dry_run)
+        action = "Wuerde loeschen" if args.dry_run else "Geloescht"
+        if not stale_locks:
+            print("   Keine veralteten Lock-Dateien gefunden.")
+        for lock_path in stale_locks:
+            print(f"   {action}: {lock_path}")
+        if args.dry_run and stale_locks:
+            print("   Ohne --dry-run ausfuehren, um diese Lock-Dateien zu loeschen.")
+        return
+
+    if args.diagnostic:
+        if args.model and args.model != "opencode":
+            print_warn("--diagnostic ist nur für --model opencode vorgesehen")
+        exit_code = run_opencode_diagnostic()
+        sys.exit(exit_code)
+
     if not args.model:
         parser.error("--model ist erforderlich, ausser bei --cleanup-preserved-worktrees")
 
@@ -2327,8 +2640,12 @@ def main():
 
     # Config laden
     cfg = load_env()
-    token = require_config_value(cfg, "GITHUB_TOKEN", "GitHub Token")
-    user = require_config_value(cfg, "GITHUB_USER", "GitHub User")
+
+    # Preflight-Checks durchfuehren
+    if args.repo:
+        token, user = preflight_checks(cfg, args.repo, args.issue)
+    else:
+        token, user = require_github_config(cfg, require_user=True)
 
     # KI-Worker prüfen
     if args.model == "codex" and not find_codex_executable() and not args.dry_run:
@@ -2341,18 +2658,66 @@ def main():
         print("   → Installieren in der aktiven Umgebung mit: pip install mistral-vibe")
         sys.exit(1)
 
-    if args.model == "opencode" and not find_opencode_executable() and not args.dry_run:
-        print_err("OpenCode CLI wurde nicht gefunden!")
-        print("   → Installieren nach OpenCode-Doku und `opencode` in PATH verfügbar machen")
+    if args.model == "opencode" and not args.dry_run:
+        opencode_exe = find_opencode_executable()
+        if not opencode_exe:
+            print_err("OpenCode CLI wurde nicht gefunden!")
+            print("   → Installieren: https://opencode.ai/docs/installation")
+            print("   → Danach `opencode` im PATH verfügbar machen")
+            sys.exit(1)
+        check_opencode_auth(opencode_exe)
+        print_solver_directories()
+
+    if args.model == "openrouter" and not check_aider_installed() and not args.dry_run:
+        print_err("aider ist nicht installiert, wird aber für OpenRouter benötigt!")
+        print("   → Installieren mit: pip install aider-chat")
+        print("   → Mehr Infos: docs/SETUP_AIDER.md")
         sys.exit(1)
 
-    if args.model not in ("codex", "mistral-vibe", "opencode") and not check_aider_installed() and not args.dry_run:
+    if args.model not in ("codex", "mistral-vibe", "opencode", "openrouter") and not check_aider_installed() and not args.dry_run:
         print_err("aider ist nicht installiert!")
         print("   → Installieren mit: pip install aider-chat")
         print("   → Mehr Infos: docs/SETUP_AIDER.md")
         sys.exit(1)
 
-     # Modell-Name
+     # Modellauswahl
+    if args.auto_model:
+        from model_selection import select_model_for_issue
+        # Hole das Issue für die Analyse
+        issue = client.get_single_issue(args.repo, args.issue) if args.issue and args.repo else None
+        if not issue:
+            print_err("--auto-model erfordert --repo und --issue")
+            sys.exit(1)
+        # Wähle Modell automatisch aus
+        model_selection = select_model_for_issue(
+            issue=issue,
+            repo_type="python",  # TODO: Repo-Typ dynamisch ermitteln
+            max_cost_tier=args.max_cost,
+        )
+        print(f"   🔍 Automatische Modellauswahl: {model_selection['model']}")
+        print(f"      Grund: {model_selection['reason']}")
+        print(f"      Kategorie: {model_selection['category']} (Risiko: {model_selection['risk']})")
+        print(f"      Kosten-Tier: {model_selection['cost_tier']}")
+
+        # Mappe das ausgewählte Modell auf die bestehende MODEL_CONFIGS-Struktur
+        # TODO: Erweitere MODEL_CONFIGS für alle unterstützten Modelle
+        selected = model_selection["model"]
+        if selected in MODEL_CONFIGS["opencode"].get("free_models", []):
+            args.model = "opencode"
+            args.model_name = selected
+        elif "mistral" in selected:
+            args.model = "mistral"
+            args.model_name = selected
+        elif "claude" in selected:
+            args.model = "claude"
+            args.model_name = selected
+        elif "gpt" in selected:
+            args.model = "openai"
+            args.model_name = selected
+        else:
+            print_err(f"Automatisch ausgewähltes Modell wird nicht unterstützt: {selected}")
+            sys.exit(1)
+
     model_config = MODEL_CONFIGS[args.model]
     model_name = args.model_name or model_config.get("default_model_name", "")
 
@@ -2368,9 +2733,14 @@ def main():
     if args.dry_run:
         print_warn("DRY-RUN Modus aktiv\n")
 
-    print_step(1, f"Modell: {model_config['display_name']}")
-    if model_name:
-        print(f"   Modell-Name: {model_name}")
+    if args.auto_model:
+        print_step(1, f"Modell (automatisch): {MODEL_CONFIGS[args.model]['display_name']}")
+        print(f"   Modell-Name: {args.model_name}")
+        print(f"   Kosten-Tier: {args.max_cost}")
+    else:
+        print_step(1, f"Modell: {model_config['display_name']}")
+        if model_name:
+            print(f"   Modell-Name: {model_name}")
 
     # Repos ermitteln
     if args.repo:
@@ -2378,6 +2748,11 @@ def main():
     else:
         all_repos = client.get_repos()
         repos = [r["name"] for r in all_repos if not r.get("archived")]
+
+    # Modellauswahl-Logik für Batch-Modus (TODO: Erweitern)
+    if args.auto_model and not args.issue:
+        print_warn("--auto-model erfordert --issue; nutze --model für Batch-Modus")
+        sys.exit(1)
 
     print_step(2, f"Suche offene Issues in {len(repos)} Repo(s)")
 
@@ -2420,6 +2795,12 @@ def main():
                 close_issues=args.close_issues,
                 defer_codex_rate_limit=args.defer_codex_rate_limit,
                 run_report_dir=args.run_report_dir,
+                verbosity=args.verbosity,
+                auto_model=args.auto_model,
+                max_cost=args.max_cost,
+                skip_pr=args.skip_pr,
+                branch_suffix=args.branch_suffix,
+                continue_=args.continue_,
             )
             if ok:
                 solved += 1
