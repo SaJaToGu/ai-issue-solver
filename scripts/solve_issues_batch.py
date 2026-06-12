@@ -433,8 +433,6 @@ def resolve_batch_base_branches(client: GitHubClient, repos: list[str],
         base_branch = client.resolve_base_branch(repo, requested_base)
         if base_branch:
             base_branches[repo] = base_branch
-        elif requested_base:
-            base_branches[repo] = requested_base
     return base_branches
 
 
