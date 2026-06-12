@@ -1256,3 +1256,62 @@ Touches: `scripts/solve_issues.py`, `scripts/benchmark_issues.py`,
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+## 39. Periodic documentation benchmark with free OpenCode models
+
+Labels: `kind/automation`, `kind/docs`, `theme/workflow`, `theme/provider`, `priority/2`
+
+Priority: `2`
+
+Every tenth documentation-only solver run should be executed as a controlled
+benchmark across all currently available free OpenCode models. This should keep
+model comparison data fresh without spending tokens and provider quota on every
+routine documentation issue.
+
+Policy:
+- only apply to documentation-only issues with low risk and narrow `Touches:`
+  scope
+- count successful documentation solver attempts and trigger the benchmark on
+  every tenth eligible run
+- run all free OpenCode candidates:
+  - `opencode/deepseek-v4-flash-free`
+  - `opencode/mimo-v2.5-free`
+  - `opencode/minimax-m3-free`
+  - `opencode/nemotron-3-ultra-free`
+- use isolated branch suffixes and `--skip-pr` while benchmarking candidates
+- do not automatically close the issue until the selected candidate is promoted
+  and reviewed
+
+Missing functionality to implement:
+- persist a documentation-run counter or cadence marker so the scheduler can
+  decide when the tenth eligible documentation issue is reached
+- add a benchmark trigger mode that runs the free OpenCode models for the same
+  documentation issue without requiring manual commands
+- rank candidate branches by run outcome, diff relevance, test signal, touched
+  files, and worker/runtime health
+- promote the best candidate to one draft PR, or record that no candidate was
+  good enough
+- write durable benchmark comparison data grouped by model, repo type, issue
+  type, and failure class
+- surface the benchmark comparison in the dashboard, including no-op,
+  model-failure, pipeline-failure, preserved-worktree, and promoted-candidate
+  states
+- record the result so future model selection can learn which free OpenCode
+  models work best for documentation, Python, R, dashboard, and mixed repos
+
+Suggested implementation:
+- extend `benchmark_issues.py` or add a thin scheduler wrapper around
+  `solve_issues.py --skip-pr --branch-suffix`
+- reuse `run_outcome` fields from solver reports once available
+- add a small persistent state file such as `reports/benchmark-cadence.json`
+  or a project status file
+- keep the first implementation documentation-only; expand to Python/R only
+  after dashboard comparison and recovery semantics are reliable
+
+Touches: `scripts/benchmark_issues.py`, `scripts/solve_issues.py`,
+         `scripts/status_dashboard.py`, `scripts/model_selection.py`,
+         `reports/`, `tests/`
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
