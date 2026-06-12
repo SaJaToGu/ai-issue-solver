@@ -59,6 +59,89 @@ def test_provider_scorecard_creation():
     assert scorecard.cost_source == "provider_api"
 
 
+class TestRunOutcomeSkipPr(unittest.TestCase):
+    def test_build_run_outcome_skip_pr_with_changes(self):
+        """pr_skipped with changes is a successful benchmark push without PR."""
+        worker = Mock()
+        worker.returncode = 0
+
+        outcome = build_run_outcome(
+            "pr_skipped",
+            worker_result=worker,
+            git_change_summary=["Git-Aenderungsuebersicht:", "  README.md | 1 +"],
+            test_result="passed",
+        )
+
+        self.assertEqual(outcome["worker_status"], "succeeded")
+        self.assertIs(outcome["has_changes"], True)
+        self.assertEqual(outcome["test_status"], "passed")
+        self.assertEqual(outcome["delivery_status"], "pushed_without_pr")
+        self.assertEqual(outcome["failure_class"], "success")
+        self.assertEqual(outcome["recovery_status"], "none")
+
+    def test_build_run_outcome_skip_pr_without_changes(self):
+        """pr_skipped without changes is treated as noop (defensive case)."""
+        worker = Mock()
+        worker.returncode = 0
+
+        outcome = build_run_outcome(
+            "pr_skipped",
+            worker_result=worker,
+            git_change_summary=[],
+        )
+
+        self.assertEqual(outcome["delivery_status"], "not_applicable")
+        self.assertEqual(outcome["failure_class"], "noop")
+
+    def test_write_run_report_skip_pr_with_changes(self):
+        """Run report for pr_skipped with changes yields pushed_without_pr outcome."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            report = RunReport(
+                path=temp_path / "test-run-skip-pr",
+                repo="test-repo",
+                issue_number=45,
+                issue_title="Skip PR Issue",
+                branch="test-branch",
+                model="test-model",
+            )
+            report.path.mkdir(parents=True, exist_ok=True)
+
+            mock_worker = Mock()
+            mock_worker.duration_seconds = 60.0
+            mock_worker.returncode = 0
+            mock_worker.output = "changes made"
+            mock_worker.last_activity_at = datetime.now()
+
+            result_path = write_run_report(
+                report=report,
+                status="pr_skipped",
+                worker_result=mock_worker,
+                pr_url=None,
+                note="Benchmark skip-pr with changes",
+                git_change_summary=["README.md | 1 +"],
+                test_result="passed",
+            )
+
+            self.assertIsNotNone(result_path)
+            metadata_path = report.path / "metadata.json"
+            self.assertTrue(metadata_path.exists())
+
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            outcome = metadata["run_outcome"]
+            self.assertEqual(outcome["delivery_status"], "pushed_without_pr")
+            self.assertEqual(outcome["failure_class"], "success")
+            self.assertIs(outcome["has_changes"], True)
+
+            summary_path = report.path / "summary.txt"
+            self.assertTrue(summary_path.exists())
+            summary_content = summary_path.read_text(encoding="utf-8")
+            self.assertIn("run_outcome_delivery_status: pushed_without_pr", summary_content)
+            self.assertIn("run_outcome_failure_class: success", summary_content)
+
+
 def test_build_run_outcome_marks_preserved_push_failure_as_pipeline_failure():
     """Push failures with preserved changes are benchmark-relevant pipeline failures."""
     worker = Mock()

@@ -172,6 +172,8 @@ def build_run_outcome(status: str,
         delivery_status = "pr_failed"
     elif status in NO_CHANGE_STATUSES:
         delivery_status = "not_applicable"
+    elif status == "pr_skipped":
+        delivery_status = "pushed_without_pr" if has_changes else "not_applicable"
     elif status == "started":
         delivery_status = "incomplete"
     else:
@@ -181,6 +183,8 @@ def build_run_outcome(status: str,
         failure_class = "noop"
     elif pr_url or status.startswith("pr_created"):
         failure_class = "success"
+    elif status == "pr_skipped":
+        failure_class = "success" if has_changes else "noop"
     elif status in PIPELINE_FAILURE_STATUSES and (has_changes or preserved):
         failure_class = "pipeline_failure"
     elif worker_result is not None and worker_result.returncode != 0 and not has_changes:
