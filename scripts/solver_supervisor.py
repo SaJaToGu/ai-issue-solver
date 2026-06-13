@@ -775,5 +775,92 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def get_supervisor_summary(
+    runs_dir: Path = RUN_REPORTS_ROOT,
+    stale_seconds: int = DEFAULT_STALE_SECONDS,
+) -> dict:
+    """Gibt eine Zusammenfassung der aktiven Solver-Runs zurück für Dashboard-Integration."""
+    runs = read_supervisor_runs(runs_dir, stale_seconds=stale_seconds)
+    active = filter_active_runs(runs)
+
+    stale_runs = [r for r in active if r.health_status == "stale"]
+    healthy_runs = [r for r in active if r.health_status == "healthy"]
+    unhealthy_runs = [r for r in active if r.health_status == "unhealthy"]
+
+    return {
+        "total_active": len(active),
+        "healthy": len(healthy_runs),
+        "stale": len(stale_runs),
+        "unhealthy": len(unhealthy_runs),
+        "stale_runs": [
+            {
+                "run_id": r.run_id,
+                "repo": r.repo,
+                "issue": r.issue,
+                "phase": r.phase,
+                "health_reason": r.health_reason,
+                "stop_command": format_stop_command(r.run_id),
+            }
+            for r in stale_runs
+        ],
+        "unhealthy_runs": [
+            {
+                "run_id": r.run_id,
+                "repo": r.repo,
+                "issue": r.issue,
+                "phase": r.phase,
+                "health_reason": r.health_reason,
+                "stop_command": format_stop_command(r.run_id),
+            }
+            for r in unhealthy_runs
+        ],
+        "needs_attention": len(stale_runs) + len(unhealthy_runs),
+    }
+
+
+def format_stop_command(run_id: str, dry_run: bool = False) -> str:
+    """Formatiert einen kopierbaren Stop-Befehl für ein Run."""
+    parts = [
+        "python",
+        "scripts/solver_supervisor.py",
+        "stop",
+        "--run-id",
+        run_id,
+    ]
+    if dry_run:
+        parts.append("--dry-run")
+    return " ".join(parts)
+
+
+def get_stale_runs(
+    runs_dir: Path = RUN_REPORTS_ROOT,
+    stale_seconds: int = DEFAULT_STALE_SECONDS,
+) -> list[SupervisorRun]:
+    """Gibt alle Runs zurück, die als stale markiert sind."""
+    runs = read_supervisor_runs(runs_dir, stale_seconds=stale_seconds)
+    active = filter_active_runs(runs)
+    return [r for r in active if r.health_status == "stale"]
+
+
+def get_unhealthy_runs(
+    runs_dir: Path = RUN_REPORTS_ROOT,
+    stale_seconds: int = DEFAULT_STALE_SECONDS,
+) -> list[SupervisorRun]:
+    """Gibt alle Runs zurück, die als unhealthy markiert sind."""
+    runs = read_supervisor_runs(runs_dir, stale_seconds=stale_seconds)
+    active = filter_active_runs(runs)
+    return [r for r in active if r.health_status == "unhealthy"]
+
+
+def get_active_run_ids(
+    runs_dir: Path = RUN_REPORTS_ROOT,
+    stale_seconds: int = DEFAULT_STALE_SECONDS,
+) -> set[str]:
+    """Gibt die Menge der aktiven Run-IDs zurück."""
+    runs = read_supervisor_runs(runs_dir, stale_seconds=stale_seconds)
+    active = filter_active_runs(runs)
+    return {r.run_id for r in active}
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
