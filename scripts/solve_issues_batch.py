@@ -34,6 +34,9 @@ from solve_issues import (  # noqa: E402
     safe_run_repo_name,
     should_surface_worker_line,
 )
+from solver_reporting import (  # noqa: E402
+    format_heartbeat,
+)
 from utils import (  # noqa: E402
     is_placeholder_value,
     load_env,
@@ -441,7 +444,9 @@ def run_issue_job(job: IssueJob, cmd: list[str], project_root: Path,
                   health_timeout_seconds: float | None = None,
                   unhealthy_action: str = "warn",
                   detect_rate_limit_fn=detect_codex_rate_limit,
-                  now_fn=datetime.now) -> IssueJobResult:
+                  now_fn=datetime.now,
+                  heartbeat_interval_seconds: float | None = None,
+                  heartbeat_job_label: str | None = None) -> IssueJobResult:
     started_at = time.monotonic()
     try:
         process = subprocess.Popen(
@@ -469,6 +474,7 @@ def run_issue_job(job: IssueJob, cmd: list[str], project_root: Path,
     last_activity = time.monotonic()
     unhealthy_reason = None
     unhealthy_seen = False
+    last_heartbeat_at = started_at
 
     def read_output() -> None:
         try:
@@ -517,6 +523,17 @@ def run_issue_job(job: IssueJob, cmd: list[str], project_root: Path,
                     process.kill()
                     process.wait(timeout=5)
                 break
+
+        if heartbeat_interval_seconds and heartbeat_interval_seconds > 0:
+            elapsed = time.monotonic() - last_heartbeat_at
+            if elapsed >= heartbeat_interval_seconds:
+                heartbeat_line = format_heartbeat(
+                    job.issue_number,
+                    time.monotonic() - started_at,
+                    job_label=heartbeat_job_label,
+                )
+                print(heartbeat_line)
+                last_heartbeat_at = time.monotonic()
 
     if process.stdout:
         process.stdout.close()
@@ -640,6 +657,8 @@ def run_issue_job_with_optional_fallback(
     unhealthy_action: str,
     detect_rate_limit_fn,
     run_issue_job_fn=run_issue_job,
+    heartbeat_interval_seconds: float | None = None,
+    heartbeat_job_label: str | None = None,
 ) -> IssueJobResult:
     """Fuehrt einen Issue-Job aus und startet bei Rate-Limit optional einen Fallback."""
     primary_cmd = _build_primary_command(args, job, solve_script, queued_report)
@@ -651,6 +670,8 @@ def run_issue_job_with_optional_fallback(
         health_timeout_seconds=health_timeout_seconds,
         unhealthy_action=unhealthy_action,
         detect_rate_limit_fn=detect_rate_limit_fn,
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
+        heartbeat_job_label=heartbeat_job_label,
     )
     primary_result = replace(
         primary_result,
@@ -670,6 +691,8 @@ def run_issue_job_with_optional_fallback(
         health_timeout_seconds=health_timeout_seconds,
         unhealthy_action=unhealthy_action,
         detect_rate_limit_fn=lambda output: None,
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
+        heartbeat_job_label=heartbeat_job_label,
     )
     combined_output = _combine_fallback_output(
         primary_result, fallback_result, args.fallback_model
@@ -1006,6 +1029,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="quiet",
         help="Worker-Ausgabe: quiet=keine Live-Ausgabe (Standard), normal=gefiltert, verbose=alles",
     )
+    parser.add_argument(
+        "--heartbeat-interval",
+        type=int,
+        default=None,
+        help="Heartbeat-Ausgabeintervall in Sekunden (z.B. 60 fuer 1-Minuten-Heartbeat). "
+        "Ohne Angabe kein Heartbeat.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1091,6 +1121,8 @@ def main(argv: list[str] | None = None) -> int:
 
     def run(job: IssueJob) -> IssueJobResult:
         queued_report = queued_reports.get(job)
+        heartbeat_interval = args.heartbeat_interval if args.heartbeat_interval else None
+        heartbeat_label = f"{args.model}" if heartbeat_interval else None
         return run_issue_job_with_optional_fallback(
             job,
             args,
@@ -1101,6 +1133,8 @@ def main(argv: list[str] | None = None) -> int:
             health_timeout_seconds=args.worker_health_timeout_minutes * 60,
             unhealthy_action=args.unhealthy_action,
             detect_rate_limit_fn=detect_rate_limit_fn,
+            heartbeat_interval_seconds=heartbeat_interval,
+            heartbeat_job_label=heartbeat_label,
         )
 
     def handle_result(result: IssueJobResult, completed: int, total: int) -> None:

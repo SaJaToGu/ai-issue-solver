@@ -17,6 +17,8 @@ from scripts.solver_reporting import (
     create_provider_scorecard,
     create_run_report,
     write_run_report,
+    format_heartbeat,
+    format_heartbeat_progress,
 )
 from scripts.solve_issues import build_issue_pr_body
 from scripts.solve_issues import build_issue_pr_body
@@ -621,3 +623,84 @@ def test_build_issue_pr_body_opencode_with_fallback():
     assert "## 🤖 AI-generierter Fix für Issue #45" in pr_body
     assert "Closes #45: Test Issue mit Fallback" in pr_body
     assert "`OpenCode CLI (mistral/mistral-medium-latest) (Fallback von claude/claude-sonnet-4-6)`" in pr_body
+
+
+class HeartbeatFormatterTests(unittest.TestCase):
+    """Tests für die Heartbeat-Formatter-Funktionen."""
+
+    def test_format_heartbeat_progress_every_fifth_char_is_plus(self):
+        """Testet, dass jeder 5. Character ein '+' ist."""
+        progress = format_heartbeat_progress(elapsed_seconds=300.0, width=20)
+        progress_chars = progress.split(" ")[0]
+        for i, char in enumerate(progress_chars):
+            expected = "+" if (i + 1) % 5 == 0 else "."
+            self.assertEqual(char, expected, f"Position {i} sollte '{expected}' sein, ist aber '{char}'")
+
+    def test_format_heartbeat_progress_includes_elapsed_minutes(self):
+        """Testet, dass die vergangenen Minuten als Suffix angehängt werden."""
+        progress = format_heartbeat_progress(elapsed_seconds=300.0, width=20)
+        self.assertTrue(progress.endswith(" 5min"), f"Progress sollte mit ' 5min' enden: {progress}")
+
+        progress_short = format_heartbeat_progress(elapsed_seconds=59.0, width=20)
+        self.assertTrue(progress_short.endswith(" 0min"), f"Progress sollte mit ' 0min' enden: {progress_short}")
+
+    def test_format_heartbeat_progress_custom_width(self):
+        """Testet den Progress-String mit benutzerdefinierter Breite."""
+        progress = format_heartbeat_progress(elapsed_seconds=120.0, width=10)
+        self.assertTrue(progress.endswith(" 2min"))
+        self.assertEqual(len(progress.split(" ")[0]), 10)
+
+    def test_format_heartbeat_issue_prefix(self):
+        """Testet das Issue-Präfix mit '#'."""
+        heartbeat = format_heartbeat(issue_number=223, elapsed_seconds=300.0)
+        self.assertTrue(heartbeat.startswith("#223"), f"Heartbeat sollte mit '#223' starten: {heartbeat}")
+
+    def test_format_heartbeat_without_job_label(self):
+        """Testet Heartbeat ohne Job-Label."""
+        heartbeat = format_heartbeat(issue_number=223, elapsed_seconds=300.0)
+        parts = heartbeat.split(" ")
+        self.assertEqual(parts[0], "#223")
+        self.assertEqual(parts[-1], "5min")
+
+    def test_format_heartbeat_with_job_label(self):
+        """Testet Heartbeat mit optionalem Job-Label."""
+        heartbeat = format_heartbeat(issue_number=223, elapsed_seconds=300.0, job_label="PR2")
+        self.assertTrue(heartbeat.startswith("#223"))
+        self.assertIn("PR2", heartbeat)
+        self.assertTrue(heartbeat.endswith("5min"))
+
+    def test_format_heartbeat_minute_rounding(self):
+        """Testet die Minutenrundung (ab 60 Sekunden = 1 Minute)."""
+        heartbeat_59s = format_heartbeat(issue_number=1, elapsed_seconds=59.0)
+        self.assertTrue(heartbeat_59s.endswith("0min"))
+
+        heartbeat_60s = format_heartbeat(issue_number=1, elapsed_seconds=60.0)
+        self.assertTrue(heartbeat_60s.endswith("1min"))
+
+        heartbeat_119s = format_heartbeat(issue_number=1, elapsed_seconds=119.0)
+        self.assertTrue(heartbeat_119s.endswith("1min"))
+
+        heartbeat_120s = format_heartbeat(issue_number=1, elapsed_seconds=120.0)
+        self.assertTrue(heartbeat_120s.endswith("2min"))
+
+    def test_format_heartbeat_stable_output_multiple_jobs(self):
+        """Testet stabile Ausgabe für mehrere parallele Jobs."""
+        heartbeats = [
+            format_heartbeat(issue_number=100, elapsed_seconds=300.0, job_label="codex"),
+            format_heartbeat(issue_number=101, elapsed_seconds=300.0, job_label="codex"),
+            format_heartbeat(issue_number=102, elapsed_seconds=300.0, job_label="codex"),
+        ]
+        for hb in heartbeats:
+            self.assertTrue(hb.startswith("#"))
+            self.assertIn("codex", hb)
+
+    def test_format_heartbeat_progress_grows_over_time(self):
+        """Testet, dass der Progress-String mit der Zeit wächst."""
+        progress_5min = format_heartbeat_progress(elapsed_seconds=300.0)
+        self.assertEqual(len(progress_5min.split(" ")[0]), 2)
+
+        progress_10min = format_heartbeat_progress(elapsed_seconds=600.0)
+        self.assertEqual(len(progress_10min.split(" ")[0]), 5)
+
+        progress_20min = format_heartbeat_progress(elapsed_seconds=1200.0)
+        self.assertEqual(len(progress_20min.split(" ")[0]), 10)
