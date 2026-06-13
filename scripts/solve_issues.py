@@ -1869,9 +1869,9 @@ def print_branch_recovery_plan(plan: BranchRecoveryPlan) -> None:
 
 
 def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
-                          model: str, model_name: str | None = None, close_issues: bool = True,
-                          fallback_from: str | None = None,
-                          ensemble_summary: str | None = None) -> str:
+                        model: str, model_name: str | None = None, close_issues: bool = True,
+                        fallback_from: str | None = None,
+                        ensemble_summary: str | None = None) -> str:
     display_name = MODEL_CONFIGS[model]['display_name']
     effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
 
@@ -1897,7 +1897,6 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
     # Ensemble-Zusammenfassung hinzufügen, falls vorhanden
     if ensemble_summary:
         body += f"""
-
 ### Ensemble-Zusammenfassung
 {ensemble_summary}
 """
@@ -1910,6 +1909,7 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 ---
 *Erstellt mit dem AI Issue Solver (Morpheus-Methode)*
 """
+    return body
 
 
 def create_issue_pull_request(client: GitHubClient, repo: str, number: int, title: str,
@@ -1956,7 +1956,9 @@ def create_ensemble_branches(issue_number: int, models: list[str]) -> dict[str, 
     """Erstellt Branch-Namen für jedes Modell im Ensemble."""
     branches = {}
     for model in models:
-        model_slug = model.replace("/", "-").replace(":", "-")[:48]
+        model_slug = model.replace("/", "-").replace(":", "-")
+        if len(model_slug) > 50:
+            model_slug = model_slug[:50]
         branches[model] = f"ai/fix-issue-{issue_number}-{model_slug}"
     return branches
 
@@ -2051,6 +2053,7 @@ def evaluate_results(results: dict[str, WorkerRunResult], git_statuses: dict[str
         best_model = next(iter(results.keys()))
         best_reason = "Kein Modell hat Änderungen erzeugt, wähle erstes Modell als Fallback."
     elif not best_has_changes:
+        best_model = next(iter(results.keys()))
         best_reason = f"Kein Modell hat Änderungen erzeugt. Wähle {best_model} als Fallback (Exit Code: {results[best_model].returncode})."
 
     return best_model, best_reason
@@ -2809,11 +2812,7 @@ def main():
         default=0,
         help="Führe N Modelle parallel aus und wähle die beste Lösung. Beispiel: --ensemble 3",
     )
-    parser.add_argument(
-        "--skip-pr",
-        action="store_true",
-        help="Benchmark-Modus: Commit & Push ausführen aber keinen PR erstellen",
-    )
+
     parser.add_argument(
         "--continue-run",
         action="store_true",
@@ -3024,13 +3023,14 @@ def main():
 
     if args.ensemble > 0:
         print_step(1, f"Ensemble-Modus: {args.ensemble} Modelle parallel")
-        print(f"   Modelle: {', '.join([
+        models = [
             "opencode/deepseek-v4-flash-free",
             "opencode/mimo-v2.5-free",
             "claude-sonnet-4-20250514",
             "gpt-4o",
             "mistral/mistral-small-2603"
-        ][:args.ensemble])}")
+        ]
+        print(f"   Modelle: {', '.join(models[:args.ensemble])}")
     elif args.auto_model:
         print_step(1, f"Modell (automatisch): {MODEL_CONFIGS[args.model]['display_name']}")
         print(f"   Modell-Name: {args.model_name}")

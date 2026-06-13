@@ -24,6 +24,7 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
+    build_issue_pr_body,
     build_opencode_command,
     build_opencode_prompt,
     build_vibe_command,
@@ -32,10 +33,12 @@ from solve_issues import (  # noqa: E402
     check_opencode_auth,
     clone_repo,
     cleanup_preserved_worktrees,
+    create_ensemble_branches,
     create_run_report,
     create_issue_pull_request,
     detect_opencode_runtime_diagnostics,
     detect_codex_rate_limit,
+    evaluate_results,
     find_vibe_executable,
     format_git_change_summary,
     format_worker_output_tail,
@@ -1194,7 +1197,7 @@ class EnsembleTests(unittest.TestCase):
         
         self.assertEqual(
             branches["opencode/very-long-model-name-that-should-be-truncated-at-some-point"],
-            "ai/fix-issue-7-opencode-very-long-model-name-that-should-be-trunca"
+            "ai/fix-issue-7-opencode-very-long-model-name-that-should-be-trunc"
         )
         
     def test_evaluate_results_selects_best_model_based_on_changes_and_exit_code(self):
@@ -1250,11 +1253,15 @@ class EnsembleTests(unittest.TestCase):
         class MockClient:
             def __init__(self):
                 self.posts = []
-                
+                self.comments = []
+
             def create_pull_request(self, repo, title, body, head, base, dry_run=False):
                 self.posts.append((repo, title, body, head, base))
                 return {"html_url": "https://github.com/test-owner/demo/pull/7"}
-        
+
+            def close_issue_with_comment(self, repo, number, comment):
+                self.comments.append((repo, number, comment))
+
         client = MockClient()
         ensemble_summary = "| Modell | Exit Code | Änderungen |\n| model1 | 0 | Ja |"
         
