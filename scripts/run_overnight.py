@@ -16,6 +16,7 @@ import platform
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
+import json
 import re
 import shlex
 import subprocess
@@ -150,6 +151,8 @@ def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[st
         command.extend(["--unhealthy-action", args.unhealthy_action])
     if args.unhealthy_retries is not None:
         command.extend(["--unhealthy-retries", str(args.unhealthy_retries)])
+    if getattr(args, "skip_congestion_check", False):
+        command.append("--skip-congestion-check")
     if args.verbosity:
         command.extend(["--verbosity", args.verbosity])
     return command
@@ -681,6 +684,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--owner", help="GitHub Owner fuer Dashboard-Links")
     parser.add_argument(
+        "--skip-congestion-check",
+        action="store_true",
+        help="Workflow-Congestion-Check vor dem Batch ueberspringen",
+    )
+    parser.add_argument(
         "--caffeinate",
         action="store_true",
         help="macOS waehrend des Nachtlaufs mit caffeinate wach halten",
@@ -732,6 +740,53 @@ def main(argv: list[str] | None = None) -> int:
                 print_err("Tests fehlgeschlagen; Batch wird nicht gestartet")
         else:
             steps.append(skipped_step("tests", session_dir / "tests.log", "Pull fehlgeschlagen"))
+
+        can_continue = all(step.ok for step in steps)
+
+        # Workflow-Congestion-Check (vor dem Batch)
+        if args.skip_congestion_check:
+            print_warn("Workflow-Congestion-Check uebersprungen (--skip-congestion-check)")
+            steps.append(skipped_step(
+                "workflow_congestion",
+                session_dir / "workflow_congestion.log",
+                "--skip-congestion-check",
+            ))
+        elif can_continue:
+            print_step(4, "Workflow-Congestion-Check")
+            congestion_command = [
+                sys.executable,
+                str(Path("scripts") / "solve_issues.py"),
+                "--model", args.model,
+                "--skip-congestion-check",
+                "--dry-run",
+            ]
+            if args.repo:
+                congestion_command.extend(["--repo", args.repo])
+            if args.issue:
+                for issue_number in args.issue:
+                    congestion_command.extend(["--issue", str(issue_number)])
+            if getattr(args, "label", None):
+                congestion_command.extend(["--label", args.label])
+            if args.base_branch:
+                congestion_command.extend(["--base-branch", args.base_branch])
+            if args.verbosity:
+                congestion_command.extend(["--verbosity", args.verbosity])
+            congestion_result = run_logged_command(
+                "workflow_congestion",
+                congestion_command,
+                project_root,
+                session_dir / "workflow_congestion.log",
+                stream_output=True,
+            )
+            steps.append(congestion_result)
+            if not congestion_result.ok:
+                print_warn("Workflow-Congestion-Check hat Warnungen gefunden; Batch wird trotzdem gestartet")
+        else:
+            steps.append(skipped_step(
+                "workflow_congestion",
+                session_dir / "workflow_congestion.log",
+                "Vorheriger Schritt fehlgeschlagen",
+            ))
 
         can_continue = all(step.ok for step in steps)
 
