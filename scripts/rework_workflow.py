@@ -89,6 +89,25 @@ REWORK_REASON_LABELS = {
     ReworkReason.UNKNOWN: ["kind/rework", "theme/quality"],
 }
 
+INHERITABLE_PARENT_LABEL_PREFIXES = (
+    "agent/",
+    "area/",
+    "kind/",
+    "theme/",
+    "priority/",
+    "state/ready",
+)
+BLOCKED_PARENT_LABELS = {
+    "duplicate",
+    "invalid",
+    "wontfix",
+    "state/rework",
+    "state/done",
+    "state/blocked",
+    "ai-generated",
+    "ai-sub-issue",
+}
+
 
 @dataclass
 class ReworkSubTask:
@@ -142,6 +161,7 @@ Dieses Issue wurde automatisch durch das Rework-Workflow erstellt.
 
 ### 🔗 Verknüpfungen
 
+- Parent: #{original_issue_number}
 - Original Issue: #{original_issue_number}
 - Original PR: {original_pr_url}
 - Supersedes PR: {supersedes_pr}
@@ -573,6 +593,15 @@ class GitHubClient:
         resp = self.session.patch(url, json={"state": "closed"})
         raise_for_github_response(resp, f"Issue schließen: {repo}#{number}")
 
+    def comment_issue(self, repo: str, number: int, body: str, dry_run: bool = False) -> None:
+        """Kommentiert ein GitHub Issue."""
+        if dry_run:
+            print(f"      [DRY-RUN] Würde Issue #{number} kommentieren")
+            return
+        url = f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}/comments"
+        resp = self.session.post(url, json={"body": body})
+        raise_for_github_response(resp, f"Issue kommentieren: {repo}#{number}")
+
 
 def load_run_report_metadata(run_report_path: Path) -> dict | None:
     """Lädt Metadaten aus einem Run-Report."""
@@ -760,6 +789,55 @@ def unique_labels(labels: list[str]) -> list[str]:
     return unique
 
 
+def issue_label_names(issue: dict | None) -> list[str]:
+    if not issue:
+        return []
+    return [
+        label.get("name", "")
+        for label in issue.get("labels", [])
+        if isinstance(label, dict) and label.get("name")
+    ]
+
+
+def should_inherit_parent_label(label: str) -> bool:
+    if label in BLOCKED_PARENT_LABELS:
+        return False
+    if label.startswith("state/") and label != "state/ready":
+        return False
+    return any(label == prefix or label.startswith(prefix) for prefix in INHERITABLE_PARENT_LABEL_PREFIXES)
+
+
+def inherited_parent_labels(parent_issue: dict | None) -> list[str]:
+    return [
+        label
+        for label in issue_label_names(parent_issue)
+        if should_inherit_parent_label(label)
+    ]
+
+
+def build_child_issue_labels(
+    parent_issue: dict | None,
+    reason_labels: list[str],
+    base_labels: list[str] | None = None,
+) -> list[str]:
+    base_labels = base_labels or ["kind/rework", "state/rework", "agent/solver"]
+    return unique_labels(inherited_parent_labels(parent_issue) + reason_labels + base_labels)
+
+
+def build_parent_child_comment(original_issue_number: int, child_result: dict | None) -> str:
+    number = child_result.get("number", "") if child_result else ""
+    url = child_result.get("html_url", "") if child_result else ""
+    if url:
+        child_ref = f"#{number} - {url}" if number else url
+    else:
+        child_ref = f"#{number}" if number else "(unbekannt)"
+    return (
+        "Created a follow-up child issue with inherited workflow labels.\n\n"
+        f"- Parent: #{original_issue_number}\n"
+        f"- Child: {child_ref}\n"
+    )
+
+
 def pull_request_links_issue(pr: dict, issue_number: int) -> bool:
     """Return whether a GitHub PR payload references the given issue number."""
     if pr.get("issue_number") == issue_number:
@@ -940,8 +1018,11 @@ def main() -> int:
     issue_title = f"[Rework] #{spec.original_issue_number} — {spec.original_issue_title}"
     body = build_rework_issue_body(spec)
 
+    parent_issue = None
+    if client is not None and spec.original_issue_number:
+        parent_issue = client.get_issue(args.repo, spec.original_issue_number)
     reason_labels = REWORK_REASON_LABELS.get(spec.rework_reason, [])
-    labels = unique_labels(reason_labels + ["kind/rework", "state/rework", "agent/solver"])
+    labels = build_child_issue_labels(parent_issue, reason_labels)
 
     if dry_run:
         print_rework_issue_preview(args.repo, spec, labels)
@@ -962,6 +1043,9 @@ def main() -> int:
         result = client.create_issue(args.repo, issue_title, body, labels)
 
     if result:
+        if not args.update_existing:
+            comment = build_parent_child_comment(spec.original_issue_number, result)
+            client.comment_issue(args.repo, spec.original_issue_number, comment)
         print_ok(f"Rework-Issue erstellt: {result.get('html_url', '')}")
         print(f"   Original Issue: #{spec.original_issue_number}")
         print(f"   Rework-Reason: {spec.rework_reason.value}")

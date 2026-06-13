@@ -20,12 +20,14 @@ from status_dashboard import (  # noqa: E402
     enrich_runs_with_github,
     github_repo_api_path,
     github_links,
+    build_workflow_congestion_summaries,
     read_runs,
     render_dashboard,
     render_repo_summary_section,
     main as status_dashboard_main,
     write_dashboard,
 )
+from workflow_congestion import WorkflowCongestionFinding, WorkflowCongestionSummary  # noqa: E402
 
 
 class FakeLifecycleClient:
@@ -1583,6 +1585,54 @@ preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-73
         self.assertIn("Repository-Übersicht", html)
         self.assertIn("repo-a", html)
         self.assertIn("repo-b", html)
+
+    def test_render_dashboard_includes_workflow_congestion_section(self):
+        summary = WorkflowCongestionSummary(
+            open_pr_count=4,
+            red_pr_count=1,
+            green_unreviewed_pr_count=1,
+            stale_pr_count=1,
+            duplicate_issue_pr_count=1,
+            threshold=3,
+            findings=(
+                WorkflowCongestionFinding(
+                    kind="issue_has_open_pr",
+                    severity="warning",
+                    message="Issue #216 already has open PR #300",
+                    action="skip_duplicate_issue_runs",
+                    pr_number=300,
+                    issue_number=216,
+                ),
+            ),
+        )
+
+        html = render_dashboard(
+            [],
+            "test-owner",
+            Path("reports/status-dashboard.html"),
+            workflow_congestion={"demo": summary},
+        )
+
+        self.assertIn("Workflow-Status", html)
+        self.assertIn("Offene PRs", html)
+        self.assertIn("skip_duplicate_issue_runs", html)
+        self.assertIn("Issue #216 already has open PR #300", html)
+
+    def test_build_workflow_congestion_summaries_loads_pr_details_for_mergeable_state(self):
+        class FakeWorkflowClient:
+            def get_open_pull_requests(self, repo):
+                return [{"number": 300, "title": "Fix #216", "body": "Refs #216", "state": "open"}]
+
+            def get_pull_request(self, repo, number):
+                return {"number": number, "mergeable_state": "dirty"}
+
+            def get_open_issues(self, repo):
+                return [{"number": 216, "title": "Workflow control", "state": "open", "labels": []}]
+
+        summaries = build_workflow_congestion_summaries(["demo"], FakeWorkflowClient())
+
+        self.assertEqual(summaries["demo"].red_pr_count, 1)
+        self.assertEqual(summaries["demo"].duplicate_issue_pr_count, 1)
 
     def test_render_repo_summary_shows_attention_badge(self):
         """Test that repo summary shows attention badge for runs needing attention."""

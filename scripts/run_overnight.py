@@ -539,6 +539,7 @@ def write_final_summary(
         f"label: {args.label}",
         f"dry_run: {args.dry_run}",
         f"dashboard: {args.dashboard_output}",
+        "workflow_congestion: see_dashboard_workflow_status",
         "",
         "steps:",
     ]
