@@ -1592,7 +1592,11 @@ preserved_worktree: reports/preserved-worktrees/20260521-demo-issue-73
             red_pr_count=1,
             green_unreviewed_pr_count=1,
             stale_pr_count=1,
+            stale_generated_branch_count=0,
             duplicate_issue_pr_count=1,
+            backlog_entry_with_open_issue_count=0,
+            backlog_entry_with_closed_issue_count=0,
+            superseded_approach_count=0,
             threshold=3,
             findings=(
                 WorkflowCongestionFinding(

@@ -101,6 +101,16 @@ from solver_run_resources import (  # noqa: F401 (re-exports used by tests)
     make_run_id,
     write_resource_diagnostics_to_report,
 )
+from workflow_congestion import (  # noqa: F401
+    WorkflowPullRequest,
+    WorkflowIssue,
+    WorkflowCongestionSummary,
+    analyze_workflow_congestion,
+    issue_has_open_pr,
+    parse_issue_references,
+    pull_request_from_github,
+    issue_from_github,
+)
 
 
 def ensure_solver_directories() -> tuple[Path, Path]:
@@ -2505,6 +2515,73 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
     return True
 
 
+def check_and_warn_on_congestion(
+    client: GitHubClient,
+    repo: str,
+    issue_number: int | None = None,
+    *,
+    pr_threshold: int = 3,
+    skip_congestion_check: bool = False,
+) -> bool:
+    """Prueft Workflow-Congestion und warnt, wenn die Schwelle ueberschritten ist.
+
+    Returns:
+        True wenn weitergemacht werden kann, False wenn abgebrochen werden sollte.
+    """
+    if skip_congestion_check:
+        return True
+
+    try:
+        raw_prs = client.get_open_pull_requests(repo)
+        detailed_prs = []
+        for pr in raw_prs:
+            if isinstance(pr, dict) and not pr.get("mergeable_state") and pr.get("number"):
+                detailed = client.get_pull_request(repo, pr["number"])
+                if detailed:
+                    pr = {**pr, **detailed}
+            detailed_prs.append(pr)
+
+        open_prs = [
+            pull_request_from_github(pr)
+            for pr in detailed_prs
+        ]
+        open_issues_list = [
+            issue_from_github(issue)
+            for issue in client.get_open_issues(repo)
+        ]
+        summary = analyze_workflow_congestion(
+            open_prs,
+            open_issues_list,
+            pr_threshold=pr_threshold,
+        )
+
+        if summary.needs_attention:
+            print_warn(f"Workflow-Congestion erkannt in {repo}:")
+            for finding in summary.findings:
+                print(f"   [{finding.severity}] {finding.message} → {finding.action}")
+
+            # Pruefe ob das angefragte Issue bereits einen offenen PR hat
+            if issue_number is not None and issue_has_open_pr(issue_number, open_prs):
+                print_warn(
+                    f"Issue #{issue_number} hat bereits einen offenen PR. "
+                    "Verwende --retry um trotzdem zu starten, "
+                    "oder --compare-models fuer einen Modellvergleich."
+                )
+                return False
+
+            if summary.recommended_action != "continue":
+                print_warn(
+                    f"Empfohlene Aktion: {summary.recommended_action}. "
+                    "Setze --skip-congestion-check um dies zu uebergehen."
+                )
+                return False
+
+        return True
+    except Exception as exc:
+        print_warn(f"Workflow-Congestion-Check fehlgeschlagen: {exc}")
+        return True
+
+
 def print_solver_directories() -> None:
     """
     Dokumentiert die solver-lokalen Verzeichnisstrukturen und Umgebungsvariablen.
@@ -2617,6 +2694,28 @@ def main():
         "--cleanup-stale-locks",
         action="store_true",
         help="Veraltete Lock-Dateien unter reports/locks bereinigen",
+    )
+    # Workflow-Congestion-Steuerung
+    parser.add_argument(
+        "--skip-congestion-check",
+        action="store_true",
+        help="Workflow-Congestion-Check vor dem Start ueberspringen",
+    )
+    parser.add_argument(
+        "--pr-threshold",
+        type=int,
+        default=3,
+        help="Maximale Anzahl offener PRs bevor eine Warnung ausgegeben wird (Standard: 3)",
+    )
+    parser.add_argument(
+        "--retry",
+        action="store_true",
+        help="Erzwingt die erneute Bearbeitung eines Issues, auch wenn bereits ein offener PR existiert",
+    )
+    parser.add_argument(
+        "--compare-models",
+        action="store_true",
+        help="Mehrere Modelle auf demselben Issue ausfuehren (erfordert --retry)",
     )
     # OpenCode Budget-Limits (nur fuer --model opencode)
     parser.add_argument(
@@ -2800,7 +2899,23 @@ def main():
         print_warn("--auto-model erfordert --issue; nutze --model für Batch-Modus")
         sys.exit(1)
 
-    print_step(2, f"Suche offene Issues in {len(repos)} Repo(s)")
+    # Workflow-Congestion-Check vor dem Start
+    if not args.skip_congestion_check and not args.dry_run:
+        print_step(2, "Workflow-Congestion-Check")
+        for repo_name in repos:
+            can_proceed = check_and_warn_on_congestion(
+                client,
+                repo_name,
+                issue_number=args.issue,
+                pr_threshold=args.pr_threshold,
+                skip_congestion_check=args.skip_congestion_check,
+            )
+            if not can_proceed and args.issue:
+                print_err(f"Workflow-Congestion blockiert Issue #{args.issue} in {repo_name}")
+                sys.exit(1)
+        print()
+
+    print_step(3, f"Suche offene Issues in {len(repos)} Repo(s)")
 
     solved = 0
     failed = 0
@@ -2828,6 +2943,28 @@ def main():
             print(f"      Zielbranch: {base_branch} (GitHub-Default-Branch)")
 
         for issue in issues:
+            issue_number = issue.get("number", 0)
+
+            # Workflow-Congestion-Check: Issues mit offenen PRs ueberspringen
+            # (ausser --retry oder --compare-models ist gesetzt)
+            if not args.retry and not args.compare_models and issue_number:
+                try:
+                    open_prs_for_issue = client.get_pull_requests_for_branch(
+                        repo_name,
+                        f"ai/fix-issue-{issue_number}",
+                        state="open",
+                    )
+                    if open_prs_for_issue:
+                        print_warn(
+                            f"   Issue #{issue_number} hat bereits offene PRs; "
+                            "ueberspringe (--retry zum Erzwingen)"
+                        )
+                        for pr in open_prs_for_issue:
+                            print(f"      - PR #{pr.number}: {pr.html_url}")
+                        continue
+                except Exception:
+                    pass
+
             ok = solve_issue(
                 client=client,
                 issue=issue,

@@ -34,9 +34,12 @@ except ModuleNotFoundError:
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
 from workflow_congestion import (  # noqa: E402
+    BacklogEntry,
+    WorkflowCongestionFinding,
     WorkflowCongestionSummary,
     analyze_workflow_congestion,
     issue_from_github,
+    parse_backlog_entries,
     pull_request_from_github,
 )
 
@@ -968,6 +971,11 @@ def build_workflow_congestion_summaries(
     if client is None:
         return {}
     summaries: dict[str, WorkflowCongestionSummary] = {}
+
+    # Backlog-Eintraege laden (falls vorhanden)
+    backlog_path = Path("docs") / "NEXT_BACKLOG.md"
+    backlog_entries = parse_backlog_entries(backlog_path) if backlog_path.exists() else None
+
     for repo in repos:
         raw_prs = client.get_open_pull_requests(repo)
         detailed_prs = []
@@ -985,9 +993,30 @@ def build_workflow_congestion_summaries(
             issue_from_github(issue)
             for issue in client.get_open_issues(repo)
         ]
+        # Geschlossene Issues laden fuer Backlog-Matching
+        closed_issues: list[WorkflowIssue] = []
+        try:
+            closed_data = client.get_json(
+                f"/repos/{quote(client.owner, safe='')}/{quote(repo.split('/')[-1] if '/' in repo else repo, safe='')}/issues",
+                state="closed",
+                per_page=100,
+                sort="updated",
+                direction="desc",
+            )
+            if isinstance(closed_data, list):
+                closed_issues = [
+                    issue_from_github(issue)
+                    for issue in closed_data
+                    if "pull_request" not in issue
+                ]
+        except Exception:
+            pass
+
         summaries[repo] = analyze_workflow_congestion(
             open_prs,
             open_issues,
+            closed_issues=closed_issues,
+            backlog_entries=backlog_entries,
             pr_threshold=pr_threshold,
             stale_days=stale_days,
         )
@@ -2189,6 +2218,7 @@ def render_workflow_congestion_section(summaries: dict[str, WorkflowCongestionSu
         return ""
     rows = []
     finding_rows = []
+    backlog_rows = []
     for repo, summary in sorted(summaries.items()):
         attention = "Ja" if summary.needs_attention else "Nein"
         rows.append(f"""
@@ -2198,17 +2228,23 @@ def render_workflow_congestion_section(summaries: dict[str, WorkflowCongestionSu
           <td>{summary.red_pr_count}</td>
           <td>{summary.green_unreviewed_pr_count}</td>
           <td>{summary.stale_pr_count}</td>
+          <td>{summary.stale_generated_branch_count}</td>
           <td>{summary.duplicate_issue_pr_count}</td>
+          <td>{summary.superseded_approach_count}</td>
+          <td>{summary.backlog_entry_with_open_issue_count}</td>
+          <td>{summary.backlog_entry_with_closed_issue_count}</td>
           <td><code>{escape(summary.recommended_action)}</code></td>
           <td>{attention}</td>
         </tr>
         """)
-        for finding in summary.findings[:8]:
+        for finding in summary.findings[:10]:
             target = []
             if finding.issue_number:
                 target.append(f"Issue #{finding.issue_number}")
             if finding.pr_number:
                 target.append(f"PR #{finding.pr_number}")
+            if finding.backlog_section:
+                target.append(f"Backlog #{finding.backlog_section}")
             finding_rows.append(f"""
             <tr>
               <td>{escape(repo)}</td>
@@ -2218,6 +2254,18 @@ def render_workflow_congestion_section(summaries: dict[str, WorkflowCongestionSu
               <td><code>{escape(finding.action)}</code></td>
             </tr>
             """)
+
+        # Backlog-Eintraege mit passenden Issues
+        for finding in summary.findings:
+            if "backlog" in finding.kind and finding.backlog_section:
+                backlog_rows.append(f"""
+                <tr>
+                  <td>{escape(repo)}</td>
+                  <td>Backlog #{finding.backlog_section}</td>
+                  <td><span class="badge badge-{escape(finding.severity)}">{escape(finding.message[:80])}</span></td>
+                  <td><code>{escape(finding.action)}</code></td>
+                </tr>
+                """)
 
     findings_html = ""
     if finding_rows:
@@ -2241,6 +2289,27 @@ def render_workflow_congestion_section(summaries: dict[str, WorkflowCongestionSu
       </div>
         """
 
+    backlog_html = ""
+    if backlog_rows:
+        backlog_html = f"""
+      <h3>Backlog-Status</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Repo</th>
+              <th>Backlog-Eintrag</th>
+              <th>Status</th>
+              <th>Aktion</th>
+            </tr>
+          </thead>
+          <tbody>
+            {"".join(backlog_rows)}
+          </tbody>
+        </table>
+      </div>
+        """
+
     return f"""
     <section class="section-block">
       <h2>Workflow-Status</h2>
@@ -2251,10 +2320,14 @@ def render_workflow_congestion_section(summaries: dict[str, WorkflowCongestionSu
               <th>Repo</th>
               <th>Offene PRs</th>
               <th>Rote PRs</th>
-              <th>Grün ohne Review</th>
+              <th>Grün o. Review</th>
               <th>Stale PRs</th>
-              <th>Issue/PR-Duplikate</th>
-              <th>Empfohlene Aktion</th>
+              <th>Stale Branches</th>
+              <th>PR/Issue-Dupl.</th>
+              <th>Superseded</th>
+              <th>Backlog+Issue</th>
+              <th>Backlog geschl.</th>
+              <th>Aktion</th>
               <th>Achtung</th>
             </tr>
           </thead>
@@ -2264,6 +2337,7 @@ def render_workflow_congestion_section(summaries: dict[str, WorkflowCongestionSu
         </table>
       </div>
       {findings_html}
+      {backlog_html}
     </section>
 """
 
