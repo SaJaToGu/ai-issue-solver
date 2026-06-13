@@ -24,6 +24,7 @@ from solve_issues import (  # noqa: E402
     assess_worker_result,
     branch_has_changes_against_base,
     build_aider_command,
+    build_issue_pr_body,
     build_opencode_command,
     build_opencode_prompt,
     build_vibe_command,
@@ -32,10 +33,12 @@ from solve_issues import (  # noqa: E402
     check_opencode_auth,
     clone_repo,
     cleanup_preserved_worktrees,
+    create_ensemble_branches,
     create_run_report,
     create_issue_pull_request,
     detect_opencode_runtime_diagnostics,
     detect_codex_rate_limit,
+    evaluate_results,
     find_vibe_executable,
     format_git_change_summary,
     format_worker_output_tail,
@@ -1171,6 +1174,114 @@ class WorkerCommandConstructionTests(unittest.TestCase):
 
         self.assertEqual(cmd, ["aider", "--model", "openrouter/anthropic/claude-3-haiku", "prompt"])
         mock_aider.assert_called_once_with("openrouter", "openrouter/anthropic/claude-3-haiku", "prompt", "/repo", None)
+
+
+class EnsembleTests(unittest.TestCase):
+    def test_create_ensemble_branches_generates_unique_branch_names(self):
+        branches = create_ensemble_branches(7, [
+            "opencode/deepseek-v4-flash-free",
+            "claude-sonnet-4-20250514",
+            "gpt-4o"
+        ])
+        
+        self.assertEqual(branches, {
+            "opencode/deepseek-v4-flash-free": "ai/fix-issue-7-opencode-deepseek-v4-flash-free",
+            "claude-sonnet-4-20250514": "ai/fix-issue-7-claude-sonnet-4-20250514",
+            "gpt-4o": "ai/fix-issue-7-gpt-4o"
+        })
+        
+    def test_create_ensemble_branches_truncates_long_model_names(self):
+        branches = create_ensemble_branches(7, [
+            "opencode/very-long-model-name-that-should-be-truncated-at-some-point"
+        ])
+        
+        self.assertEqual(
+            branches["opencode/very-long-model-name-that-should-be-truncated-at-some-point"],
+            "ai/fix-issue-7-opencode-very-long-model-name-that-should-be-trunc"
+        )
+        
+    def test_evaluate_results_selects_best_model_based_on_changes_and_exit_code(self):
+        results = {
+            "model1": WorkerRunResult(returncode=0, output="success"),
+            "model2": WorkerRunResult(returncode=1, output="partial"),
+            "model3": WorkerRunResult(returncode=0, output="no changes")
+        }
+        git_statuses = {
+            "model1": " M README.md\n M src/main.py",
+            "model2": " M README.md",
+            "model3": ""
+        }
+        
+        best_model, reason = evaluate_results(results, git_statuses, "/tmp/repo", "Test issue")
+        
+        self.assertEqual(best_model, "model1")
+        self.assertIn("Exit Code: 0", reason)
+        self.assertIn("Änderungen: Ja", reason)
+        
+    def test_evaluate_results_falls_back_to_first_model_when_no_changes(self):
+        results = {
+            "model1": WorkerRunResult(returncode=1, output="failed"),
+            "model2": WorkerRunResult(returncode=0, output="no changes"),
+            "model3": WorkerRunResult(returncode=1, output="failed")
+        }
+        git_statuses = {
+            "model1": "",
+            "model2": "",
+            "model3": ""
+        }
+        
+        best_model, reason = evaluate_results(results, git_statuses, "/tmp/repo", "Test issue")
+        
+        self.assertEqual(best_model, "model1")
+        self.assertIn("Kein Modell hat Änderungen erzeugt", reason)
+        
+    def test_build_issue_pr_body_includes_ensemble_summary(self):
+        body = build_issue_pr_body(
+            config_owner="test-owner",
+            repo="demo",
+            number=7,
+            title="Test issue",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
+            ensemble_summary="| Modell | Exit Code | Änderungen |\n|--------|-----------|------------|\n| model1 | 0 | Ja |"
+        )
+        
+        self.assertIn("Ensemble-Zusammenfassung", body)
+        self.assertIn("| Modell | Exit Code | Änderungen |", body)
+        
+    def test_create_issue_pull_request_passes_ensemble_summary(self):
+        class MockClient:
+            def __init__(self):
+                self.posts = []
+                self.comments = []
+
+            def create_pull_request(self, repo, title, body, head, base, dry_run=False):
+                self.posts.append((repo, title, body, head, base))
+                return {"html_url": "https://github.com/test-owner/demo/pull/7"}
+
+            def close_issue_with_comment(self, repo, number, comment):
+                self.comments.append((repo, number, comment))
+
+        client = MockClient()
+        ensemble_summary = "| Modell | Exit Code | Änderungen |\n| model1 | 0 | Ja |"
+        
+        pr = create_issue_pull_request(
+            client=client,
+            repo="demo",
+            number=7,
+            title="Test issue",
+            model="opencode",
+            config={"owner": "test-owner"},
+            branch_name="ai/fix-issue-7-model1",
+            base_branch="main",
+            close_issues=True,
+            model_name="model1",
+            ensemble_summary=ensemble_summary
+        )
+        
+        self.assertIsNotNone(pr)
+        self.assertIn("Ensemble-Zusammenfassung", client.posts[0][2])
+        self.assertIn("| Modell | Exit Code | Änderungen |", client.posts[0][2])
 
 
 class WorkerOutputTests(unittest.TestCase):

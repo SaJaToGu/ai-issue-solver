@@ -1879,8 +1879,9 @@ def print_branch_recovery_plan(plan: BranchRecoveryPlan) -> None:
 
 
 def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
-                         model: str, model_name: str | None = None, close_issues: bool = True,
-                         fallback_from: str | None = None) -> str:
+                        model: str, model_name: str | None = None, close_issues: bool = True,
+                        fallback_from: str | None = None,
+                        ensemble_summary: str | None = None) -> str:
     display_name = MODEL_CONFIGS[model]['display_name']
     effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
 
@@ -1892,7 +1893,7 @@ def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
     if fallback_from:
         display_name = f"{display_name} (Fallback von {fallback_from})"
 
-    return f"""## 🤖 AI-generierter Fix für Issue #{number}
+    body = f"""## 🤖 AI-generierter Fix für Issue #{number}
 
 Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_owner}/ai-issue-solver) erstellt.
 
@@ -1901,6 +1902,16 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 
 ### Verwendetes Modell
 `{display_name}`
+"""
+
+    # Ensemble-Zusammenfassung hinzufügen, falls vorhanden
+    if ensemble_summary:
+        body += f"""
+### Ensemble-Zusammenfassung
+{ensemble_summary}
+"""
+
+    body += f"""
 
 ### Änderungen
 *(bitte vor dem Merge reviewen)*
@@ -1908,18 +1919,20 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 ---
 *Erstellt mit dem AI Issue Solver (Morpheus-Methode)*
 """
+    return body
 
 
 def create_issue_pull_request(client: GitHubClient, repo: str, number: int, title: str,
-                               model: str, config: dict, branch_name: str,
-                               base_branch: str, close_issues: bool,
-                               model_name: str | None = None,
-                               fallback_from: str | None = None,
-                               dry_run: bool = False) -> dict | None:
+                                model: str, config: dict, branch_name: str,
+                                base_branch: str, close_issues: bool,
+                                model_name: str | None = None,
+                                fallback_from: str | None = None,
+                                dry_run: bool = False,
+                                ensemble_summary: str | None = None) -> dict | None:
     pr = client.create_pull_request(
         repo=repo,
         title=f"[AI] Fix: {title}",
-        body=build_issue_pr_body(config["owner"], repo, number, title, model, model_name, close_issues, fallback_from),
+        body=build_issue_pr_body(config["owner"], repo, number, title, model, model_name, close_issues, fallback_from, ensemble_summary),
         head=branch_name,
         base=base_branch,
         dry_run=dry_run,
@@ -1949,6 +1962,113 @@ def create_issue_pull_request(client: GitHubClient, repo: str, number: int, titl
 # Issue lösen
 # ─────────────────────────────────────────────────────────────
 
+def create_ensemble_branches(issue_number: int, models: list[str]) -> dict[str, str]:
+    """Erstellt Branch-Namen für jedes Modell im Ensemble."""
+    branches = {}
+    for model in models:
+        model_slug = model.replace("/", "-").replace(":", "-")
+        if len(model_slug) > 50:
+            model_slug = model_slug[:50]
+        branches[model] = f"ai/fix-issue-{issue_number}-{model_slug}"
+    return branches
+
+
+def _run_single_model(
+    client: GitHubClient,
+    issue: dict,
+    repo: str,
+    model: str,
+    model_name: str,
+    config: dict,
+    token: str,
+    dry_run: bool,
+    base_branch: str,
+    repo_dir: str,
+    branch_name: str,
+    prompt: str,
+    verbosity: str,
+    run_report_dir: Path | str | None = None,
+) -> WorkerRunResult:
+    """Führt einen einzelnen Modelllauf im Ensemble-Modus aus."""
+    # Branch erstellen oder auschecken
+    if not create_branch(repo_dir, branch_name):
+        print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
+        return WorkerRunResult(returncode=1, output=f"Branch creation failed: {branch_name}")
+
+    # Worker-Umgebung vorbereiten
+    adapter = get_worker_adapter(model)
+    env = adapter.build_env(config["config"])
+    effective_model_name = model_name or MODEL_CONFIGS[model].get("default_model_name") or None
+
+    # Worker ausführen
+    result, _ = adapter.run(
+        prompt=sanitize_worker_prompt_secret_paths(prompt, repo_dir),
+        repo_path=repo_dir,
+        env=env,
+        model_name=effective_model_name,
+        verbosity=verbosity,
+        run_report=create_run_report(repo, issue["number"], branch_name, model, issue_title=issue["title"], run_dir=run_report_dir) if run_report_dir else None,
+    )
+    
+    # Änderungen committen und pushen
+    if not dry_run:
+        commit_msg = f"fix: Löse Issue #{issue['number']} — {issue['title']}\n\nAutomatisch gelöst mit AI Issue Solver (Modell: {model_name})"
+        commit_and_push(repo_dir, branch_name, commit_msg, token, config["owner"], repo)
+    
+    return result
+
+
+def evaluate_results(results: dict[str, WorkerRunResult], git_statuses: dict[str, str],
+                    repo_dir: str, issue_text: str) -> tuple[str, str]:
+    """Bewertet die Ergebnisse der Modelle und wählt das beste aus."""
+    best_model = None
+    best_score = -1
+    best_reason = ""
+    best_has_changes = False
+
+    for model, result in results.items():
+        git_status = git_statuses.get(model, "")
+        assessment = assess_worker_result(
+            result,
+            git_status,
+            repo_dir=repo_dir,
+            issue_text=issue_text,
+        )
+        score = 0
+        reason = assessment.reason
+
+        # Bewertungskriterien
+        if assessment.has_changes:
+            score += 3  # Änderungen sind das wichtigste Kriterium
+            best_has_changes = True
+        if result.returncode == 0:
+            score += 2  # Erfolgreicher Exit-Code ist wichtig
+        if assessment.should_continue:
+            score += 1  # Sollte weiterverwendet werden
+        
+        # Anzahl der geänderten Dateien als zusätzliches Kriterium
+        changed_files = len(changed_paths_from_status(git_status)) if git_status else 0
+        score += min(changed_files, 5)  # Maximal 5 Punkte für viele Änderungen
+
+        if score > best_score:
+            best_score = score
+            best_model = model
+            best_reason = (
+                f"{reason}, Exit Code: {result.returncode}, "
+                f"Änderungen: {'Ja' if assessment.has_changes else 'Nein'}, "
+                f"Geänderte Dateien: {changed_files}"
+            )
+
+    if not best_model:
+        best_model = next(iter(results.keys()))
+        best_reason = "Kein Modell hat Änderungen erzeugt, wähle erstes Modell als Fallback."
+    elif not best_has_changes:
+        best_model = next(iter(results.keys()))
+        best_reason = f"Kein Modell hat Änderungen erzeugt. Wähle {best_model} als Fallback (Exit Code: {results[best_model].returncode})."
+
+    return best_model, best_reason
+
+
 def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 model: str, model_name: str, config: dict,
                 token: str, dry_run: bool, base_branch: str,
@@ -1964,10 +2084,125 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 max_run_cost_usd: float | None = None,
                 max_run_input_tokens: int | None = None,
                 max_run_output_tokens: int | None = None,
-                max_run_cache_read_tokens: int | None = None) -> bool:
+                max_run_cache_read_tokens: int | None = None,
+                ensemble: int = 0) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
+    if ensemble > 0:
+        # Ensemble-Modus: Modelle auswählen
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        models = [
+            "opencode/deepseek-v4-flash-free",
+            "opencode/mimo-v2.5-free",
+            "claude-sonnet-4-20250514",
+            "gpt-4o",
+            "mistral/mistral-small-2603"
+        ][:ensemble]
+        print(f"      🤖 Ensemble-Modus: Führe {len(models)} Modelle parallel aus: {', '.join(models)}")
+        
+        # Branches für jedes Modell erstellen
+        ensemble_branches = create_ensemble_branches(number, models)
+        
+        # Ergebnisse sammeln
+        results = {}
+        git_statuses = {}
+        
+        # Temporäres Verzeichnis für das Repository erstellen
+        tmpdir = tempfile.mkdtemp(prefix="ai-solver-ensemble-", dir=str(cache_dir / "tmp"))
+        repo_dir = os.path.join(tmpdir, repo)
+        
+        # Repository klonen
+        print(f"      📥 Klone {repo} für Ensemble-Modus ...", end=" ", flush=True)
+        clone_result = clone_repo(config["owner"], repo, token, repo_dir, base_branch)
+        if not clone_result:
+            print_err("Klonen fehlgeschlagen")
+            return False
+        print("✅")
+        
+        # Modelle parallel ausführen
+        with ThreadPoolExecutor() as executor:
+            futures = {}
+            for model_name in models:
+                branch_name = ensemble_branches[model_name]
+                future = executor.submit(
+                    _run_single_model,
+                    client=client,
+                    issue=issue,
+                    repo=repo,
+                    model="opencode",
+                    model_name=model_name,
+                    config=config,
+                    token=token,
+                    dry_run=dry_run,
+                    base_branch=base_branch,
+                    repo_dir=repo_dir,
+                    branch_name=branch_name,
+                    prompt=prompt,
+                    verbosity=verbosity,
+                    run_report_dir=run_report_dir,
+                )
+                futures[future] = model_name
+            
+            for future in as_completed(futures):
+                model_name = futures[future]
+                try:
+                    result = future.result()
+                    results[model_name] = result
+                    git_statuses[model_name] = git_status_porcelain(repo_dir)
+                    print(f"      ✅ Modell {model_name} abgeschlossen (Exit Code: {result.returncode})")
+                except Exception as e:
+                    print(f"      ❌ Modell {model_name} mit Fehler: {e}")
+                    results[model_name] = WorkerRunResult(returncode=1, output=str(e))
+                    git_statuses[model_name] = ""
+        
+        # Bestes Ergebnis auswählen
+        best_model, best_reason = evaluate_results(results, git_statuses, repo_dir, f"{title}\n\n{body or ''}")
+        print(f"      🏆 Bestes Modell: {best_model} ({best_reason})")
+        
+        # Ensemble-Zusammenfassung generieren
+        ensemble_summary = f"Dieses PR wurde aus einem Ensemble von {len(models)} Modellen ausgewählt:\n"
+        ensemble_summary += "| Modell | Exit Code | Änderungen | Geänderte Dateien |\n"
+        ensemble_summary += "|--------|-----------|------------|-------------------|\n"
+        
+        for model_name in models:
+            result = results[model_name]
+            git_status = git_statuses.get(model_name, "")
+            assessment = assess_worker_result(
+                result,
+                git_status,
+                repo_dir=repo_dir,
+                issue_text=f"{title}\n\n{body or ''}",
+            )
+            changed_files = len(changed_paths_from_status(git_status)) if git_status else 0
+            ensemble_summary += (
+                f"| {model_name} | {result.returncode} | {'Ja' if assessment.has_changes else 'Nein'} "
+                f"| {changed_files} |")
+            if model_name == best_model:
+                ensemble_summary += " ← **Ausgewählt**"
+            ensemble_summary += "\n"
+        
+        # Besten Branch auswählen und PR erstellen
+        best_branch = ensemble_branches[best_model]
+        if not skip_pr:
+            pr = create_issue_pull_request(
+                client=client,
+                repo=repo,
+                number=number,
+                title=title,
+                model="opencode",
+                config=config,
+                branch_name=best_branch,
+                base_branch=base_branch,
+                close_issues=close_issues,
+                model_name=best_model,
+                fallback_from=None,
+                dry_run=dry_run,
+                ensemble_summary=ensemble_summary,
+            )
+            return bool(pr)
+        return True
+    
     default_branch_name = f"ai/fix-issue-{number}"
     if branch_suffix:
         default_branch_name = f"{default_branch_name}/{branch_suffix}"
@@ -2649,6 +2884,13 @@ def main():
         help="Optionaler Suffix für den Branch-Namen (z.B. Modell-Name für Ensemble-Läufe)",
     )
     parser.add_argument(
+        "--ensemble",
+        type=int,
+        default=0,
+        help="Führe N Modelle parallel aus und wähle die beste Lösung. Beispiel: --ensemble 3",
+    )
+
+    parser.add_argument(
         "--continue-run",
         action="store_true",
         dest="continue_",
@@ -2878,7 +3120,17 @@ def main():
     if args.dry_run:
         print_warn("DRY-RUN Modus aktiv\n")
 
-    if args.auto_model:
+    if args.ensemble > 0:
+        print_step(1, f"Ensemble-Modus: {args.ensemble} Modelle parallel")
+        models = [
+            "opencode/deepseek-v4-flash-free",
+            "opencode/mimo-v2.5-free",
+            "claude-sonnet-4-20250514",
+            "gpt-4o",
+            "mistral/mistral-small-2603"
+        ]
+        print(f"   Modelle: {', '.join(models[:args.ensemble])}")
+    elif args.auto_model:
         print_step(1, f"Modell (automatisch): {MODEL_CONFIGS[args.model]['display_name']}")
         print(f"   Modell-Name: {args.model_name}")
         print(f"   Kosten-Tier: {args.max_cost}")
@@ -2988,6 +3240,7 @@ def main():
                 max_run_input_tokens=args.max_run_input_tokens,
                 max_run_output_tokens=args.max_run_output_tokens,
                 max_run_cache_read_tokens=args.max_run_cache_read_tokens,
+                ensemble=args.ensemble,
             )
             if ok:
                 solved += 1

@@ -76,10 +76,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Nur anzeigen, nichts ändern",
     )
+    parser.add_argument(
+        "--ensemble",
+        type=int,
+        default=0,
+        help="Führe N Modelle parallel aus und wähle die beste Lösung. Beispiel: --ensemble 3",
+    )
     return parser.parse_args()
 
 
-def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False) -> dict:
+def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False, ensemble: int = 0) -> dict:
     """Führt den Benchmark für die angegebenen Modelle aus."""
     # OPENCODE_SERVER_PASSWORD wird von OpenCode Desktop gesetzt und verhindert,
     # dass `opencode run` eine neue Session startet. Vor dem Subprozess entfernen,
@@ -89,6 +95,69 @@ def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False) -
     full_repo = os.environ.get("GITHUB_REPOSITORY") or "SaJaToGu/ai-issue-solver"
     repo = full_repo.split("/", 1)[1] if "/" in full_repo else full_repo
 
+    if ensemble > 0:
+        print(f"\n--- Benchmark für Ensemble mit {ensemble} Modellen ---")
+        
+        # Führe solve_issues.py im Ensemble-Modus aus
+        cmd = [
+            sys.executable,
+            "scripts/solve_issues.py",
+            "--model", "opencode",
+            "--repo", repo,
+            "--issue", str(issue_number),
+            "--skip-pr",
+            "--ensemble", str(ensemble),
+        ]
+        if dry_run:
+            cmd.append("--dry-run")
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            
+            # Analysiere die Ausgabe
+            output = result.stdout + result.stderr
+            run_report = extract_run_report_path(output)
+            run_outcome = load_run_outcome(run_report)
+            has_changes = bool(run_outcome.get("has_changes")) if run_outcome else "no_changes" not in output.lower()
+            has_pr = "PR erstellt" in output
+            
+            # Führe Tests aus
+            test_result = subprocess.run(
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            tests_passed = test_result.returncode == 0
+            
+            results[f"ensemble-{ensemble}"] = {
+                "changes": has_changes,
+                "pr": has_pr,
+                "tests_passed": tests_passed,
+                "returncode": result.returncode,
+                "run_report": str(run_report) if run_report else "",
+                "run_outcome": run_outcome,
+                "output": output,
+                "ensemble": True,
+                "models": models[:ensemble],
+            }
+            
+        except Exception as e:
+            print_err(f"Fehler beim Benchmark für Ensemble: {e}")
+            results[f"ensemble-{ensemble}"] = {
+                "error": str(e),
+                "changes": False,
+                "pr": False,
+                "tests_passed": False,
+                "ensemble": True,
+                "models": models[:ensemble],
+            }
+    
     for model in models:
         print(f"\n--- Benchmark für Modell: {model} ---")
         
@@ -169,16 +238,34 @@ def print_results(results: dict) -> None:
             print(f"  - Fehler: {result['error']}")
 
 
+def print_results(results: dict) -> None:
+    """Gibt die Benchmark-Ergebnisse aus."""
+    print_banner("BENCHMARK-ERGEBNISSE")
+    for model, result in results.items():
+        print(f"\n{'Ensemble' if result.get('ensemble') else 'Modell'}: {model}")
+        if result.get('ensemble'):
+            print(f"  - Modelle: {', '.join(result.get('models', []))}")
+        print(f"  - Änderungen: {'Ja' if result.get('changes', False) else 'Nein'}")
+        print(f"  - PR erstellt: {'Ja' if result.get('pr', False) else 'Nein'}")
+        print(f"  - Tests bestanden: {'Ja' if result.get('tests_passed', False) else 'Nein'}")
+        if "error" in result:
+            print(f"  - Fehler: {result['error']}")
+
+
 def main() -> int:
     args = parse_args()
     models = args.models.split(",") if args.models else FREE_OPencode_MODELS
     
     print_banner("BENCHMARK FÜR NICHT-CODEX-SOLVER")
     print(f"Issue: {args.issue}")
-    print(f"Modelle: {', '.join(models)}")
+    if args.ensemble > 0:
+        print(f"Ensemble: {args.ensemble} Modelle parallel")
+        print(f"Modelle: {', '.join(models[:args.ensemble])}")
+    else:
+        print(f"Modelle: {', '.join(models)}")
     print(f"Dry-Run: {'Ja' if args.dry_run else 'Nein'}")
     
-    results = run_benchmark(args.issue, models, args.dry_run)
+    results = run_benchmark(args.issue, models, args.dry_run, args.ensemble)
     print_results(results)
     
     # Speichere Ergebnisse als JSON
