@@ -34,6 +34,17 @@ except ModuleNotFoundError:
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
 
+try:
+    from solver_supervisor import (  # noqa: E402
+        DEFAULT_STALE_SECONDS,
+        get_supervisor_summary,
+        format_stop_command,
+    )
+except ImportError:
+    get_supervisor_summary = None
+    format_stop_command = None
+    DEFAULT_STALE_SECONDS = 900
+
 
 DEFAULT_RUNS_DIR = Path("reports") / "runs"
 DEFAULT_OUTPUT = Path("reports") / "status-dashboard.html"
@@ -2036,6 +2047,83 @@ def render_unstarted_issues_section(unstarted_issues: list[DashboardIssue]) -> s
 """
 
 
+def render_supervisor_section(supervisor_summary: dict | None) -> str:
+    """Rendert die Supervisor-Status-Sektion für das Dashboard."""
+    if supervisor_summary is None or get_supervisor_summary is None:
+        return ""
+
+    if supervisor_summary.get("needs_attention", 0) == 0:
+        return ""
+
+    stale_runs = supervisor_summary.get("stale_runs", [])
+    unhealthy_runs = supervisor_summary.get("unhealthy_runs", [])
+
+    rows = []
+    for run in stale_runs:
+        rows.append(f"""
+        <tr class="supervisor-stale">
+          <td><span class="badge badge-stale">Stale</span></td>
+          <td>{escape(run.get('repo', '-'))}</td>
+          <td>#{escape(run.get('issue', '-'))}</td>
+          <td>{escape(run.get('phase', '-'))}</td>
+          <td>{escape(run.get('health_reason', '-'))}</td>
+          <td>
+            <code class="command">{escape(run.get('stop_command', ''))}</code>
+            <div class="command-label">Dry-run:</div>
+            <code class="command">{escape(run.get('stop_command', '') + ' --dry-run')}</code>
+          </td>
+        </tr>
+        """)
+    for run in unhealthy_runs:
+        rows.append(f"""
+        <tr class="supervisor-unhealthy">
+          <td><span class="badge badge-unhealthy">Unhealthy</span></td>
+          <td>{escape(run.get('repo', '-'))}</td>
+          <td>#{escape(run.get('issue', '-'))}</td>
+          <td>{escape(run.get('phase', '-'))}</td>
+          <td>{escape(run.get('health_reason', '-'))}</td>
+          <td>
+            <code class="command">{escape(run.get('stop_command', ''))}</code>
+            <div class="command-label">Dry-run:</div>
+            <code class="command">{escape(run.get('stop_command', '') + ' --dry-run')}</code>
+          </td>
+        </tr>
+        """)
+
+    if not rows:
+        return ""
+
+    rows_html = "\n".join(rows)
+    return f"""
+    <section class="section-block supervisor-section">
+      <h2>Supervisor-Status <span class="attention-badge">{supervisor_summary.get('needs_attention', 0)}</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Repo</th>
+              <th>Issue</th>
+              <th>Phase</th>
+              <th>Grund</th>
+              <th>Stop-Befehl</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows_html}
+          </tbody>
+        </table>
+      </div>
+      <div class="note">
+        Aktive Runs: {supervisor_summary.get('total_active', 0)} ·
+        Healthy: {supervisor_summary.get('healthy', 0)} ·
+        Stale: {supervisor_summary.get('stale', 0)} ·
+        Unhealthy: {supervisor_summary.get('unhealthy', 0)}
+      </div>
+    </section>
+"""
+
+
 def render_repo_summary_row(summary: RepoSummary) -> str:
     """Render eine Zeile für die Repository-Zusammenfassung."""
     needs_attention_badge = ""
@@ -2110,7 +2198,8 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
                      allow_shutdown: bool = False,
                      refresh_seconds: int | None = None,
                      unstarted_issues: list[DashboardIssue] | None = None,
-                     active_tab: str = "run-list") -> str:
+                     active_tab: str = "run-list",
+                     supervisor_summary: dict | None = None) -> str:
     runs = [
         fallback_lifecycle_for_run(run)
         if run.category == "successful" and not run.lifecycle_label
@@ -2175,6 +2264,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     )
     repo_summary_section = render_repo_summary_section(runs)
     unstarted_section = render_unstarted_issues_section(unstarted_issues or [])
+    supervisor_section = render_supervisor_section(supervisor_summary)
 
     refresh_meta = ""
     refresh_label = ""
@@ -2506,6 +2596,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       <section class="metrics" aria-label="Status-Zusammenfassung">
         {cards}
       </section>
+      {supervisor_section}
       {repo_summary_section}
       {unstarted_section}
     </div>
@@ -2764,7 +2855,8 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
                      github_token: str | None = None,
                      github_cache_path: Path = DEFAULT_GITHUB_CACHE,
                      github_cache_ttl_seconds: int = DEFAULT_GITHUB_CACHE_TTL_SECONDS,
-                     active_tab: str = "run-list") -> Path:
+                     active_tab: str = "run-list",
+                     supervisor_summary: dict | None = None) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_owner = owner or infer_owner_from_runs(runs)
     unstarted_issues: list[DashboardIssue] = []
@@ -2797,6 +2889,7 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
             refresh_seconds=refresh_seconds,
             unstarted_issues=unstarted_issues,
             active_tab=active_tab,
+            supervisor_summary=supervisor_summary,
         ),
         encoding="utf-8",
     )
@@ -2922,7 +3015,17 @@ def main() -> int:
     runs = read_runs(runs_dir, health_timeout_minutes=args.health_timeout_minutes)
     print(f"   Gefundene Runs: {len(runs)}")
 
-    print_step(2, f"Schreibe HTML nach {output_path}")
+    supervisor_summary = None
+    if get_supervisor_summary is not None:
+        print_step(2, "Lese Supervisor-Status")
+        try:
+            supervisor_summary = get_supervisor_summary(runs_dir)
+            if supervisor_summary.get("needs_attention", 0) > 0:
+                print(f"   Achtung: {supervisor_summary['needs_attention']} Run(s) brauchen Aufmerksamkeit")
+        except Exception as exc:
+            print(f"   Supervisor-Status konnte nicht gelesen werden: {exc}")
+
+    print_step(3, f"Schreibe HTML nach {output_path}")
     if args.github_enrich:
         print("   GitHub-Enrichment: an (mit Cache/Fallback)")
     write_dashboard(
@@ -2936,6 +3039,7 @@ def main() -> int:
         github_cache_path=github_cache_path,
         github_cache_ttl_seconds=github_cache_ttl_seconds,
         active_tab=active_tab,
+        supervisor_summary=supervisor_summary,
     )
     print(f"   Dashboard: {output_path}")
     return 0
