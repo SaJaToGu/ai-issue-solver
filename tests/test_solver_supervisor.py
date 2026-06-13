@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import sys
 
@@ -12,14 +12,22 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from solver_supervisor import (  # noqa: E402
+    check_unrelated_processes,
     classify_run_health,
+    extend_supervisor_run,
     filter_active_runs,
-    format_run_line,
     format_dry_run_stop,
+    format_run_line,
+    format_stop_result,
+    is_process_alive,
     process_tree,
+    read_cancellation_info,
     read_supervisor_runs,
     run_stop_dry_run,
     select_runs,
+    terminate_process_tree,
+    worktree_has_local_changes,
+    write_cancellation_note,
 )
 
 
@@ -230,6 +238,11 @@ model: opencode
             issue = None
             worker_pid = None
             dry_run = False
+            graceful_timeout = 10.0
+            kill_timeout = 5.0
+            preserve_worktree = False
+            reason = None
+            verbose = False
 
         now = datetime(2026, 6, 5, 17, 0, 0)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -243,13 +256,271 @@ model: opencode
             args = Args()
             args.runs_dir = str(runs_dir)
 
-            with patch("solver_supervisor.datetime") as fake_datetime, \
-                 patch("solver_supervisor.print_warn"):
-                fake_datetime.now.return_value = now
-                fake_datetime.strptime = datetime.strptime
-                result = run_stop_dry_run(args)
+            with patch("solver_supervisor.stop_run") as mock_stop:
+                mock_stop.return_value = ([], [], [], None)
+                with patch("solver_supervisor.write_cancellation_note"):
+                    with patch("solver_supervisor.datetime") as fake_datetime:
+                        fake_datetime.now.return_value = now
+                        fake_datetime.strptime = datetime.strptime
+                        result = run_stop_dry_run(args)
 
-        self.assertEqual(result, 2)
+        self.assertEqual(result, 0)
+        mock_stop.assert_called_once()
+
+
+class SolverSupervisorStopTests(unittest.TestCase):
+    def write_run(self, runs_dir: Path, name: str, summary: str = "", metadata=None, health=None) -> Path:
+        run_dir = runs_dir / name
+        run_dir.mkdir(parents=True)
+        if summary:
+            (run_dir / "summary.txt").write_text(summary, encoding="utf-8")
+        if metadata is not None:
+            (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+        if health is not None:
+            (run_dir / "health.json").write_text(json.dumps(health), encoding="utf-8")
+        return run_dir
+
+    def test_is_process_alive_returns_false_for_invalid_pid(self):
+        with patch("solver_supervisor.os.kill", side_effect=OSError()):
+            self.assertFalse(is_process_alive(99999))
+
+    def test_is_process_alive_returns_true_for_valid_pid(self):
+        with patch("solver_supervisor.os.kill") as mock_kill:
+            is_process_alive(12345)
+            mock_kill.assert_called_once_with(12345, 0)
+
+    def test_check_unrelated_processes_allows_safe_pids(self):
+        with patch("solver_supervisor.Path") as mock_path:
+            mock_path.return_value.exists.return_value = True
+            mock_path.return_value.read_text.return_value = "python script.py"
+            safe, unsafe = check_unrelated_processes([12345, 12346])
+        self.assertTrue(safe)
+        self.assertEqual(unsafe, [])
+
+    def test_check_unrelated_processes_blocks_protected_pids(self):
+        with patch("solver_supervisor.PROTECTED_PIDS", {1, 2, 3}):
+            safe, unsafe = check_unrelated_processes([1, 2, 12345])
+        self.assertFalse(safe)
+        self.assertIn(1, unsafe)
+        self.assertIn(2, unsafe)
+
+    def test_terminate_process_tree_sends_sigterm_first(self):
+        terminated = []
+        killed = []
+        failed = []
+
+        def mock_kill(pid, sig):
+            if sig == 0:
+                return
+            if pid == 99999:
+                raise OSError("Process does not exist")
+
+        with patch("solver_supervisor.is_process_alive", side_effect=lambda p: p != 99999):
+            with patch("solver_supervisor.send_signal_to_process", side_effect=mock_kill):
+                with patch("solver_supervisor.time.sleep"):
+                    terminated, killed, failed = terminate_process_tree(
+                        [12345, 99999],
+                        graceful_timeout=0.1,
+                        kill_timeout=0.1,
+                    )
+
+        self.assertEqual(len(terminated) + len(killed) + len(failed), 2)
+
+    def test_format_stop_result_includes_termination_info(self):
+        from solver_supervisor import SupervisorRun
+
+        run = SupervisorRun(
+            run_id="test-run",
+            run_dir=Path("/tmp/test"),
+            repo="demo",
+            issue="9",
+            branch="ai/fix-issue-9",
+            model="opencode",
+            status="started",
+            phase="worker_running",
+            runner_pid="10",
+            parent_pid="5",
+            worker_pid="20",
+            last_activity_at=None,
+            last_report_update_at=None,
+            health_status="healthy",
+            health_reason="recent update",
+            output_tail="working",
+        )
+        lines = format_stop_result(run, [10, 20], [21], [], None, "manual_stop")
+
+        text = "\n".join(lines)
+        self.assertIn("STOP completed for: test-run", text)
+        self.assertIn("graceful_terminated: 10, 20", text)
+        self.assertIn("force_killed: 21", text)
+        self.assertIn("cancellation_reason: manual_stop", text)
+
+    def test_write_cancellation_note_updates_summary(self):
+        now = datetime(2026, 6, 5, 17, 0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir)
+            run_dir = self.write_run(
+                runs_dir,
+                "test-run",
+                summary="status: started\nrepo: demo\nissue: 9\n",
+            )
+
+            from solver_supervisor import SupervisorRun
+            run = SupervisorRun(
+                run_id="test-run",
+                run_dir=run_dir,
+                repo="demo",
+                issue="9",
+                branch="ai/fix-issue-9",
+                model="opencode",
+                status="started",
+                phase="worker_running",
+                runner_pid="10",
+                parent_pid="5",
+                worker_pid="20",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="healthy",
+                health_reason="recent update",
+                output_tail="working",
+            )
+
+            with patch("solver_supervisor.datetime") as fake_datetime:
+                fake_datetime.now.return_value = now
+                write_cancellation_note(run, "test cancellation", "SIGTERM", None)
+
+            summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
+            self.assertIn("status: cancelled", summary)
+            self.assertIn("cancellation_reason: test cancellation", summary)
+            self.assertIn("cancellation_signal: SIGTERM", summary)
+
+    def test_read_cancellation_info_extracts_data(self):
+        now = datetime(2026, 6, 5, 17, 0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir)
+            run_dir = self.write_run(
+                runs_dir,
+                "test-run",
+                summary=f"""status: cancelled
+repo: demo
+issue: 9
+cancelled_at: {now.isoformat(timespec='seconds')}
+cancellation_reason: manual stop
+cancellation_signal: SIGTERM
+""",
+            )
+
+            cancelled_at, reason, signal = read_cancellation_info(run_dir)
+
+        self.assertIsNotNone(cancelled_at)
+        self.assertEqual(reason, "manual stop")
+        self.assertEqual(signal, "SIGTERM")
+
+    def test_worktree_has_local_changes_detects_changes(self):
+        now = datetime(2026, 6, 5, 17, 0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir)
+            run_dir = self.write_run(
+                runs_dir,
+                "test-run",
+                summary="status: started\nrepo: demo\nissue: 9\ngit_diff_stat: +10 -5\n",
+            )
+
+            from solver_supervisor import SupervisorRun
+            run = SupervisorRun(
+                run_id="test-run",
+                run_dir=run_dir,
+                repo="demo",
+                issue="9",
+                branch="ai/fix-issue-9",
+                model="opencode",
+                status="started",
+                phase="worker_running",
+                runner_pid="10",
+                parent_pid="5",
+                worker_pid="20",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="healthy",
+                health_reason="recent update",
+                output_tail="working",
+            )
+
+            self.assertTrue(worktree_has_local_changes(run))
+
+    def test_worktree_has_local_changes_returns_false_for_no_changes(self):
+        now = datetime(2026, 6, 5, 17, 0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir)
+            run_dir = self.write_run(
+                runs_dir,
+                "test-run",
+                summary="status: started\nrepo: demo\nissue: 9\ngit_diff_stat: no changes\n",
+            )
+
+            from solver_supervisor import SupervisorRun
+            run = SupervisorRun(
+                run_id="test-run",
+                run_dir=run_dir,
+                repo="demo",
+                issue="9",
+                branch="ai/fix-issue-9",
+                model="opencode",
+                status="started",
+                phase="worker_running",
+                runner_pid="10",
+                parent_pid="5",
+                worker_pid="20",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="healthy",
+                health_reason="recent update",
+                output_tail="working",
+            )
+
+            self.assertFalse(worktree_has_local_changes(run))
+
+    def test_extend_supervisor_run_adds_cancellation_fields(self):
+        now = datetime(2026, 6, 5, 17, 0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = Path(tmpdir)
+            run_dir = self.write_run(
+                runs_dir,
+                "test-run",
+                summary=f"""status: cancelled
+repo: demo
+issue: 9
+cancelled_at: {now.isoformat(timespec='seconds')}
+cancellation_reason: test stop
+cancellation_signal: SIGTERM
+""",
+            )
+
+            from solver_supervisor import SupervisorRun
+            run = SupervisorRun(
+                run_id="test-run",
+                run_dir=run_dir,
+                repo="demo",
+                issue="9",
+                branch="ai/fix-issue-9",
+                model="opencode",
+                status="cancelled",
+                phase="worker_running",
+                runner_pid="10",
+                parent_pid="5",
+                worker_pid="20",
+                last_activity_at=None,
+                last_report_update_at=None,
+                health_status="healthy",
+                health_reason="recent update",
+                output_tail="working",
+            )
+
+            extended = extend_supervisor_run(run)
+
+        self.assertTrue(extended.is_cancelled)
+        self.assertEqual(extended.cancellation_reason, "test stop")
+        self.assertEqual(extended.cancellation_signal, "SIGTERM")
 
 
 if __name__ == "__main__":
