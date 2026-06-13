@@ -33,6 +33,12 @@ except ModuleNotFoundError:
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
+from workflow_congestion import (  # noqa: E402
+    WorkflowCongestionSummary,
+    analyze_workflow_congestion,
+    issue_from_github,
+    pull_request_from_github,
+)
 
 try:
     from solver_supervisor import (  # noqa: E402
@@ -51,6 +57,8 @@ DEFAULT_OUTPUT = Path("reports") / "status-dashboard.html"
 DEFAULT_GITHUB_CACHE = Path("reports") / "status-dashboard.github-cache.json"
 DEFAULT_HEALTH_TIMEOUT_MINUTES = 60
 DEFAULT_GITHUB_CACHE_TTL_SECONDS = 600
+DEFAULT_WORKFLOW_PR_THRESHOLD = 3
+DEFAULT_WORKFLOW_STALE_DAYS = 7
 GITHUB_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/")
 GITHUB_PR_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
 CODEX_RATE_LIMIT_RESET_RE = re.compile(
@@ -388,6 +396,16 @@ class DashboardGitHubClient:
             return []
         # Filter out pull requests
         return [issue for issue in data if "pull_request" not in issue]
+
+    def get_open_pull_requests(self, repo: str) -> list[dict]:
+        data = self.get_json(
+            f"{self.repo_api_path(repo)}/pulls",
+            state="open",
+            sort="updated",
+            direction="desc",
+            per_page=100,
+        )
+        return data if isinstance(data, list) else []
 
     def get_repos(self) -> list[dict]:
         data = self.get_json(
@@ -932,6 +950,48 @@ def find_unstarted_issues(
         key=lambda i: i.updated_at if i.updated_at else "",
         reverse=True,
     )
+
+
+def repos_for_workflow_status(runs: list[DashboardRun], unstarted_issues: list[DashboardIssue]) -> list[str]:
+    repos = {run.repo for run in runs if run.repo}
+    repos.update(issue.repo for issue in unstarted_issues if issue.repo)
+    return sorted(repos)
+
+
+def build_workflow_congestion_summaries(
+    repos: list[str],
+    client: DashboardGitHubClient | None,
+    *,
+    pr_threshold: int = DEFAULT_WORKFLOW_PR_THRESHOLD,
+    stale_days: int = DEFAULT_WORKFLOW_STALE_DAYS,
+) -> dict[str, WorkflowCongestionSummary]:
+    if client is None:
+        return {}
+    summaries: dict[str, WorkflowCongestionSummary] = {}
+    for repo in repos:
+        raw_prs = client.get_open_pull_requests(repo)
+        detailed_prs = []
+        for pr in raw_prs:
+            if isinstance(pr, dict) and not pr.get("mergeable_state") and pr.get("number"):
+                detailed = client.get_pull_request(repo, pr["number"])
+                if detailed:
+                    pr = {**pr, **detailed}
+            detailed_prs.append(pr)
+        open_prs = [
+            pull_request_from_github(pr)
+            for pr in detailed_prs
+        ]
+        open_issues = [
+            issue_from_github(issue)
+            for issue in client.get_open_issues(repo)
+        ]
+        summaries[repo] = analyze_workflow_congestion(
+            open_prs,
+            open_issues,
+            pr_threshold=pr_threshold,
+            stale_days=stale_days,
+        )
+    return summaries
 
 
 def repo_name_for_url(repo: str) -> str:
@@ -2124,6 +2184,90 @@ def render_supervisor_section(supervisor_summary: dict | None) -> str:
 """
 
 
+def render_workflow_congestion_section(summaries: dict[str, WorkflowCongestionSummary] | None) -> str:
+    if not summaries:
+        return ""
+    rows = []
+    finding_rows = []
+    for repo, summary in sorted(summaries.items()):
+        attention = "Ja" if summary.needs_attention else "Nein"
+        rows.append(f"""
+        <tr>
+          <td><strong>{escape(repo)}</strong></td>
+          <td>{summary.open_pr_count}</td>
+          <td>{summary.red_pr_count}</td>
+          <td>{summary.green_unreviewed_pr_count}</td>
+          <td>{summary.stale_pr_count}</td>
+          <td>{summary.duplicate_issue_pr_count}</td>
+          <td><code>{escape(summary.recommended_action)}</code></td>
+          <td>{attention}</td>
+        </tr>
+        """)
+        for finding in summary.findings[:8]:
+            target = []
+            if finding.issue_number:
+                target.append(f"Issue #{finding.issue_number}")
+            if finding.pr_number:
+                target.append(f"PR #{finding.pr_number}")
+            finding_rows.append(f"""
+            <tr>
+              <td>{escape(repo)}</td>
+              <td><span class="badge badge-{escape(finding.severity)}">{escape(finding.severity)}</span></td>
+              <td>{escape(", ".join(target) or "-")}</td>
+              <td>{escape(finding.message)}</td>
+              <td><code>{escape(finding.action)}</code></td>
+            </tr>
+            """)
+
+    findings_html = ""
+    if finding_rows:
+        findings_html = f"""
+      <h3>Workflow-Befunde</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Repo</th>
+              <th>Schwere</th>
+              <th>Ziel</th>
+              <th>Befund</th>
+              <th>Aktion</th>
+            </tr>
+          </thead>
+          <tbody>
+            {"".join(finding_rows)}
+          </tbody>
+        </table>
+      </div>
+        """
+
+    return f"""
+    <section class="section-block">
+      <h2>Workflow-Status</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Repo</th>
+              <th>Offene PRs</th>
+              <th>Rote PRs</th>
+              <th>Grün ohne Review</th>
+              <th>Stale PRs</th>
+              <th>Issue/PR-Duplikate</th>
+              <th>Empfohlene Aktion</th>
+              <th>Achtung</th>
+            </tr>
+          </thead>
+          <tbody>
+            {"".join(rows)}
+          </tbody>
+        </table>
+      </div>
+      {findings_html}
+    </section>
+"""
+
+
 def render_repo_summary_row(summary: RepoSummary) -> str:
     """Render eine Zeile für die Repository-Zusammenfassung."""
     needs_attention_badge = ""
@@ -2199,7 +2343,8 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
                      refresh_seconds: int | None = None,
                      unstarted_issues: list[DashboardIssue] | None = None,
                      active_tab: str = "run-list",
-                     supervisor_summary: dict | None = None) -> str:
+                     supervisor_summary: dict | None = None,
+                     workflow_congestion: dict[str, WorkflowCongestionSummary] | None = None) -> str:
     runs = [
         fallback_lifecycle_for_run(run)
         if run.category == "successful" and not run.lifecycle_label
@@ -2265,6 +2410,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
     repo_summary_section = render_repo_summary_section(runs)
     unstarted_section = render_unstarted_issues_section(unstarted_issues or [])
     supervisor_section = render_supervisor_section(supervisor_summary)
+    workflow_congestion_section = render_workflow_congestion_section(workflow_congestion)
 
     refresh_meta = ""
     refresh_label = ""
@@ -2596,6 +2742,7 @@ def render_dashboard(runs: list[DashboardRun], owner: str | None, output_path: P
       <section class="metrics" aria-label="Status-Zusammenfassung">
         {cards}
       </section>
+      {workflow_congestion_section}
       {supervisor_section}
       {repo_summary_section}
       {unstarted_section}
@@ -2880,6 +3027,15 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
             unstarted_issues = find_unstarted_issues(runs, effective_owner, client=github_client)
         except Exception:
             unstarted_issues = []
+    workflow_congestion = {}
+    if github_client is not None:
+        try:
+            workflow_congestion = build_workflow_congestion_summaries(
+                repos_for_workflow_status(runs, unstarted_issues),
+                github_client,
+            )
+        except Exception:
+            workflow_congestion = {}
     output_path.write_text(
         render_dashboard(
             runs,
@@ -2890,6 +3046,7 @@ def write_dashboard(runs: list[DashboardRun], output_path: Path,
             unstarted_issues=unstarted_issues,
             active_tab=active_tab,
             supervisor_summary=supervisor_summary,
+            workflow_congestion=workflow_congestion,
         ),
         encoding="utf-8",
     )

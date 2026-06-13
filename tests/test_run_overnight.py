@@ -215,6 +215,7 @@ class OvernightRunnerTests(unittest.TestCase):
         self.assertIn("status: failed", summary)
         self.assertIn("repo: demo", summary)
         self.assertIn("dry_run: True", summary)
+        self.assertIn("workflow_congestion: see_dashboard_workflow_status", summary)
         self.assertIn("status: skipped", summary)
         self.assertIn("failed_steps:", summary)
         self.assertIn("- tests", summary)

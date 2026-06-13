@@ -89,6 +89,64 @@ class ReworkWorkflowCliTests(unittest.TestCase):
         labels = rework_workflow.unique_labels(["kind/rework", "theme/quality", "kind/rework"])
         self.assertEqual(labels, ["kind/rework", "theme/quality"])
 
+    def test_child_labels_inherit_taxonomy_labels_and_filter_temporary_parent_labels(self):
+        parent_issue = {
+            "labels": [
+                {"name": "agent/triage"},
+                {"name": "area/issues"},
+                {"name": "theme/workflow"},
+                {"name": "priority/2"},
+                {"name": "state/ready"},
+                {"name": "state/blocked"},
+                {"name": "duplicate"},
+                {"name": "ai-generated"},
+            ]
+        }
+
+        labels = rework_workflow.build_child_issue_labels(
+            parent_issue,
+            ["kind/rework", "theme/quality", "agent/solver"],
+        )
+
+        self.assertIn("agent/triage", labels)
+        self.assertIn("area/issues", labels)
+        self.assertIn("theme/workflow", labels)
+        self.assertIn("priority/2", labels)
+        self.assertIn("state/ready", labels)
+        self.assertIn("kind/rework", labels)
+        self.assertIn("theme/quality", labels)
+        self.assertIn("agent/solver", labels)
+        self.assertNotIn("state/blocked", labels)
+        self.assertNotIn("duplicate", labels)
+        self.assertNotIn("ai-generated", labels)
+
+    def test_rework_issue_body_contains_parent_reference(self):
+        spec = rework_workflow.ReworkIssueSpec(
+            original_issue_number=289,
+            original_issue_title="Preserve labels",
+            sub_tasks=[
+                rework_workflow.ReworkSubTask(
+                    id="labels-1",
+                    title="Add label inheritance",
+                    description="Keep taxonomy labels on child issues.",
+                    task_type="implementation correction",
+                )
+            ],
+        )
+
+        body = rework_workflow.build_rework_issue_body(spec)
+
+        self.assertIn("Parent: #289", body)
+
+    def test_parent_child_comment_links_child_issue(self):
+        comment = rework_workflow.build_parent_child_comment(
+            289,
+            {"number": 290, "html_url": "https://github.com/example/repo/issues/290"},
+        )
+
+        self.assertIn("Parent: #289", comment)
+        self.assertIn("Child: #290", comment)
+
     def test_pull_request_links_issue_uses_body_not_missing_api_field(self):
         pr = {
             "title": "Fix workflow",
