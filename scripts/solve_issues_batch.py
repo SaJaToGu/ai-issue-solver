@@ -221,6 +221,14 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
     verbosity = getattr(args, "verbosity", "quiet")
     cmd.extend(["--verbosity", verbosity])
 
+    # OpenCode Budget-Limits an solve_issues.py weiterreichen
+    if getattr(args, "max_run_cost_usd", None) is not None:
+        cmd.extend(["--max-run-cost-usd", str(args.max_run_cost_usd)])
+    if getattr(args, "max_run_input_tokens", None) is not None:
+        cmd.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
+    if getattr(args, "max_run_output_tokens", None) is not None:
+        cmd.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
+
     return cmd
 
 
@@ -1035,6 +1043,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Heartbeat-Ausgabeintervall in Sekunden (z.B. 60 fuer 1-Minuten-Heartbeat). "
         "Ohne Angabe kein Heartbeat.",
+    )
+    # OpenCode Budget-Limits (nur fuer --model opencode)
+    parser.add_argument(
+        "--max-run-cost-usd",
+        type=float,
+        default=None,
+        help="Maximale Kosten in USD fuer einen einzelnen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-input-tokens",
+        type=int,
+        default=None,
+        help="Maximale Input-Tokens fuer einen einzelnen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-output-tokens",
+        type=int,
+        default=None,
+        help="Maximale Output-Tokens fuer einen einzelnen OpenCode-Run",
     )
     return parser.parse_args(argv)
 
