@@ -39,6 +39,14 @@ und erstellt einen Branch + Commit. Dieser Schritt ist außerdem als
 wiederverwendbarer Codex-Skill unter
 [`.agents/skills/solve-issues/`](.agents/skills/solve-issues/SKILL.md) verfügbar.
 
+**Modellauswahl:** Welches KI-Modell ein Issue bekommt, entscheidet
+[`scripts/model_selection.py`](scripts/model_selection.py) anhand von
+Kategorie, Risiko, Kostenlimit und Run-Historie. Die gleiche Heuristik
+ist als wiederverwendbarer Codex-Skill unter
+[`.agents/skills/model-selection/`](.agents/skills/model-selection/SKILL.md)
+verfügbar und kann vom Solver über `--auto-model` oder von eigenen
+Tools über `helpers/recommend_model.sh` aufgerufen werden.
+
 **Status-Überblick:** `github_summary.py` zeigt offene Issues, offene PRs,
 zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
 GitHub API. Die GitHub CLI wird dafür nicht benötigt.
@@ -171,7 +179,8 @@ ai-issue-solver/
 │       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
 ├── .agents/
 │   └── skills/
-│       └── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
+│       ├── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
+│       └── model-selection/     # Codex-Skill für die automatische Modellauswahl
 ├── .skills/                     # Ergänzende Codex-Skills (recovery, rework, git-cleanup, plan-issue-batches)
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
@@ -193,6 +202,7 @@ ai-issue-solver/
 │   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
 │   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
 │   ├── run_overnight.py         # Unbeaufsichtigter Batch mit Preflight und Logs
+│   ├── model_selection.py       # Automatische Modellauswahl (Heuristik)
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
 ├── templates/
 │   └── issue_body               # Issue-Text-Vorlage

@@ -977,3 +977,19 @@ Touches: `scripts/solve_issues.py`, `scripts/solve_issues_batch.py`,
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+## Done — Skill: model-selection (foundation for routing)
+
+Closed via skill conversion. `scripts/model_selection.py` is now exposed
+as a reusable Codex Skill at
+[`.agents/skills/model-selection/`](.agents/skills/model-selection/SKILL.md).
+The skill accepts `--repo-type`, `--language`, `--task-type`, `--issue`,
+`--issue-text`, `--labels`, `--touched-files`, `--max-cost-tier`,
+`--history` and `--manual-model`, and returns a stable JSON or text
+result with `model`, `category`, `risk`, `cost_tier`, `fallback_plan`,
+`inputs` and `routing`. The skill is the foundation for the future
+routing rules referenced throughout this backlog (see #37, #38, #39,
+and the language- and task-type-aware heuristics discussed in #16).
+
+Touches: `.agents/skills/model-selection/`,
+         `scripts/model_selection.py` (unchanged), `README.md`
