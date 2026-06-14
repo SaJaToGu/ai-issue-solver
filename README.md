@@ -39,6 +39,12 @@ und erstellt einen Branch + Commit. Dieser Schritt ist außerdem als
 wiederverwendbarer Codex-Skill unter
 [`.agents/skills/solve-issues/`](.agents/skills/solve-issues/SKILL.md) verfügbar.
 
+**Run-Reports auswerten:** Die von Schritt 3 erzeugten Run-Reports,
+Provider-Scorecards und OpenCode-Diagnosen werden durch
+[`.agents/skills/solver-reporting/`](.agents/skills/solver-reporting/SKILL.md)
+aggregiert, gefiltert und aufgeräumt (Preserved Worktrees, Heartbeat,
+Run-Outcome-Verteilung).
+
 **Status-Überblick:** `github_summary.py` zeigt offene Issues, offene PRs,
 zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
 GitHub API. Die GitHub CLI wird dafür nicht benötigt.
@@ -171,7 +177,8 @@ ai-issue-solver/
 │       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
 ├── .agents/
 │   └── skills/
-│       └── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
+│       ├── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
+│       └── solver-reporting/    # Codex-Skill für Run-Reports, Metriken & Provider-Scorecards (solver_reporting.py)
 ├── .skills/                     # Ergänzende Codex-Skills (recovery, rework, git-cleanup)
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
