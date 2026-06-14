@@ -172,7 +172,7 @@ ai-issue-solver/
 ├── .agents/
 │   └── skills/
 │       └── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
-├── .skills/                     # Ergänzende Codex-Skills (recovery, rework, git-cleanup)
+├── .skills/                     # Ergänzende Codex-Skills (recovery, rework, git-cleanup, plan-issue-batches)
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
 ├── requirements-aider.txt       # Optionale Aider-Dependencies
