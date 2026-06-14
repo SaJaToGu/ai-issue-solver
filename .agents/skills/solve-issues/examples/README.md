@@ -27,6 +27,7 @@ cp config/config.example.env config/.env
 | [05_ensemble.md](05_ensemble.md) | Drei Modelle parallel, beste Lösung gewinnt |
 | [06_recovery_check.md](06_recovery_check.md) | Vorhandene Branches und PRs prüfen |
 | [07_preflight.md](07_preflight.md) | Preflight ohne Solver-Start |
+| [08_sandbox_escalation.md](08_sandbox_escalation.md) | Sandbox-Härtung: Fehlerklassifizierung & schmale Eskalations-Empfehlungen (Issue #217) |
 
 ## Generelles Muster
 

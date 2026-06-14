@@ -1223,6 +1223,335 @@ def preflight_temp_dir_check(temp_dir: str) -> list[str]:
     return additional_dirs
 
 
+# ─────────────────────────────────────────────────────────────
+# Codex Environment Preflight (gh + Python requests)
+# ─────────────────────────────────────────────────────────────
+
+# Schmale Auswahl von Befehlen, die im Codex-Sandbox häufig als
+# Eskalations-Prefix empfohlen werden. Bewusst kurz gehalten, damit
+# die Empfehlungen task-spezifisch bleiben und nicht zu einer breiten
+# Allowlist auswachsen.
+SANDBOX_ESCALATION_COMMANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "git pull --ff-only",
+        ("git pull --ff-only",),
+    ),
+    (
+        "git switch",
+        ("git switch",),
+    ),
+    (
+        "gh pr checks",
+        ("gh pr checks",),
+    ),
+    (
+        "gh run view",
+        ("gh run view",),
+    ),
+)
+
+# Substrings, die auf einen DNS- bzw. Netzwerkfehler hindeuten.
+SANDBOX_NETWORK_ERROR_PATTERNS: tuple[str, ...] = (
+    "Could not resolve host",
+    "Name or service not known",
+    "Temporary failure in name resolution",
+    "Failed to connect to",
+    "Connection refused",
+    "Connection reset",
+    "Network is unreachable",
+    "getaddrinfo failed",
+    "nodename nor servname provided",
+    "TLS connect error",
+    "ssl3_get_record: wrong version number",
+    "Network unreachable",
+    "ENETUNREACH",
+    "EAI_AGAIN",
+)
+
+# Substrings, die auf einen fehlgeschlagenen Schreibzugriff innerhalb
+# von `.git/` hinweisen (z. B. blockierte FETCH_HEAD-Datei oder ein
+# hängender index.lock).
+GIT_WRITE_PERMISSION_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("FETCH_HEAD", ".git/FETCH_HEAD konnte nicht geschrieben werden"),
+    ("index.lock", "Bestehende .git/index.lock blockiert den Index-Update"),
+    ("Permission denied", "Fehlende Schreibrechte im .git/-Verzeichnis"),
+    ("Read-only file system", ".git/-Verzeichnis ist schreibgeschützt gemountet"),
+    ("Operation not permitted", "Sandbox blockiert Schreibzugriff auf .git/"),
+)
+
+
+@dataclass(frozen=True)
+class CodexEnvPreflight:
+    """Ergebnis des Codex-Environment-Preflights.
+
+    Attributes:
+        gh_ok: True, wenn `gh api user` mit Exit 0 antwortet (oder gh fehlt).
+        gh_skipped: True, wenn `gh` nicht installiert ist; dann ist gh_ok = False.
+        requests_ok: True, wenn der requests-basierte API-Ping 200/401/403 liefert.
+        api_user: Antwort der requests-Probe (soweit extrahierbar).
+        error: Fehlermeldung der requests-Probe, falls aufgetreten.
+    """
+
+    gh_ok: bool
+    gh_skipped: bool
+    requests_ok: bool
+    api_user: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class SandboxFailureDiagnosis:
+    """Klassifiziert eine Sandbox- oder Git-Fehlermeldung.
+
+    Attributes:
+        kind: "network", "git_write" oder "unknown".
+        matched_pattern: Erkanntes Muster (oder None).
+        hint: Kurze, task-spezifische Eskalations-Empfehlung.
+    """
+
+    kind: str
+    matched_pattern: str | None
+    hint: str
+
+
+def _run_gh_api_user_probe(timeout: float = 8.0) -> tuple[bool, bool, str | None]:
+    """Probiert `gh api user` und liefert (ok, skipped, error)."""
+    gh_path = shutil.which("gh")
+    if not gh_path:
+        return False, True, "gh nicht im PATH"
+
+    try:
+        result = subprocess.run(
+            [gh_path, "api", "user"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return False, False, f"gh api user fehlgeschlagen: {exc}"
+
+    if result.returncode == 0:
+        return True, False, None
+    error_text = (result.stderr or result.stdout or "").strip()
+    return False, False, error_text or f"gh exit {result.returncode}"
+
+
+def _run_requests_api_user_probe(
+    token: str,
+    timeout: float = 8.0,
+) -> tuple[bool, str | None, str | None]:
+    """Probiert die GitHub-API via Python-requests und liefert (ok, user, error)."""
+    if requests is None:
+        return False, None, "Python-Modul 'requests' ist nicht installiert"
+
+    try:
+        resp = requests.get(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        return False, None, str(exc)
+
+    if resp.status_code == 200:
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+        user_login = payload.get("login") if isinstance(payload, dict) else None
+        return True, user_login, None
+
+    return False, None, f"HTTP {resp.status_code}: {(resp.text or '').strip()[:200]}"
+
+
+def run_codex_environment_preflight(
+    config: dict,
+    *,
+    timeout: float = 8.0,
+    runner=None,
+) -> CodexEnvPreflight:
+    """Führt einen leichten Codex-Environment-Preflight aus.
+
+    Prüft parallel den GitHub-Zugang über `gh api user` (sofern verfügbar)
+    und über Python-`requests`. Beide Pfade werden unabhängig ausgewertet,
+    damit ein Sandbox-DNS-Fehler nicht automatisch den anderen Pfad
+    mit-abbricht.
+
+    Args:
+        config: Solver-Konfiguration mit GITHUB_TOKEN/GITHUB_USER.
+        timeout: Timeout pro Probe in Sekunden.
+        runner: Optional austauschbare Probe-Funktion für Tests; muss
+            ``(token: str, timeout: float) -> tuple[bool, str | None, str | None]``
+            zurückgeben.
+
+    Returns:
+        CodexEnvPreflight mit dem zusammengefassten Ergebnis.
+    """
+    token, _user = require_github_config(config, require_user=False)
+
+    gh_ok, gh_skipped, _gh_error = _run_gh_api_user_probe(timeout=timeout)
+
+    requests_runner = runner or _run_requests_api_user_probe
+    requests_ok, api_user, requests_error = requests_runner(token, timeout=timeout)
+
+    return CodexEnvPreflight(
+        gh_ok=gh_ok,
+        gh_skipped=gh_skipped,
+        requests_ok=requests_ok,
+        api_user=api_user,
+        error=requests_error,
+    )
+
+
+def print_codex_environment_preflight(
+    preflight: CodexEnvPreflight,
+    *,
+    user: str | None = None,
+) -> None:
+    """Gibt das Ergebnis des Codex-Environment-Preflights kompakt aus."""
+    if preflight.gh_skipped:
+        gh_line = "ℹ️  gh-CLI nicht installiert (übersprungen)"
+    elif preflight.gh_ok:
+        gh_line = "✅ gh api user erreichbar"
+    else:
+        gh_line = "⚠️  gh api user fehlgeschlagen (siehe Hinweis oben)"
+
+    if preflight.requests_ok:
+        login = preflight.api_user or "(unbekannt)"
+        target = f" für {user}" if user else ""
+        requests_line = f"✅ requests /user ok{target} (Login: {login})"
+    elif preflight.error:
+        requests_line = f"⚠️  requests /user fehlgeschlagen: {preflight.error}"
+    else:
+        requests_line = "⚠️  requests /user fehlgeschlagen (ohne Detail)"
+
+    print(f"   {gh_line}")
+    print(f"   {requests_line}")
+
+    if not preflight.requests_ok and "Could not resolve" in (preflight.error or ""):
+        print(
+            "   → Eskalations-Hinweis: Sandbox-DNS blockiert; "
+            "siehe Beispiel 08 (helpers/escalation_recommendation.md)."
+        )
+
+
+# ─────────────────────────────────────────────────────────────
+# Sandbox-/Git-Fehlerklassifizierung (Issue #217)
+# ─────────────────────────────────────────────────────────────
+
+# Bewusst klein gehaltene Empfehlungen, die nur den jeweils passenden
+# Escalation-Prefix vorschlagen. Sie wachsen NICHT zu einer breiten
+# Allowlist.
+_NETWORK_HINT = (
+    "Sandbox-Block: DNS/Netzwerk fehlgeschlagen. "
+    "Erneut mit '--sandbox danger-full-access' oder ausserhalb der Sandbox versuchen."
+)
+_GIT_WRITE_HINT_FETCH_HEAD = (
+    "Sandbox-Block: .git/FETCH_HEAD nicht beschreibbar. "
+    "Mit '--sandbox danger-full-access' erneut versuchen oder vor dem Pull `git remote set-head origin -a` ausführen."
+)
+_GIT_WRITE_HINT_INDEX_LOCK = (
+    "Bestehende .git/index.lock blockiert den Index-Update. "
+    "Vor erneutem Run `rm -f .git/index.lock` ausführen oder `--sandbox danger-full-access` verwenden."
+)
+_GIT_WRITE_HINT_PERMISSION = (
+    "Schreibrechte im .git/-Verzeichnis fehlen. "
+    "Mit '--sandbox danger-full-access' erneut versuchen oder Sandbox-Mounts prüfen."
+)
+_GIT_WRITE_HINT_READONLY = (
+    ".git/-Verzeichnis ist schreibgeschützt gemountet. "
+    "Repo-Klon in ein beschreibbares Verzeichnis legen (siehe helper preflight_temp_dir_check)."
+)
+_GIT_WRITE_HINT_OPERATION = (
+    "Sandbox blockiert Schreiboperationen im .git/. "
+    "Mit '--sandbox danger-full-access' oder ausserhalb der Sandbox wiederholen."
+)
+_UNKNOWN_HINT = (
+    "Fehlerursache unbekannt; vollständigen Worker-Output prüfen und ggf. "
+    "Beispiel 08 (helpers/escalation_recommendation.md) konsultieren."
+)
+
+
+def classify_sandbox_failure(text: str) -> SandboxFailureDiagnosis:
+    """Klassifiziert einen Sandbox-/Git-Fehler-String.
+
+    Die Klassifizierung ist absichtlich schmal: Sie erkennt nur die
+    häufigsten DNS/Netzwerk- und .git-Schreibrechte-Muster und liefert
+    eine konkrete Escalation-Empfehlung. Alles andere wird als
+    ``unknown`` markiert.
+
+    Args:
+        text: Fehlermeldung oder Worker-Output-Snippet.
+
+    Returns:
+        SandboxFailureDiagnosis mit ``kind``, ``matched_pattern`` und ``hint``.
+    """
+    if not text:
+        return SandboxFailureDiagnosis("unknown", None, _UNKNOWN_HINT)
+
+    normalized = text.lower()
+
+    for pattern in SANDBOX_NETWORK_ERROR_PATTERNS:
+        if pattern.lower() in normalized:
+            return SandboxFailureDiagnosis(
+                "network", pattern, _NETWORK_HINT
+            )
+
+    for needle, description in GIT_WRITE_PERMISSION_PATTERNS:
+        if needle.lower() in normalized:
+            if needle == "FETCH_HEAD":
+                hint = _GIT_WRITE_HINT_FETCH_HEAD
+            elif needle == "index.lock":
+                hint = _GIT_WRITE_HINT_INDEX_LOCK
+            elif needle == "Permission denied":
+                hint = _GIT_WRITE_HINT_PERMISSION
+            elif needle == "Read-only file system":
+                hint = _GIT_WRITE_HINT_READONLY
+            else:
+                hint = _GIT_WRITE_HINT_OPERATION
+            return SandboxFailureDiagnosis("git_write", description, hint)
+
+    return SandboxFailureDiagnosis("unknown", None, _UNKNOWN_HINT)
+
+
+def recommend_escalation_prefix(command: str) -> str | None:
+    """Gibt einen schmalen Escalation-Prefix für bekannte Kommandos zurück.
+
+    Die Empfehlungen sind bewusst task-spezifisch; unbekannte Kommandos
+    liefern ``None``. Damit soll verhindert werden, dass sich über die
+    Zeit eine breite Allowlist ansammelt.
+    """
+    if not command:
+        return None
+    stripped = command.strip()
+    if not stripped:
+        return None
+    for prefix, options in SANDBOX_ESCALATION_COMMANDS:
+        if any(stripped == opt or stripped.startswith(opt + " ") for opt in options):
+            return prefix
+    return None
+
+
+def format_escalation_recommendation(diagnosis: SandboxFailureDiagnosis) -> str:
+    """Formatiert die Eskalations-Empfehlung für einen Diagnose-Eintrag."""
+    if diagnosis.kind == "network":
+        return (
+            "DNS/Netzwerk erkannt → "
+            + diagnosis.hint
+        )
+    if diagnosis.kind == "git_write":
+        return (
+            "Git-Schreibrechte erkannt → "
+            + diagnosis.hint
+        )
+    return diagnosis.hint
+
+
 def get_worker_adapter(model: str):
     """
     Factory-Funktion: Gibt den passenden WorkerAdapter für ein Modell zurück.

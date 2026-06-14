@@ -150,3 +150,32 @@ Wenn ein neuer Provider angebunden werden soll:
    `helpers/parse_args.py`).
 5. Tests im `tests/`-Verzeichnis des Repos ergänzen.
 6. Diese Doku in `## Auswahl des Workers` aktualisieren.
+
+## 9. Sandbox-Härtung (Issue #217)
+
+Seit Issue #217 gibt es drei schmale, diagnostische Helfer in
+`scripts/solve_issues.py`. Sie ersetzen **keinen** bestehenden
+Workflow-Schritt, sondern ergänzen die Fehlerauswertung:
+
+- `run_codex_environment_preflight(config)` / `print_codex_environment_preflight(...)` —
+  prüft den GitHub-Zugang über `gh api user` *und* Python-`requests`
+  parallel und druckt das Ergebnis kompakt. Beide Pfade werden
+  unabhängig ausgewertet, damit ein Sandbox-DNS-Block nicht den
+  anderen Pfad mit-abbricht.
+- `classify_sandbox_failure(text)` — erkennt DNS/Netzwerk-Fehler
+  (`kind = "network"`) und `.git/`-Schreibrechte-Fehler
+  (`kind = "git_write"`). Alles andere liefert `kind = "unknown"`.
+  Jeder Treffer enthält einen konkreten `hint` mit
+  Eskalations-Empfehlung (z. B. `--sandbox danger-full-access` oder
+  `rm -f .git/index.lock`).
+- `recommend_escalation_prefix(command)` — gibt für genau vier
+  dokumentierte Befehle (`git pull --ff-only`, `git switch`,
+  `gh pr checks`, `gh run view`) eine schmale Empfehlung zurück.
+  Andere Befehle liefern `None`, damit keine breite Allowlist
+  entsteht.
+
+Details und Anwendungsbeispiele liegen unter
+[examples/08_sandbox_escalation.md](examples/08_sandbox_escalation.md).
+Die Test-Suite
+`tests/test_solve_issues_sandbox_hardening.py` deckt alle drei
+Helfer ab.

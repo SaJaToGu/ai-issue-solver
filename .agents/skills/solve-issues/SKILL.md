@@ -103,6 +103,25 @@ Zusätzlich enthält der Skill eigene, dünnere Helfer unter
 14. **Aufräumen** — temporärer Klon wird entfernt; Run-Report bleibt unter
     `reports/runs/<run_id>/`; bei Fehlern ggf. `preserve_worker_worktree`.
 
+### Sandbox-Härtung (Issue #217)
+
+Seit Issue #217 gibt es drei schmale, diagnostische Helfer in
+`scripts/solve_issues.py`:
+
+- `run_codex_environment_preflight` / `print_codex_environment_preflight` —
+  prüft den GitHub-Zugang über `gh api user` *und* Python-`requests`
+  parallel.
+- `classify_sandbox_failure(text)` — klassifiziert DNS/Netzwerk- und
+  `.git/`-Schreibrechte-Fehler und liefert eine konkrete
+  Eskalations-Empfehlung.
+- `recommend_escalation_prefix(command)` — schmale Empfehlungen für
+  genau vier Befehle (`git pull --ff-only`, `git switch`,
+  `gh pr checks`, `gh run view`).
+
+Diese Helfer ersetzen **keinen** Workflow-Schritt. Details und
+Anwendung in
+[examples/08_sandbox_escalation.md](examples/08_sandbox_escalation.md).
+
 Eine ausführliche Schritt-für-Schritt-Beschreibung mit Beispielausgaben liegt
 unter [docs/SOLVE_ISSUES_WORKFLOW.md](docs/SOLVE_ISSUES_WORKFLOW.md).
 
