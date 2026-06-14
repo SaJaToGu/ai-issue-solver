@@ -47,6 +47,12 @@ ist als wiederverwendbarer Codex-Skill unter
 verfügbar und kann vom Solver über `--auto-model` oder von eigenen
 Tools über `helpers/recommend_model.sh` aufgerufen werden.
 
+**Run-Reports auswerten:** Die von Schritt 3 erzeugten Run-Reports,
+Provider-Scorecards und OpenCode-Diagnosen werden durch
+[`.agents/skills/solver-reporting/`](.agents/skills/solver-reporting/SKILL.md)
+aggregiert, gefiltert und aufgeräumt (Preserved Worktrees, Heartbeat,
+Run-Outcome-Verteilung).
+
 **Status-Überblick:** `github_summary.py` zeigt offene Issues, offene PRs,
 zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
 GitHub API. Die GitHub CLI wird dafür nicht benötigt.
@@ -180,7 +186,8 @@ ai-issue-solver/
 ├── .agents/
 │   └── skills/
 │       ├── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
-│       └── model-selection/     # Codex-Skill für die automatische Modellauswahl
+│       ├── model-selection/     # Codex-Skill für die automatische Modellauswahl
+│       └── solver-reporting/    # Codex-Skill für Run-Reports, Metriken & Provider-Scorecards (solver_reporting.py)
 ├── .skills/                     # Ergänzende Codex-Skills (recovery, rework, git-cleanup, plan-issue-batches)
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
