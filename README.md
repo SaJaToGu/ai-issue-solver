@@ -35,7 +35,9 @@ Verbesserungsvorschlag automatisch ein strukturiertes GitHub Issue an.
 
 **Schritt 3 — Issues lösen:** `solve_issues.py` ruft wahlweise **Codex**, **Claude**,
 **OpenAI** oder **Ollama (lokal)** auf, liest das Issue, bearbeitet den Code
-und erstellt einen Branch + Commit.
+und erstellt einen Branch + Commit. Dieser Schritt ist außerdem als
+wiederverwendbarer Codex-Skill unter
+[`.agents/skills/solve-issues/`](.agents/skills/solve-issues/SKILL.md) verfügbar.
 
 **Status-Überblick:** `github_summary.py` zeigt offene Issues, offene PRs,
 zuletzt gemergte PRs und fehlgeschlagene GitHub-Actions-Runs kompakt über die
@@ -167,6 +169,10 @@ ai-issue-solver/
 │   ├── settings.yml             # Repo-Beschreibung und Topics als Referenz
 │   └── workflows/
 │       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
+├── .agents/
+│   └── skills/
+│       └── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
+├── .skills/                     # Ergänzende Codex-Skills (recovery, rework, git-cleanup)
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
 ├── requirements-aider.txt       # Optionale Aider-Dependencies
