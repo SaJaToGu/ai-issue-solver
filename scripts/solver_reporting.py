@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Mapping
 
 from scripts.utils import clean_path_candidate, print_warn
 from scripts.solver_repository import (
@@ -29,6 +30,7 @@ from scripts.solver_repository import (
     git_output,
     git_status_porcelain,
 )
+from scripts.repo_profile import filter_secret_paths
 
 
 RUN_REPORTS_ROOT = Path("reports") / "runs"
@@ -382,6 +384,33 @@ def create_run_report(repo: str, issue_number: int, branch: str, model: str,
     return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
 
 
+def _sanitize_repo_profile_for_report(repo_profile: dict | None) -> dict:
+    """Drop any secret paths or workflow run-targets before writing to disk."""
+    if not repo_profile:
+        return {}
+    sanitized: dict = {}
+    for key, value in repo_profile.items():
+        if key == "marker_files" and isinstance(value, list):
+            sanitized[key] = list(filter_secret_paths([str(item) for item in value]))
+        elif key == "topics" and isinstance(value, list):
+            sanitized[key] = [str(item) for item in value if isinstance(item, str)]
+        else:
+            sanitized[key] = value
+    extra = sanitized.get("extra")
+    if isinstance(extra, Mapping):
+        sanitized_extra = dict(extra)
+        workflows = sanitized_extra.get("workflows")
+        if isinstance(workflows, list):
+            sanitized_extra["workflows"] = [
+                workflow for workflow in workflows
+                if isinstance(workflow, Mapping)
+                and "auth.json" not in str(workflow.get("name", ""))
+                and "auth.json" not in str(workflow.get("path", ""))
+            ]
+        sanitized["extra"] = sanitized_extra
+    return sanitized
+
+
 def detect_opencode_runtime_diagnostics(output: str) -> OpenCodeRuntimeDiagnostics:
     """Erkennt bekannte OpenCode-Runtime-Probleme aus Worker-Output."""
     edit_failures = [
@@ -646,7 +675,8 @@ def write_run_report(report: RunReport, status: str,
                       subtask_id: str | None = None,
                       supersedes_pr: int | None = None,
                       follow_up_issue: int | None = None,
-                      opencode_session_metrics: dict | None = None) -> Path | None:
+                      opencode_session_metrics: dict | None = None,
+                      repo_profile: dict | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
     output_tail = format_worker_output_tail(worker_output)
@@ -657,6 +687,10 @@ def write_run_report(report: RunReport, status: str,
     preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
     cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
     vibe_snippet = vibe_log_snippet or ""
+
+    # Secret-Pfade (z. B. .env, auth.json, secrets/*) nie in den Run-Report
+    # schreiben — weder in metadata.json noch in summary.txt.
+    safe_repo_profile = _sanitize_repo_profile_for_report(repo_profile)
     run_outcome = build_run_outcome(
         status,
         worker_result=worker_result,
@@ -734,6 +768,7 @@ def write_run_report(report: RunReport, status: str,
                 "cost_confidence": scorecard.cost_confidence,
                 "cost_source": scorecard.cost_source,
             },
+            "repo_profile": safe_repo_profile or {},
         }
         (report.path / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -794,6 +829,46 @@ def write_run_report(report: RunReport, status: str,
                 f"  cost_tier: {model_selection_metadata.get('cost_tier', '')}",
                 f"  fallback_plan: {', '.join(model_selection_metadata.get('fallback_plan', []))}",
             ])
+        if safe_repo_profile:
+            summary_lines.extend([
+                "",
+                "repo_profile:",
+                f"  provider: {safe_repo_profile.get('provider', '')}",
+                f"  source: {safe_repo_profile.get('source', '')}",
+                f"  repo_kind: {safe_repo_profile.get('repo_kind', '')}",
+                f"  dominant_language: {safe_repo_profile.get('dominant_language', '')}",
+                f"  language_percentages: {safe_repo_profile.get('language_percentages', {})}",
+                f"  framework_hints: {', '.join(safe_repo_profile.get('framework_hints', []))}",
+                f"  test_hints: {', '.join(safe_repo_profile.get('test_hints', []))}",
+                f"  recommended_worker: {safe_repo_profile.get('recommended_worker', '')}",
+                f"  python_required: {safe_repo_profile.get('python_required', False)}",
+                f"  default_branch: {safe_repo_profile.get('default_branch', '')}",
+                f"  is_archived: {safe_repo_profile.get('is_archived', False)}",
+                f"  is_private: {safe_repo_profile.get('is_private', False)}",
+                f"  topics: {', '.join(safe_repo_profile.get('topics', []))}",
+            ])
+            extra = safe_repo_profile.get("extra") or {}
+            if isinstance(extra, Mapping):
+                remote_state = extra.get("remote_state") or {}
+                if remote_state:
+                    summary_lines.extend([
+                        "",
+                        "repo_profile_remote_state:",
+                        f"  open_pull_requests: {remote_state.get('open_pull_requests', 0)}",
+                        f"  open_issues: {remote_state.get('open_issues', 0)}",
+                        f"  open_issue_numbers: {', '.join(str(n) for n in remote_state.get('open_issue_numbers', []))}",
+                        f"  open_pull_request_numbers: {', '.join(str(n) for n in remote_state.get('open_pull_request_numbers', []))}",
+                        f"  existing_solver_branches: {', '.join(remote_state.get('existing_solver_branches', []))}",
+                    ])
+                workflows = extra.get("workflows") or []
+                if workflows:
+                    summary_lines.extend(["", "repo_profile_workflows:"])
+                    for workflow in workflows:
+                        if not isinstance(workflow, Mapping):
+                            continue
+                        summary_lines.append(
+                            f"  - {workflow.get('name', '')} ({workflow.get('path', '')})"
+                        )
         if cleanup_command:
             summary_lines.append(f"cleanup_command: {cleanup_command}")
             summary_lines.extend([

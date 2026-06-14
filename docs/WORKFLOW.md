@@ -72,6 +72,16 @@ python scripts/solve_issues.py --model claude --repo BedBoxDrawerRole
 python scripts/solve_issues.py --model ollama --model-name llama3
 ```
 
+**Repository-Profil (GitHub-first, lokaler Fallback):**
+Sobald der Clone erfolgreich war, ruft `solve_issues.py` `build_repo_profile()`
+aus `scripts/repo_profile.py` auf. GitHub liefert Sprache, Topics, Workflows
+sowie offene PRs/Issues; ein lokaler Marker-Scan (`DESCRIPTION`, `renv.lock`,
+`pyproject.toml`, `package.json`, …) dient als Fallback, falls GitHub nicht
+erreichbar ist oder das Repo offline bearbeitet wird. Das Ergebnis landet
+unter `repo_profile` in `metadata.json` und als `repo_profile:`-Block in
+`summary.txt`. Secret-Pfade (`.env`, `auth.json`, `secrets/*`) werden
+gefiltert, bevor sie auf die Festplande geschrieben werden.
+
 ---
 
 ### `solve_issues_batch.py`

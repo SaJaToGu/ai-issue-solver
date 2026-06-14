@@ -143,6 +143,117 @@ class TestRunOutcomeSkipPr(unittest.TestCase):
             self.assertIn("run_outcome_delivery_status: pushed_without_pr", summary_content)
             self.assertIn("run_outcome_failure_class: success", summary_content)
 
+    def test_write_run_report_persists_repo_profile_metadata_and_summary(self):
+        """Repo-Profile-Daten landen in metadata.json und summary.txt."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            report = RunReport(
+                path=temp_path / "test-run-repo-profile",
+                repo="test-owner/test-repo",
+                issue_number=99,
+                issue_title="Repo profile",
+                branch="ai/fix-issue-99",
+                model="opencode",
+            )
+            report.path.mkdir(parents=True, exist_ok=True)
+
+            repo_profile = {
+                "provider": "github",
+                "source": "github_rest",
+                "repo": "test-owner/test-repo",
+                "repo_kind": "python",
+                "dominant_language": "python",
+                "language_percentages": {"python": 100.0},
+                "framework_hints": ["fastapi"],
+                "test_hints": ["python -m pytest"],
+                "recommended_worker": "opencode",
+                "python_required": True,
+                "default_branch": "main",
+                "is_archived": False,
+                "is_private": False,
+                "topics": ["fastapi"],
+                "marker_files": ["pyproject.toml", "src/app.py"],
+                "extra": {
+                    "workflows": [{"name": "ci.yml", "path": ".github/workflows/ci.yml"}],
+                    "remote_state": {
+                        "open_pull_requests": 1,
+                        "open_issues": 0,
+                        "open_issue_numbers": [],
+                        "open_pull_request_numbers": [42],
+                        "existing_solver_branches": ["ai/fix-issue-7"],
+                    },
+                },
+            }
+
+            mock_worker = Mock()
+            mock_worker.duration_seconds = 12.0
+            mock_worker.returncode = 0
+            mock_worker.output = "all good"
+            mock_worker.last_activity_at = datetime.now()
+
+            write_run_report(
+                report=report,
+                status="pr_created",
+                worker_result=mock_worker,
+                pr_url="https://github.com/test-owner/test-repo/pull/42",
+                repo_profile=repo_profile,
+            )
+
+            with open(report.path / "metadata.json", "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            self.assertIn("repo_profile", metadata)
+            self.assertEqual(metadata["repo_profile"]["repo_kind"], "python")
+            self.assertEqual(metadata["repo_profile"]["source"], "github_rest")
+            self.assertEqual(
+                metadata["repo_profile"]["extra"]["remote_state"]["open_pull_requests"],
+                1,
+            )
+            self.assertEqual(
+                metadata["repo_profile"]["extra"]["workflows"][0]["name"],
+                "ci.yml",
+            )
+
+            summary_content = (report.path / "summary.txt").read_text(encoding="utf-8")
+            self.assertIn("repo_profile:", summary_content)
+            self.assertIn("  provider: github", summary_content)
+            self.assertIn("  repo_kind: python", summary_content)
+            self.assertIn("repo_profile_remote_state:", summary_content)
+            self.assertIn("repo_profile_workflows:", summary_content)
+            self.assertIn("- ci.yml", summary_content)
+
+    def test_write_run_report_drops_repo_profile_secret_paths(self):
+        """Repo-Profile-Serialisierung entfernt Secret-Pfade vor dem Schreiben."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            report = RunReport(
+                path=temp_path / "test-run-secret-safety",
+                repo="test-owner/test-repo",
+                issue_number=100,
+                issue_title="Secret safety",
+                branch="ai/fix-issue-100",
+                model="opencode",
+            )
+            report.path.mkdir(parents=True, exist_ok=True)
+
+            write_run_report(
+                report=report,
+                status="no_changes",
+                repo_profile={
+                    "provider": "github",
+                    "repo_kind": "python",
+                    "marker_files": [".env", "auth.json", "src/app.py", "secrets/db.yml"],
+                },
+            )
+
+            with open(report.path / "metadata.json", "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            marker_files = metadata["repo_profile"]["marker_files"]
+            self.assertIn("src/app.py", marker_files)
+            for forbidden in (".env", "auth.json", "secrets/db.yml"):
+                self.assertNotIn(forbidden, marker_files)
+
 
 def test_build_run_outcome_marks_preserved_push_failure_as_pipeline_failure():
     """Push failures with preserved changes are benchmark-relevant pipeline failures."""

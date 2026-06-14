@@ -142,6 +142,7 @@ python scripts/solve_issues.py --model openrouter --repo <dein-repo> --issue <is
 
 - **[Provider Setup](docs/SETUP_AIDER.md):** Einrichtung von KI-Modellen (Claude, OpenAI, Ollama, etc.)
 - **[Workflow & Batch](docs/WORKFLOW.md):** Detaillierter Workflow, Batch-Verarbeitung, Dashboard, Night Mode
+- **[Repository Profile Provider](docs/REPO_PROFILE_PROVIDER.md):** GitHub-first Repo-Profil mit lokalem Fallback (Issue #213)
 
 ---
 
@@ -151,6 +152,7 @@ Um die README schlank zu halten, werden detaillierte Anleitungen in der [Dokumen
 
 - **Provider-Setup** → [docs/SETUP_AIDER.md](docs/SETUP_AIDER.md)
 - **Workflow & Batch** → [docs/WORKFLOW.md](docs/WORKFLOW.md)
+- **Repo-Profile-Provider** → [docs/REPO_PROFILE_PROVIDER.md](docs/REPO_PROFILE_PROVIDER.md)
 
 Neue Abschnitte bitte nur hier einfügen, wenn sie für den **Quickstart** relevant sind. Alle anderen Inhalte gehören in die Dokumentation.
 
@@ -221,6 +223,7 @@ ai-issue-solver/
 │   ├── WORKFLOW.md              # Detaillierter Workflow
 │   ├── SETUP_AIDER.md           # Aider-Einrichtung
 │   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
+│   ├── REPO_PROFILE_PROVIDER.md # GitHub-first Repo-Profil mit lokalem Fallback
 │   └── LANGUAGE_POLICY.md        # Sprachrichtlinie / Language Policy
 └── tests/
     ├── test_analyze_repos.py    # Analyzer-Tests

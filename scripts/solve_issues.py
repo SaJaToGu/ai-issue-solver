@@ -101,6 +101,11 @@ from solver_run_resources import (  # noqa: F401 (re-exports used by tests)
     make_run_id,
     write_resource_diagnostics_to_report,
 )
+from repo_profile import (  # noqa: F401 (re-exports used by tests)
+    RepoProfile,
+    build_repo_profile,
+    serialize_repo_profile,
+)
 from workflow_congestion import (  # noqa: F401
     WorkflowPullRequest,
     WorkflowIssue,
@@ -595,6 +600,54 @@ class GitHubClient:
             return resp.json()
         print_warn(f"PR konnte nicht erstellt werden: {resp.status_code}")
         return None
+
+
+def build_repo_profile_for_run(repo: str,
+                              config: dict,
+                              branch: str | None = None,
+                              offline: bool = False,
+                              prefer: str = "github") -> tuple[RepoProfile | None, dict | None]:
+    """Build a provider-aware :class:`RepoProfile` for the current solver run.
+
+    The function prefers the GitHub REST API (when a token is configured) and
+    falls back to a local marker-file scan for offline or non-GitHub
+    repositories. The result is also serialized into a JSON-safe dict so
+    callers can persist it directly in run reports.
+
+    Secret files (``.env`` variants, ``auth.json``, ``secrets/*``) are never
+    read by the local provider and never propagated through the profile's
+    ``extra`` payload.
+    """
+    try:
+        token = config.get("GITHUB_TOKEN") if isinstance(config, dict) else None
+        owner = config.get("GITHUB_OWNER") if isinstance(config, dict) else None
+        profile = build_repo_profile(
+            repo,
+            token=token,
+            owner=owner,
+            local_root=Path.cwd(),
+            branch=branch,
+            offline=offline,
+            prefer=prefer,
+            logger=None,
+        )
+    except Exception as exc:  # pragma: no cover - defensive against GitHub 404s
+        print_warn(f"Repo-Profile konnte nicht erstellt werden: {exc}")
+        return None, None
+    return profile, serialize_repo_profile(profile)
+
+
+def repo_type_from_profile(profile: RepoProfile | None) -> str:
+    """Map a :class:`RepoProfile` to a string accepted by ``model_selection``."""
+    if profile is None:
+        return "python"
+    # r-shiny und node haben keinen eigenen Eintrag in ISSUE_CATEGORIES und
+    # fallen daher auf den naechsten passenden Wert zurueck.
+    if profile.repo_kind == "r-shiny":
+        return "r"
+    if profile.repo_kind in {"python", "r", "node", "docs-only", "unknown"}:
+        return profile.repo_kind
+    return profile.dominant_language or "python"
 
 
 def preflight_checks(config: dict, repo: str, issue_number: int | None = None) -> tuple[str, str | None]:
@@ -2238,6 +2291,16 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         write_run_report(run_report, "started")
         write_run_health(run_report, status="running", phase="clone")
         print(f"      Run-Report: {run_report.path}")
+    # Fruehes Repo-Profil fuer Skip-Pfade (vorhandener PR, geschlossene Issue)
+    early_repo_profile_obj, early_repo_profile_dict = build_repo_profile_for_run(
+        repo, config["config"], branch=base_branch,
+    )
+    if early_repo_profile_dict:
+        print(
+            f"      🛰️ Repo-Profil-Quelle: {early_repo_profile_dict.get('source', 'unknown')}, "
+            f"Typ: {early_repo_profile_dict.get('repo_kind', 'unknown')}, "
+            f"Sprache: {early_repo_profile_dict.get('dominant_language') or 'unbekannt'}"
+        )
     if recovery_plan.action.startswith("skip"):
         if recovery_plan.pull_request and recovery_plan.pull_request.html_url:
             print(f"      🔀 Vorhandener PR: {recovery_plan.pull_request.html_url}")
@@ -2248,6 +2311,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 pr_url=recovery_plan.pull_request.html_url if recovery_plan.pull_request else None,
                 note=recovery_plan.message,
                 vibe_log_snippet=None,
+                repo_profile=early_repo_profile_dict,
             )
         return True
 
@@ -2351,6 +2415,18 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             return False
         print("✅")
 
+        # Provider-Profil fuer Planung, Modellauswahl und Reporting aufbauen
+        # (GitHub-first, lokaler Marker-Fallback, ohne Secret-Dateien zu lesen)
+        repo_profile_obj, repo_profile_dict = build_repo_profile_for_run(
+            repo, config["config"], branch=base_branch,
+        )
+        if repo_profile_dict:
+            print(
+                f"      🛰️ Repo-Profil-Quelle: {repo_profile_dict.get('source', 'unknown')}, "
+                f"Typ: {repo_profile_dict.get('repo_kind', 'unknown')}, "
+                f"Sprache: {repo_profile_dict.get('dominant_language') or 'unbekannt'}"
+            )
+
         # Branch anlegen
         branch_name = recovery_plan.branch
         if recovery_plan.action == "reuse_branch":
@@ -2417,14 +2493,19 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                             base_branch=base_branch,
                             git_change_summary=git_change_summary,
                             resource_diagnostics=resource_diagnostics,
+                            repo_profile=repo_profile_dict,
                         )
                     return bool(pr)
         elif not create_branch(repo_dir, branch_name):
             print_err(f"Branch konnte nicht erstellt werden: {branch_name}")
             if run_report:
                 write_run_report(run_report, "branch_create_failed",
-                                 resource_diagnostics=resource_diagnostics)
+                                 resource_diagnostics=resource_diagnostics,
+                                 repo_profile=repo_profile_dict)
             return False
+
+        # Provider-Profil wurde bereits vor dem Branch-Schritt erstellt
+        # (siehe oben) und steht fuer alle weiteren Phasen bereit.
 
         # Prompt bauen
         prompt = AIDER_PROMPT_TEMPLATE.format(
@@ -2490,7 +2571,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             from model_selection import select_model_for_issue
             model_selection_metadata = select_model_for_issue(
                 issue=issue,
-                repo_type="python",  # TODO: Dynamisch ermitteln
+                repo_type=repo_type_from_profile(repo_profile_obj),
                 max_cost_tier=max_cost,
             )
 
@@ -2560,6 +2641,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    repo_profile=repo_profile_dict,
                 )
             return False
         if not assessment.should_continue:
@@ -2594,6 +2676,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    repo_profile=repo_profile_dict,
                 )
             return False
 
@@ -2634,6 +2717,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    repo_profile=repo_profile_dict,
                 )
             return False
 
@@ -2678,6 +2762,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    repo_profile=repo_profile_dict,
                 )
             return False
         print("✅")
@@ -2742,6 +2827,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     resource_diagnostics=resource_diagnostics,
                     model_selection_metadata=model_selection_metadata,
                     opencode_session_metrics=opencode_session_metrics,
+                    repo_profile=repo_profile_dict,
                 )
         return bool(pr)
     finally:
@@ -3076,9 +3162,18 @@ def main():
             print_err("--auto-model erfordert --repo und --issue")
             sys.exit(1)
         # Wähle Modell automatisch aus
+        cli_repo_profile_obj, cli_repo_profile_dict = build_repo_profile_for_run(
+            args.repo, cfg, branch=None,
+        )
+        if cli_repo_profile_dict:
+            print(
+                f"      🛰️ Repo-Profil-Quelle: {cli_repo_profile_dict.get('source', 'unknown')}, "
+                f"Typ: {cli_repo_profile_dict.get('repo_kind', 'unknown')}, "
+                f"Sprache: {cli_repo_profile_dict.get('dominant_language') or 'unbekannt'}"
+            )
         model_selection = select_model_for_issue(
             issue=issue,
-            repo_type="python",  # TODO: Repo-Typ dynamisch ermitteln
+            repo_type=repo_type_from_profile(cli_repo_profile_obj),
             max_cost_tier=args.max_cost,
         )
         print(f"   🔍 Automatische Modellauswahl: {model_selection['model']}")
