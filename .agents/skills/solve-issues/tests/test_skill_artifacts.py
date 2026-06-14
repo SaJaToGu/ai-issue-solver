@@ -23,6 +23,7 @@ EXPECTED_FILES = [
     SKILL_ROOT / "examples" / "05_ensemble.md",
     SKILL_ROOT / "examples" / "06_recovery_check.md",
     SKILL_ROOT / "examples" / "07_preflight.md",
+    SKILL_ROOT / "examples" / "08_sandbox_escalation.md",
     SKILL_ROOT / "tests" / "README.md",
     SKILL_ROOT / "tests" / "run_skill_tests.sh",
     SKILL_ROOT / "tests" / "test_skill_artifacts.py",
