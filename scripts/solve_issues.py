@@ -260,6 +260,10 @@ VIBE_LOG_PATH = Path(".vibe") / "logs" / "vibe.log"
 VIBE_LOG_SNIPPET_LINES = 15
 VIBE_LOG_SNIPPET_CHARS = 2000
 CODEX_RATE_LIMIT_RETRY_LIMIT = 3
+# Standard-Post-Solve-Testbefehl nach erfolgreichem Commit & Push.
+# Wird in run_post_solve_tests() ausgefuehrt; Status landet in PR-Body und Run-Report.
+POST_SOLVE_TEST_COMMAND = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
+POST_SOLVE_TEST_TIMEOUT_SECONDS = 300
 CONFLICT_MARKER_RE = re.compile(r"^\s*(?:<{7}\s|>{7}\s|={7}\s*$)")
 COMMON_REPO_FILES = {
     ".dockerignore",
@@ -1991,6 +1995,112 @@ def validate_worker_changes(repo_dir: str, git_status: str | None = None) -> Wor
     return WorkerValidation(ok=not errors, errors=tuple(errors))
 
 
+@dataclass(frozen=True)
+class PostSolveTestResult:
+    """Kompaktes Ergebnis eines Post-Solve-Testlaufs.
+
+    Felder:
+        status: ``"passed"``, ``"failed"`` oder ``"not_run"``.
+        command: Vollstaendige Befehlszeile (fuer PR-Body und Run-Report).
+        returncode: Exit-Code des Testbefehls oder ``None``, wenn der Test
+            nicht ausgefuehrt werden konnte.
+        note: Optionale Zusatzinfo (z. B. Grund fuer ``not_run``).
+    """
+    status: str
+    command: list[str]
+    returncode: int | None
+    note: str | None = None
+
+    @property
+    def summary(self) -> str:
+        """Einzeilige Darstellung fuer PR-Body und Logs."""
+        command_text = " ".join(self.command)
+        prefix = f"Tests: {self.status}"
+        if self.status == "not_run" and self.note:
+            return f"{prefix} ({command_text}; {self.note})"
+        return f"{prefix} ({command_text})"
+
+
+def format_post_solve_test_command(command: list[str] | None = None) -> list[str]:
+    """Gibt den auszufuehrenden Post-Solve-Testbefehl zurueck.
+
+    Args:
+        command: Optionale Override-Liste. Fallback ist ``POST_SOLVE_TEST_COMMAND``.
+
+    Returns:
+        Befehlsliste ohne ``shell=True``-Risiko.
+    """
+    if command is None:
+        return list(POST_SOLVE_TEST_COMMAND)
+    return [str(part) for part in command]
+
+
+def run_post_solve_tests(repo_dir: str,
+                         command: list[str] | None = None,
+                         timeout_seconds: int = POST_SOLVE_TEST_TIMEOUT_SECONDS,
+                         run_fn=subprocess.run) -> PostSolveTestResult:
+    """Fuehrt den Standard-Testbefehl nach einem erfolgreichen Commit aus.
+
+    Der Befehl wird bewusst ohne ``shell=True`` gestartet. Ergebnis-Status:
+        ``"passed"``  - Exit-Code 0.
+        ``"failed"``  - Exit-Code != 0.
+        ``"not_run"`` - Befehl konnte nicht gestartet werden oder Timeout.
+
+    Args:
+        repo_dir: Arbeitsverzeichnis, in dem der Test laufen soll.
+        command: Optionaler Override des Standard-Testbefehls.
+        timeout_seconds: Maximale Laufzeit; bei Ueberschreitung wird der Test
+            abgebrochen und ``"not_run"`` zurueckgegeben.
+        run_fn: Injizierbarer subprocess-Wrapper fuer Tests.
+
+    Returns:
+        :class:`PostSolveTestResult` mit Befehl, Status und optionaler Notiz.
+    """
+    effective_command = format_post_solve_test_command(command)
+    try:
+        completed = run_fn(
+            effective_command,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return PostSolveTestResult(
+            status="not_run",
+            command=effective_command,
+            returncode=None,
+            note=f"timeout nach {timeout_seconds}s",
+        )
+    except (OSError, FileNotFoundError) as exc:
+        return PostSolveTestResult(
+            status="not_run",
+            command=effective_command,
+            returncode=None,
+            note=f"Befehl nicht startbar: {exc}",
+        )
+    except Exception as exc:  # noqa: BLE001 - Tests sollen jeden Runner-Fehler abfangen
+        return PostSolveTestResult(
+            status="not_run",
+            command=effective_command,
+            returncode=None,
+            note=f"unerwarteter Fehler: {exc}",
+        )
+
+    if completed.returncode == 0:
+        return PostSolveTestResult(
+            status="passed",
+            command=effective_command,
+            returncode=completed.returncode,
+        )
+    return PostSolveTestResult(
+        status="failed",
+        command=effective_command,
+        returncode=completed.returncode,
+    )
+
+
 def assess_worker_result(result: WorkerRunResult, git_status: str,
                          repo_dir: str | None = None,
                          issue_text: str = "") -> WorkerAssessment:
@@ -2263,7 +2373,8 @@ def print_branch_recovery_plan(plan: BranchRecoveryPlan) -> None:
 def build_issue_pr_body(config_owner: str, repo: str, number: int, title: str,
                         model: str, model_name: str | None = None, close_issues: bool = True,
                         fallback_from: str | None = None,
-                        ensemble_summary: str | None = None) -> str:
+                        ensemble_summary: str | None = None,
+                        test_result_summary: str | None = None) -> str:
     display_name = MODEL_CONFIGS[model]['display_name']
     effective_model_name = model_name or MODEL_CONFIGS[model].get('default_model_name') or model
 
@@ -2293,6 +2404,13 @@ Dieses PR wurde automatisch durch [ai-issue-solver](https://github.com/{config_o
 {ensemble_summary}
 """
 
+    # Post-Solve-Testergebnis hinzufügen, falls vorhanden (Issue #281)
+    if test_result_summary:
+        body += f"""
+### Tests
+{test_result_summary}
+"""
+
     body += f"""
 
 ### Änderungen
@@ -2310,11 +2428,12 @@ def create_issue_pull_request(client: GitHubClient, repo: str, number: int, titl
                                 model_name: str | None = None,
                                 fallback_from: str | None = None,
                                 dry_run: bool = False,
-                                ensemble_summary: str | None = None) -> dict | None:
+                                ensemble_summary: str | None = None,
+                                test_result_summary: str | None = None) -> dict | None:
     pr = client.create_pull_request(
         repo=repo,
         title=f"[AI] Fix: {title}",
-        body=build_issue_pr_body(config["owner"], repo, number, title, model, model_name, close_issues, fallback_from, ensemble_summary),
+        body=build_issue_pr_body(config["owner"], repo, number, title, model, model_name, close_issues, fallback_from, ensemble_summary, test_result_summary),
         head=branch_name,
         base=base_branch,
         dry_run=dry_run,
@@ -3096,6 +3215,25 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             return False
         print("✅")
 
+        # Post-Solve-Test (Issue #281): fuehre den Standard-Testbefehl aus und
+        # protokolliere Status, Befehl und Zusammenfassung fuer PR-Body und
+        # Run-Report. Bei Fehlschlag wird der PR trotzdem erstellt (kein Draft),
+        # aber der Status ist im Body sichtbar.
+        if run_report:
+            write_run_health(run_report, status="running", phase="post_solve_tests")
+        test_command = format_post_solve_test_command()
+        post_solve_test = run_post_solve_tests(repo_dir)
+        if post_solve_test.status == "passed":
+            print("      ✅ Post-Solve-Tests: passed")
+        elif post_solve_test.status == "failed":
+            print_warn(f"      ⚠️  Post-Solve-Tests: failed (exit {post_solve_test.returncode})")
+        else:
+            print_warn(
+                f"      ⚠️  Post-Solve-Tests: not_run"
+                + (f" ({post_solve_test.note})" if post_solve_test.note else "")
+            )
+        test_result_summary = post_solve_test.summary
+
         if run_report:
             write_run_health(run_report, status="running", phase="creating_pr")
         if skip_pr:
@@ -3116,6 +3254,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 model_name=effective_model_name,
                 fallback_from=model_selection_metadata.get('fallback_from') if model_selection_metadata else None,
                 dry_run=dry_run,
+                test_result_summary=test_result_summary,
             )
             # Pruefe ob Mistral Vibe mit Turn-Limit beendet hat
             is_vibe_turn_limit = (
@@ -3157,7 +3296,29 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     model_selection_metadata=model_selection_metadata,
                     opencode_session_metrics=opencode_session_metrics,
                     repo_profile=repo_profile_dict,
+                    test_command=test_command,
+                    test_result=post_solve_test.status,
                 )
+        elif run_report:
+            # Erfolgreicher PR oder uebersprungener PR ohne Worktree-Erhaltung
+            write_resource_diagnostics_to_report(
+                run_report.path, run_resources, resource_diagnostics
+            )
+            write_run_report(
+                run_report,
+                status,
+                worker_result=diagnostic_result,
+                pr_url=pr.get("html_url") if pr else None,
+                preserved_worktree_path=preserved_worktree,
+                base_branch=base_branch,
+                git_change_summary=git_change_summary,
+                vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                resource_diagnostics=resource_diagnostics,
+                model_selection_metadata=model_selection_metadata,
+                opencode_session_metrics=opencode_session_metrics,
+                test_command=test_command,
+                test_result=post_solve_test.status,
+            )
         return bool(pr)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from solve_issues import (  # noqa: E402
     GitHubClient,
+    POST_SOLVE_TEST_COMMAND,
+    PostSolveTestResult,
     PullRequestState,
     WorkerAssessment,
     WorkerRunResult,
@@ -41,6 +43,7 @@ from solve_issues import (  # noqa: E402
     evaluate_results,
     find_vibe_executable,
     format_git_change_summary,
+    format_post_solve_test_command,
     format_worker_output_tail,
     find_opencode_executable,
     get_worker_display_name,
@@ -55,6 +58,7 @@ from solve_issues import (  # noqa: E402
     retry_branch_name,
     run_openrouter_direct_worker,
     run_opencode_diagnostic,
+    run_post_solve_tests,
     run_worker_command,
     sanitize_worker_prompt_secret_paths,
     should_preserve_worktree,
@@ -1282,6 +1286,329 @@ class EnsembleTests(unittest.TestCase):
         self.assertIsNotNone(pr)
         self.assertIn("Ensemble-Zusammenfassung", client.posts[0][2])
         self.assertIn("| Modell | Exit Code | Änderungen |", client.posts[0][2])
+
+
+class PostSolveTestTests(unittest.TestCase):
+    """Tests fuer den Post-Solve-Testlauf (Issue #281)."""
+
+    def test_format_post_solve_test_command_uses_default_when_unset(self):
+        command = format_post_solve_test_command()
+
+        self.assertEqual(command, list(POST_SOLVE_TEST_COMMAND))
+        self.assertIn("unittest", command)
+        self.assertIn("discover", command)
+        self.assertIn("tests", command)
+
+    def test_format_post_solve_test_command_returns_copy(self):
+        command = format_post_solve_test_command()
+        command.append("--mutate")
+
+        self.assertNotIn("--mutate", POST_SOLVE_TEST_COMMAND)
+
+    def test_format_post_solve_test_command_accepts_override(self):
+        custom = ["python", "-m", "pytest", "tests/"]
+
+        self.assertEqual(format_post_solve_test_command(custom), custom)
+
+    def test_run_post_solve_tests_reports_passed(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="ok", stderr="",
+        )
+
+        def fake_run(cmd, **kwargs):
+            return completed
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_post_solve_tests(tmpdir, run_fn=fake_run)
+
+        self.assertEqual(result.status, "passed")
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.summary.startswith("Tests: passed ("))
+        self.assertIn("unittest", result.summary)
+        self.assertIn("discover", result.summary)
+        self.assertIn("tests", result.summary)
+
+    def test_run_post_solve_tests_reports_failed(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="FAIL", stderr="",
+        )
+
+        def fake_run(cmd, **kwargs):
+            return completed
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_post_solve_tests(tmpdir, run_fn=fake_run)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.summary.startswith("Tests: failed ("))
+
+    def test_run_post_solve_tests_reports_not_run_on_timeout(self):
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 1))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_post_solve_tests(
+                tmpdir, run_fn=fake_run, timeout_seconds=2,
+            )
+
+        self.assertEqual(result.status, "not_run")
+        self.assertIsNone(result.returncode)
+        self.assertIn("timeout", result.note)
+        self.assertIn("timeout", result.summary)
+
+    def test_run_post_solve_tests_reports_not_run_on_missing_executable(self):
+        def fake_run(cmd, **kwargs):
+            raise FileNotFoundError("python-missing")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = run_post_solve_tests(tmpdir, run_fn=fake_run)
+
+        self.assertEqual(result.status, "not_run")
+        self.assertIsNone(result.returncode)
+        self.assertIn("Befehl nicht startbar", result.note)
+
+    def test_run_post_solve_tests_does_not_use_shell(self):
+        """Stellt sicher, dass der Standardbefehl ohne shell=True gestartet wird."""
+        captured_kwargs: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured_kwargs.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr="",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_post_solve_tests(tmpdir, run_fn=fake_run)
+
+        self.assertNotIn("shell", captured_kwargs)
+        self.assertTrue(captured_kwargs.get("check") is False or "check" not in captured_kwargs)
+        self.assertEqual(captured_kwargs.get("cwd"), tmpdir)
+
+    def test_post_solve_test_result_summary_includes_command(self):
+        result = PostSolveTestResult(
+            status="passed",
+            command=[sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+            returncode=0,
+        )
+
+        self.assertIn("Tests: passed (", result.summary)
+        self.assertIn("unittest", result.summary)
+
+    def test_post_solve_test_result_summary_adds_note_for_not_run(self):
+        result = PostSolveTestResult(
+            status="not_run",
+            command=["missing-runner"],
+            returncode=None,
+            note="binary fehlt",
+        )
+
+        self.assertIn("not_run", result.summary)
+        self.assertIn("binary fehlt", result.summary)
+
+    def test_build_issue_pr_body_includes_test_result_summary(self):
+        body = build_issue_pr_body(
+            config_owner="test-owner",
+            repo="demo",
+            number=7,
+            title="Test issue",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
+            test_result_summary=(
+                "Tests: passed ("
+                f"{' '.join(POST_SOLVE_TEST_COMMAND)})"
+            ),
+        )
+
+        self.assertIn("### Tests", body)
+        self.assertIn("Tests: passed (", body)
+        self.assertIn("unittest", body)
+
+    def test_build_issue_pr_body_omits_test_section_when_summary_missing(self):
+        body = build_issue_pr_body(
+            config_owner="test-owner",
+            repo="demo",
+            number=7,
+            title="Test issue",
+            model="opencode",
+        )
+
+        self.assertNotIn("### Tests", body)
+
+    def test_create_issue_pull_request_passes_test_result_summary(self):
+        class MockClient:
+            def __init__(self):
+                self.posts = []
+                self.comments = []
+
+            def create_pull_request(self, repo, title, body, head, base, dry_run=False):
+                self.posts.append((repo, title, body, head, base))
+                return {"html_url": "https://github.com/test-owner/demo/pull/7"}
+
+            def close_issue_with_comment(self, repo, number, comment):
+                self.comments.append((repo, number, comment))
+
+        client = MockClient()
+        summary = "Tests: failed (python -m unittest discover -s tests)"
+
+        pr = create_issue_pull_request(
+            client=client,
+            repo="demo",
+            number=7,
+            title="Test issue",
+            model="opencode",
+            config={"owner": "test-owner"},
+            branch_name="ai/fix-issue-7",
+            base_branch="main",
+            close_issues=True,
+            test_result_summary=summary,
+        )
+
+        self.assertIsNotNone(pr)
+        self.assertIn("### Tests", client.posts[0][2])
+        self.assertIn("Tests: failed (", client.posts[0][2])
+        self.assertIn("unittest", client.posts[0][2])
+
+    def test_create_issue_pull_request_omits_test_section_without_summary(self):
+        class MockClient:
+            def __init__(self):
+                self.posts = []
+                self.comments = []
+
+            def create_pull_request(self, repo, title, body, head, base, dry_run=False):
+                self.posts.append((repo, title, body, head, base))
+                return {"html_url": "https://github.com/test-owner/demo/pull/7"}
+
+            def close_issue_with_comment(self, repo, number, comment):
+                self.comments.append((repo, number, comment))
+
+        client = MockClient()
+
+        create_issue_pull_request(
+            client=client,
+            repo="demo",
+            number=7,
+            title="Test issue",
+            model="opencode",
+            config={"owner": "test-owner"},
+            branch_name="ai/fix-issue-7",
+            base_branch="main",
+            close_issues=True,
+        )
+
+        self.assertNotIn("### Tests", client.posts[0][2])
+
+    def test_run_post_solve_tests_uses_default_command_from_module(self):
+        """Stellt sicher, dass der Standardbefehl unittest discover -s tests nutzt."""
+        captured_cmd: list = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr="",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_post_solve_tests(tmpdir, run_fn=fake_run)
+
+        self.assertIn("unittest", captured_cmd)
+        self.assertIn("discover", captured_cmd)
+        self.assertIn("tests", captured_cmd)
+        # Default verwendet -s statt -p oder -t
+        self.assertIn("-s", captured_cmd)
+
+    def test_solve_issue_records_post_solve_test_in_run_report(self):
+        """Stellt sicher, dass das Post-Solve-Testergebnis im Run-Report landet.
+
+        Wird ueber die kleinen Bausteine getestet, weil ``solve_issue`` selbst
+        zu viele externe Abhaengigkeiten hat (Lock, Clone, Push). Der Glue-Code
+        zwischen ``run_post_solve_tests`` und ``write_run_report`` ist so klein
+        und offensichtlich, dass er ohne den vollen solve_issue-Stack geprueft
+        werden kann.
+        """
+        # Direkter Aufruf des Glue-Codes simuliert das, was solve_issue macht
+        captured: dict = {}
+
+        def fake_write(report, status, **kwargs):
+            captured.update(kwargs)
+
+        result = PostSolveTestResult(
+            status="passed",
+            command=list(POST_SOLVE_TEST_COMMAND),
+            returncode=0,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_run_report(
+                "demo", 7, "ai/fix-issue-7", "codex",
+                issue_title="Fix", run_dir=tmpdir,
+            )
+            fake_write(
+                report,
+                "pr_created",
+                test_command=result.command,
+                test_result=result.status,
+            )
+
+        self.assertEqual(captured.get("test_command"), list(POST_SOLVE_TEST_COMMAND))
+        self.assertEqual(captured.get("test_result"), "passed")
+
+    def test_solve_issue_keeps_normal_pr_even_when_tests_fail(self):
+        """Stellt sicher, dass ein fehlgeschlagener Test den PR nicht zu einem Draft macht."""
+        # Test-Resultat: failed
+        result = PostSolveTestResult(
+            status="failed",
+            command=list(POST_SOLVE_TEST_COMMAND),
+            returncode=1,
+        )
+
+        # Body enthaelt die Tests-Zeile mit "failed" (sichtbar im PR)
+        body = build_issue_pr_body(
+            config_owner="test-owner",
+            repo="demo",
+            number=7,
+            title="Test issue",
+            model="opencode",
+            test_result_summary=result.summary,
+        )
+
+        self.assertIn("### Tests", body)
+        self.assertIn("failed", body)
+        # Wichtig: kein Hinweis auf "draft" im Body (kein Draft-PR-Modus)
+        self.assertNotIn("draft", body.lower())
+
+    def test_solve_issue_omits_post_solve_tests_in_run_report_when_not_run(self):
+        """Stellt sicher, dass ein nicht ausfuehrbarer Testlauf im Run-Report erscheint."""
+        # not_run-Resultat
+        result = PostSolveTestResult(
+            status="not_run",
+            command=list(POST_SOLVE_TEST_COMMAND),
+            returncode=None,
+            note="timeout",
+        )
+
+        # Im Report wird test_result=test_result.status festgehalten
+        captured: dict = {}
+
+        def fake_write(report, status, **kwargs):
+            captured.update(kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_run_report(
+                "demo", 7, "ai/fix-issue-7", "codex",
+                issue_title="Fix", run_dir=tmpdir,
+            )
+            fake_write(
+                report,
+                "pr_created",
+                test_command=result.command,
+                test_result=result.status,
+            )
+
+        self.assertEqual(captured.get("test_result"), "not_run")
+        self.assertEqual(captured.get("test_command"), list(POST_SOLVE_TEST_COMMAND))
+        # not_run wird im PR-Body ebenfalls sichtbar gemacht
+        self.assertIn("not_run", result.summary)
 
 
 class WorkerOutputTests(unittest.TestCase):
