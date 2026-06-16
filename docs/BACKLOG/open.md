@@ -1,33 +1,79 @@
-# Next Backlog
+# Open Backlog
 
 > **📌 Sprachhinweis / Language Note:**
 > Diese Datei bleibt bewusst auf Englisch, da sie als Vorlage für GitHub Issues dient
-> und von KI-Workern verarbeitet wird. Siehe [Sprachrichtlinie](LANGUAGE_POLICY.md)
+> und von KI-Workern verarbeitet wird. Siehe [Sprachrichtlinie](../LANGUAGE_POLICY.md)
 > This file remains in English as it serves as a template for GitHub Issues and is
-> processed by AI workers. See [Language Policy](LANGUAGE_POLICY.md)
+> processed by AI workers. See [Language Policy](../LANGUAGE_POLICY.md)
 
-This backlog captures the next technical ai-issue-solver provider phase.
-Private personal ideas belong in the separate private `guido-project-lab`
-repository and must not be added here.
+This backlog captures the **active, not-yet-closed** technical work for the
+`ai-issue-solver` project. Private personal ideas belong in the separate
+private `guido-project-lab` repository and must not be added here.
 
-Priority uses numeric ordering: `1` is highest urgency; larger numbers are
-lower priority. Section numbers are stable backlog identifiers, not priority.
+**Naming & location** (Release 0.7.0 split): this file replaces the old
+`docs/NEXT_BACKLOG.md`. Completed items are archived in
+[`done.md`](done.md). Long-term direction is in
+[`../ROADMAP.md`](../ROADMAP.md).
+
+**Priority** uses numeric ordering: `1` is highest urgency; larger numbers
+are lower priority.
+
+**Section numbers** are stable backlog identifiers, not priority. They are
+preserved across renames and splits so that GitHub issues, PRs, and external
+references keep working. Gaps in the numbering reflect historical insertion
+order, not deleted sections.
 
 Create selected items as GitHub issues with:
 
 ```bash
-python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md
-python scripts/create_backlog_issues.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-create
+python scripts/create_backlog_issues.py --backlog docs/BACKLOG/open.md
+python scripts/create_backlog_issues.py --backlog docs/BACKLOG/open.md --apply --confirm-create
 ```
 
-Clean up completed items after their GitHub issues are closed with:
+Clean up completed items after their GitHub issues are closed by moving the
+section to [`done.md`](done.md) and running:
 
 ```bash
-python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md
-python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-remove
+python scripts/cleanup_backlog.py --backlog docs/BACKLOG/open.md
+python scripts/cleanup_backlog.py --backlog docs/BACKLOG/open.md --apply --confirm-remove
 ```
 
+---
+
+## Priority 1
+
+## 5. Evaluate mobile-first Claude Code alternative to Codex
+
+
+Labels: `kind/automation`, `theme/quality`, `theme/provider`, `theme/workflow`
+
+Priority: `1`
+
+Codex usage should be conserved when possible. We need a practical alternative
+that can be used from a phone in a similar supervision style, with comparable
+quality for GitHub issue solving and pull request creation.
+
+Suggested scope:
+- evaluate Claude Code on the web/mobile app with GitHub repositories as the
+  primary Codex alternative
+- compare Cursor Web/Mobile Agent as a secondary candidate
+- define a phone-first workflow for starting tasks, reviewing progress,
+  responding to clarifying questions, and reviewing generated PRs
+- test against tiny safe issues in this repo before using it for larger work
+- compare quality against Codex using concrete outcomes: PR created, tests
+  passed, review effort, runtime, cost, and failure mode
+- document setup requirements, GitHub permissions, mobile limitations, and
+  rollback/recovery steps
+- do not read or expose secret files such as `config/.env`, provider auth
+  files, or API keys
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
 ## 16. Use GitHub repository intelligence before local repo type detection
+
 
 Labels: `kind/automation`, `kind/analysis`, `theme/quality`, `theme/workflow`, `theme/github`
 
@@ -79,7 +125,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
 ## 17. Add workflow control for backlog and PR queue congestion
+
 
 Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `theme/quality`
 
@@ -112,7 +160,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
 ## 18. Harden Codex sandbox and escalated-command workflow handling
+
 
 Labels: `kind/automation`, `theme/workflow`, `theme/codex`, `theme/quality`
 
@@ -150,7 +200,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
 ## 19. Add structured rework workflow with sub-issues and separate PRs
+
 
 Labels: `kind/automation`, `theme/workflow`, `theme/quality`, `theme/github`
 
@@ -192,7 +244,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
 ## 21. Add solver process supervisor for monitoring and targeted cancellation
+
 
 Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `theme/quality`
 
@@ -237,109 +291,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
-## 6. Support low-code and non-code repositories without Python assumptions
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `kind/analysis`
-
-Priority: `2`
-
-The solver should handle repositories that contain little or no application
-code, such as documentation, research notes, prompt collections, data-only
-repositories, planning repos, or mixed-language projects. Python must not be
-treated as mandatory unless the target repo actually uses Python.
-
-Suggested scope:
-- detect repository type and dominant stack before selecting checks or worker
-  instructions
-- support low-code/no-code repo classes such as docs-only, research, data,
-  templates, configuration, and project-management repositories
-- choose validation commands based on detected files, for example markdown
-  checks for docs, R checks for R repos, npm checks for JS repos, and no forced
-  Python tests when no Python project exists
-- make no-op or documentation-only changes first-class successful outcomes when
-  they satisfy the issue
-- show the detected repo type and selected validation plan in run reports
-- add tests for Python, R, docs-only, and empty/minimal repository fixtures
-- do not read or expose secret files such as `.env`, provider auth files, or API
-  keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 15. Add vertical process quality analysis and periodic workflow retrospective
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/dashboard`
-
-Priority: `2`
-
-The solver should not only move forward through the backlog but periodically
-step back and assess quality at every stage of its own workflow. After a
-configurable number of solved issues per repository, or on demand, it should
-analyse each workflow step — analysis, issue creation, worker execution,
-validation, commit, PR creation, and review — and surface patterns, regressions,
-and improvement opportunities before the next batch starts.
-
-A periodic comparison with structurally similar open-source solver projects
-should also be included so the project does not optimise in isolation.
-
-Suggested scope:
-- define the workflow steps to be assessed: repo analysis, issue creation,
-  worker execution (per provider), validation, commit/push, PR creation,
-  and post-merge cleanup
-- collect per-step quality signals from existing run reports: success rate,
-  no-change rate, failure mode distribution, median runtime, retry count,
-  and open vs closed PR ratio per step and per provider
-- trigger a retrospective automatically after a configurable number of solved
-  issues per repository (for example every 10 issues), and expose it as an
-  explicit `--retrospective` mode or standalone script
-- produce a structured retrospective report per repository with findings per
-  workflow step, trend direction (improving, stable, degrading), and suggested
-  next actions such as retry threshold adjustment, provider swap, or backlog
-  reprioritisation
-- include a periodic comparison with structurally comparable open-source
-  AI-assisted issue solver projects to avoid local optimisation traps; record
-  comparable metrics, approach differences, and transferable ideas
-- surface retrospective findings in the dashboard and overnight summaries so
-  they are visible without running a separate command
-- keep retrospective reports free of secrets, API keys, provider auth contents,
-  and raw prompts
-- add tests for retrospective triggering logic, per-step signal collection,
-  trend detection, and report formatting with missing or partial run data
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 5. Evaluate mobile-first Claude Code alternative to Codex
-
-Labels: `kind/automation`, `theme/quality`, `theme/provider`, `theme/workflow`
-
-Priority: `1`
-
-Codex usage should be conserved when possible. We need a practical alternative
-that can be used from a phone in a similar supervision style, with comparable
-quality for GitHub issue solving and pull request creation.
-
-Suggested scope:
-- evaluate Claude Code on the web/mobile app with GitHub repositories as the
-  primary Codex alternative
-- compare Cursor Web/Mobile Agent as a secondary candidate
-- define a phone-first workflow for starting tasks, reviewing progress,
-  responding to clarifying questions, and reviewing generated PRs
-- test against tiny safe issues in this repo before using it for larger work
-- compare quality against Codex using concrete outcomes: PR created, tests
-  passed, review effort, runtime, cost, and failure mode
-- document setup requirements, GitHub permissions, mobile limitations, and
-  rollback/recovery steps
-- do not read or expose secret files such as `config/.env`, provider auth
-  files, or API keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
+---
 ## 22. Research backlog shaping frameworks before turning ideas into issues
+
 
 Labels: `theme/research`, `theme/workflow`, `theme/backlog`, `theme/quality`
 
@@ -431,7 +385,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
 ## 24. Trigger the solver automatically via GitHub Actions when an issue is labeled
+
 
 Labels: `kind/automation`, `theme/workflow`, `theme/github`
 
@@ -471,293 +427,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
-## 25. Decompose oversized issues into sub-issues automatically
-
-Labels: `kind/automation`, `theme/workflow`, `theme/github`, `theme/quality`
-
-Priority: `2`
-
-When an issue is too large or vague, the solver often fails or produces a
-large, hard-to-review PR. The better strategy: the solver recognises when an
-issue should be split and creates concrete sub-issues instead of attempting a
-monolithic fix.
-
-Suggested scope:
-- add complexity heuristics to `solve_issues.py` that flag an issue as too
-  large: body longer than ~1500 characters, more than three distinct file areas
-  mentioned, labels such as `epic`, `large`, or `refactor`, the AI worker
-  explicitly stating that multiple steps are needed, or no clear `Touches:`
-  hint in the body
-- add a `--decompose` flag that sends the issue to the AI with a prompt asking
-  for 3–5 concrete, independently solvable sub-issues returned as JSON
-- add an `--auto-decompose` flag that applies the same logic automatically when
-  complexity heuristics are triggered
-- create sub-issues via the GitHub Issues API with title
-  `[Sub] <parent-title> — Part N`, a body describing the sub-task with
-  `Parent: #<number>` reference, and labels `ai-sub-issue` and `ai-solve`
-- add a comment to the parent issue linking all generated sub-issues
-- add tests for complexity heuristic thresholds, sub-issue JSON parsing, and
-  parent-issue comment creation
-- do not expose API keys, provider auth files, or GitHub tokens in sub-issue
-  bodies or comments
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 26. Run tests after each solver fix and include the result in the PR body
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`
-
-Priority: `2`
-
-Inspired by OpenHands and SWE-agent, both of which validate fixes internally
-before creating a PR. This entry applies the same principle using the existing
-test setup instead of requiring external infrastructure.
-
-Tests already run as a preflight check before the solver. But after the fix is
-committed, there is currently no check whether the new code still passes the
-test suite. A solver that fixes a bug but breaks another test lands in the PR
-undetected. The AI branch should be tested after the commit and the result
-should flow into the run report and PR body.
-
-Suggested scope:
-- add a `--post-solve-tests` flag to `solve_issues.py` that runs the test
-  suite on the AI branch after a successful commit
-- accept a `--test-command` override, defaulting to the existing preflight test
-  command
-- measure a baseline from the preflight run and compare outcomes: all green,
-  unchanged, or new failures
-- create the PR as a normal PR when all tests pass, with a warning note when
-  results are unchanged, and as a draft PR with an explicit failure block when
-  new failures appear
-- include a compact test-delta table in `summary.txt` and the PR body, for
-  example: passed before / passed after / delta
-- feed the test delta into the provider scorecard so cross-model comparisons
-  can show which model breaks the fewest tests
-- add tests for each outcome: all green, unchanged, new failures, and draft PR
-  creation
-- do not expose API keys, provider auth files, or full test output in the PR
-  body
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 28. Track solver success rate with a benchmark script
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/provider`
-
-Priority: `2`
-
-Inspired by SWE-Bench, which made it possible to compare AI coding agents on
-a standardised benchmark. The goal here is a lightweight internal equivalent:
-a `benchmark_solver.py` script that aggregates run reports into a comparable
-success-rate view per model, provider, and issue type — without requiring an
-external evaluation harness.
-
-The test-delta data from entry #26 (post-solve test validation) is the primary
-input for cross-model comparisons.
-
-Suggested scope:
-- add `scripts/benchmark_solver.py` that reads run reports from `reports/runs/`
-  and aggregates outcomes by provider, model, repo, issue label, and task type
-- track per-run fields: PR created, tests passed, no-change, validation failed,
-  runtime, and estimated cost
-- group runs by same-issue comparison groups so several model attempts on the
-  same issue can be compared directly
-- compute per-model metrics: PR-created rate, test-pass rate, no-change rate,
-  failure rate, median runtime, and estimated cost per successful PR
-- consume the test-delta table from `summary.txt` (added in #26) as a
-  structured quality signal — which model broke the fewest tests
-- output a compact scorecard to stdout and optionally write a JSON report for
-  dashboard integration
-- integrate scorecard output into the status dashboard as a model comparison
-  tab (coordinate with dashboard work in #7)
-- support filtering by repo, model, date range, and issue label
-- add tests for scorecard aggregation, missing fields, single-run groups, and
-  same-issue comparison output
-- do not expose API keys, provider auth files, or raw prompts in benchmark
-  output
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 31. Implement agent/triage — automated issue classification and routing
-
-Labels: `kind/automation`, `theme/workflow`, `theme/github`, `agent/triage`
-
-Priority: `2`
-
-The triage agent classifies incoming issues and routes them to the correct
-agent role. Currently `create_backlog_issues.py` creates issues with labels
-from a static list, and `label_migration.py` updates existing issues manually.
-Neither applies the full label taxonomy automatically nor routes issues to an
-agent based on their content and labels. The triage agent closes this gap.
-
-Suggested scope:
-- add a `triage_issue.py` script (or extend `create_backlog_issues.py`) that
-  reads an issue body and title and applies the full multi-dimensional taxonomy:
-  `theme/*`, `area/*`, `kind/*`, `state/*`, `priority/*`, and `agent/*`
-- use keyword matching, file-path hints in the issue body (`Touches:`), and
-  label presence to assign one or more `agent/*` labels automatically
-- produce a dry-run output that shows proposed labels before applying them, and
-  require `--apply` to write labels to GitHub
-- integrate with the backlog generator so new backlog entries get labels at
-  creation time, not as a separate migration step
-- support batch re-triage of existing unlabeled or partially labeled issues via
-  a `--retriage` flag
-- add tests for taxonomy assignment, file-hint routing, `agent/*` label
-  selection, dry-run output, and batch re-triage with already-labeled issues
-- do not read or expose secret files such as `.env`, provider auth files, or
-  API keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 32. Implement agent/cost — dedicated cost tracking and budget alert agent
-
-Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `agent/cost`
-
-Priority: `2`
-
-Cost information exists in run reports and the dashboard but is scattered and
-passive. There is no agent that aggregates costs across runs, enforces budget
-ceilings, or proactively recommends cheaper providers when a budget threshold is
-approached. The cost agent makes budget constraints explicit and actionable.
-
-Suggested scope:
-- add a `cost_agent.py` script (or extend `solver_reporting.py`) that reads all
-  run reports in a configurable time window and aggregates cost by provider,
-  model, repo, and issue type
-- support configurable daily and per-run budget ceilings; emit a structured
-  warning when a ceiling would be exceeded before starting a new run
-- surface an escalation recommendation when the cheapest model that historically
-  solves an issue type is not the model currently configured
-- write a structured cost summary to `reports/cost/` after each batch or
-  overnight run, including: total cost, per-model breakdown, budget consumed,
-  remaining budget, and cheapest-model recommendation for the next run
-- add a cost section to the status dashboard that shows the current period
-  spend, per-model breakdown, and budget status at a glance
-- integrate with `solve_issues_batch.py` and `run_overnight.py` so budget
-  warnings appear before new solver jobs are queued
-- add tests for cost aggregation, budget ceiling logic, empty reports,
-  partial cost data, and dashboard rendering with missing or zero-cost runs
-- do not read or expose API keys, provider auth files, or secret files
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 33. Implement agent/research — structured research report framework
-
-Labels: `kind/automation`, `theme/research`, `theme/workflow`, `agent/research`
-
-Priority: `2`
-
-Research work is currently ad-hoc: `analyze_repos.py` exists for repository
-analysis but there is no structured framework for processing `agent/research`
-labeled issues, collecting evidence, or producing comparable research reports.
-Research findings are not logged in a reusable format, so the same questions
-get re-investigated from scratch.
-
-Suggested scope:
-- define a research issue template with fields: research question, scope,
-  deliverables, evidence sources, and success criteria
-- add a `research_agent.py` script that processes issues labeled `agent/research`
-  and produces a structured markdown report under `docs/research/`
-- support at minimum: web search via `gh` and repository inspection via
-  `analyze_repos.py` as evidence sources
-- define an evidence log schema with fields: source, claim, confidence, date,
-  and link; write evidence logs to `docs/research/evidence/`
-- add a `--dry-run` mode that shows which issues would be processed and what
-  evidence sources would be queried without making changes
-- surface research reports and evidence logs in the status dashboard under a
-  Research tab
-- add tests for report template rendering, evidence log schema validation, issue
-  selection by label, and dry-run output
-- do not expose API keys, provider auth files, or secret files in research
-  output or evidence logs
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 34. Implement agent/planner — idea-to-issue shaping pipeline
-
-Labels: `kind/automation`, `theme/backlog`, `theme/workflow`, `agent/planner`
-
-Priority: `2`
-
-The planner agent bridges raw ideas and ready implementation issues. Currently
-`NEXT_BACKLOG.md` entries go directly to `create_backlog_issues.py` with no
-intermediate shaping, scoring, or readiness gate. Ideas and ready issues live
-in the same file with no automated prioritization beyond manually set priority
-numbers. The planner agent introduces a deliberate shaping layer.
-
-Suggested scope:
-- define backlog entry states: `idea`, `candidate`, `shaped`, `ready`,
-  `generated`; add a `state:` field to `NEXT_BACKLOG.md` entries (coordinate
-  with the schema proposed in #22)
-- add a `planner_agent.py` script that reads `NEXT_BACKLOG.md`, scores each
-  entry using configurable criteria (priority, estimated complexity, dependency
-  on open issues, label coverage), and outputs a ranked candidate list
-- only entries in `ready` state should be eligible for `create_backlog_issues.py`
-  to generate GitHub issues; block `idea` and `candidate` entries from automatic
-  issue creation
-- support a `--shape` mode that takes a `candidate` entry and prompts the solver
-  worker to refine its scope, add acceptance criteria, and assign labels before
-  advancing it to `ready`
-- write a daily planning summary to `reports/planning/` with: entry counts per
-  state, top-5 ready candidates, blocked entries, and suggested next action
-- add tests for state transitions, scoring logic, readiness gate enforcement,
-  and planning summary output with missing or malformed entries
-- do not read or expose secret files such as `.env`, provider auth files, or API
-  keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
-## 35. Implement agent/reviewer — automated PR review and rework detection
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `agent/reviewer`
-
-Priority: `2`
-
-Generated PRs are currently merged after a manual review with no structured
-quality gate from the solver side. The reviewer agent provides an automated
-first-pass review of AI-generated PRs: it checks for correctness signals,
-detects rework indicators, and creates a follow-up issue when the PR should not
-be merged as-is. This is distinct from #19 (rework workflow) and #26
-(post-solve tests), which cover specific sub-tasks the reviewer coordinates.
-
-Suggested scope:
-- add a `reviewer_agent.py` script that, given a PR number, fetches the diff,
-  test results, and run report, and produces a structured review summary
-- define review checks: post-solve test delta (from #26), diff size against
-  issue scope, touched files vs `Touches:` hint, no-change detection, and
-  obvious regression signals such as removed tests or weakened assertions
-- output a verdict: `approve`, `request-changes`, or `needs-rework` with a
-  brief rationale and a checklist of specific concerns
-- when verdict is `needs-rework`, create a GitHub issue using the rework
-  workflow from #19 with the reviewer's checklist as the issue body
-- post the review summary as a PR comment when `--comment` is passed, or print
-  to stdout for manual inspection by default
-- integrate with `solve_issues.py` via a `--auto-review` flag that runs the
-  reviewer after a successful PR is created
-- add tests for each verdict, the rework issue creation flow, PR comment
-  formatting, and edge cases such as empty diff or missing run report
-- do not expose API keys, provider auth files, or secret files in PR comments
-  or review output
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
+---
 ## 36. Persist dashboard repo, tab and agent selection in URL parameters
+
 
 Labels: `kind/feature`, `theme/dashboard`, `theme/quality`, `agent/solver`
 
@@ -796,7 +468,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
 ## 37. Free OpenCode models full integration and evaluation
+
 
 Labels: `kind/feature`, `theme/workflow`, `agent/solver`, `priority/1`
 
@@ -837,7 +511,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
 ## 38. Parallel Solver Ensemble – mehrere Modelle auf ein Issue, beste Lösung gewinnt
+
 
 Labels: `kind/feature`, `theme/workflow`, `agent/solver`, `priority/1`
 
@@ -884,7 +560,391 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
+## Priority 2
+
+## 6. Support low-code and non-code repositories without Python assumptions
+
+
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `kind/analysis`
+
+Priority: `2`
+
+The solver should handle repositories that contain little or no application
+code, such as documentation, research notes, prompt collections, data-only
+repositories, planning repos, or mixed-language projects. Python must not be
+treated as mandatory unless the target repo actually uses Python.
+
+Suggested scope:
+- detect repository type and dominant stack before selecting checks or worker
+  instructions
+- support low-code/no-code repo classes such as docs-only, research, data,
+  templates, configuration, and project-management repositories
+- choose validation commands based on detected files, for example markdown
+  checks for docs, R checks for R repos, npm checks for JS repos, and no forced
+  Python tests when no Python project exists
+- make no-op or documentation-only changes first-class successful outcomes when
+  they satisfy the issue
+- show the detected repo type and selected validation plan in run reports
+- add tests for Python, R, docs-only, and empty/minimal repository fixtures
+- do not read or expose secret files such as `.env`, provider auth files, or API
+  keys
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 15. Add vertical process quality analysis and periodic workflow retrospective
+
+
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/dashboard`
+
+Priority: `2`
+
+The solver should not only move forward through the backlog but periodically
+step back and assess quality at every stage of its own workflow. After a
+configurable number of solved issues per repository, or on demand, it should
+analyse each workflow step — analysis, issue creation, worker execution,
+validation, commit, PR creation, and review — and surface patterns, regressions,
+and improvement opportunities before the next batch starts.
+
+A periodic comparison with structurally similar open-source solver projects
+should also be included so the project does not optimise in isolation.
+
+Suggested scope:
+- define the workflow steps to be assessed: repo analysis, issue creation,
+  worker execution (per provider), validation, commit/push, PR creation,
+  and post-merge cleanup
+- collect per-step quality signals from existing run reports: success rate,
+  no-change rate, failure mode distribution, median runtime, retry count,
+  and open vs closed PR ratio per step and per provider
+- trigger a retrospective automatically after a configurable number of solved
+  issues per repository (for example every 10 issues), and expose it as an
+  explicit `--retrospective` mode or standalone script
+- produce a structured retrospective report per repository with findings per
+  workflow step, trend direction (improving, stable, degrading), and suggested
+  next actions such as retry threshold adjustment, provider swap, or backlog
+  reprioritisation
+- include a periodic comparison with structurally comparable open-source
+  AI-assisted issue solver projects to avoid local optimisation traps; record
+  comparable metrics, approach differences, and transferable ideas
+- surface retrospective findings in the dashboard and overnight summaries so
+  they are visible without running a separate command
+- keep retrospective reports free of secrets, API keys, provider auth contents,
+  and raw prompts
+- add tests for retrospective triggering logic, per-step signal collection,
+  trend detection, and report formatting with missing or partial run data
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 25. Decompose oversized issues into sub-issues automatically
+
+
+Labels: `kind/automation`, `theme/workflow`, `theme/github`, `theme/quality`
+
+Priority: `2`
+
+When an issue is too large or vague, the solver often fails or produces a
+large, hard-to-review PR. The better strategy: the solver recognises when an
+issue should be split and creates concrete sub-issues instead of attempting a
+monolithic fix.
+
+Suggested scope:
+- add complexity heuristics to `solve_issues.py` that flag an issue as too
+  large: body longer than ~1500 characters, more than three distinct file areas
+  mentioned, labels such as `epic`, `large`, or `refactor`, the AI worker
+  explicitly stating that multiple steps are needed, or no clear `Touches:`
+  hint in the body
+- add a `--decompose` flag that sends the issue to the AI with a prompt asking
+  for 3–5 concrete, independently solvable sub-issues returned as JSON
+- add an `--auto-decompose` flag that applies the same logic automatically when
+  complexity heuristics are triggered
+- create sub-issues via the GitHub Issues API with title
+  `[Sub] <parent-title> — Part N`, a body describing the sub-task with
+  `Parent: #<number>` reference, and labels `ai-sub-issue` and `ai-solve`
+- add a comment to the parent issue linking all generated sub-issues
+- add tests for complexity heuristic thresholds, sub-issue JSON parsing, and
+  parent-issue comment creation
+- do not expose API keys, provider auth files, or GitHub tokens in sub-issue
+  bodies or comments
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 26. Run tests after each solver fix and include the result in the PR body
+
+
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`
+
+Priority: `2`
+
+Inspired by OpenHands and SWE-agent, both of which validate fixes internally
+before creating a PR. This entry applies the same principle using the existing
+test setup instead of requiring external infrastructure.
+
+Tests already run as a preflight check before the solver. But after the fix is
+committed, there is currently no check whether the new code still passes the
+test suite. A solver that fixes a bug but breaks another test lands in the PR
+undetected. The AI branch should be tested after the commit and the result
+should flow into the run report and PR body.
+
+Suggested scope:
+- add a `--post-solve-tests` flag to `solve_issues.py` that runs the test
+  suite on the AI branch after a successful commit
+- accept a `--test-command` override, defaulting to the existing preflight test
+  command
+- measure a baseline from the preflight run and compare outcomes: all green,
+  unchanged, or new failures
+- create the PR as a normal PR when all tests pass, with a warning note when
+  results are unchanged, and as a draft PR with an explicit failure block when
+  new failures appear
+- include a compact test-delta table in `summary.txt` and the PR body, for
+  example: passed before / passed after / delta
+- feed the test delta into the provider scorecard so cross-model comparisons
+  can show which model breaks the fewest tests
+- add tests for each outcome: all green, unchanged, new failures, and draft PR
+  creation
+- do not expose API keys, provider auth files, or full test output in the PR
+  body
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 28. Track solver success rate with a benchmark script
+
+
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/provider`
+
+Priority: `2`
+
+Inspired by SWE-Bench, which made it possible to compare AI coding agents on
+a standardised benchmark. The goal here is a lightweight internal equivalent:
+a `benchmark_solver.py` script that aggregates run reports into a comparable
+success-rate view per model, provider, and issue type — without requiring an
+external evaluation harness.
+
+The test-delta data from entry #26 (post-solve test validation) is the primary
+input for cross-model comparisons.
+
+Suggested scope:
+- add `scripts/benchmark_solver.py` that reads run reports from `reports/runs/`
+  and aggregates outcomes by provider, model, repo, issue label, and task type
+- track per-run fields: PR created, tests passed, no-change, validation failed,
+  runtime, and estimated cost
+- group runs by same-issue comparison groups so several model attempts on the
+  same issue can be compared directly
+- compute per-model metrics: PR-created rate, test-pass rate, no-change rate,
+  failure rate, median runtime, and estimated cost per successful PR
+- consume the test-delta table from `summary.txt` (added in #26) as a
+  structured quality signal — which model broke the fewest tests
+- output a compact scorecard to stdout and optionally write a JSON report for
+  dashboard integration
+- integrate scorecard output into the status dashboard as a model comparison
+  tab (coordinate with dashboard work in #7)
+- support filtering by repo, model, date range, and issue label
+- add tests for scorecard aggregation, missing fields, single-run groups, and
+  same-issue comparison output
+- do not expose API keys, provider auth files, or raw prompts in benchmark
+  output
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 31. Implement agent/triage — automated issue classification and routing
+
+
+Labels: `kind/automation`, `theme/workflow`, `theme/github`, `agent/triage`
+
+Priority: `2`
+
+The triage agent classifies incoming issues and routes them to the correct
+agent role. Currently `create_backlog_issues.py` creates issues with labels
+from a static list, and `label_migration.py` updates existing issues manually.
+Neither applies the full label taxonomy automatically nor routes issues to an
+agent based on their content and labels. The triage agent closes this gap.
+
+Suggested scope:
+- add a `triage_issue.py` script (or extend `create_backlog_issues.py`) that
+  reads an issue body and title and applies the full multi-dimensional taxonomy:
+  `theme/*`, `area/*`, `kind/*`, `state/*`, `priority/*`, and `agent/*`
+- use keyword matching, file-path hints in the issue body (`Touches:`), and
+  label presence to assign one or more `agent/*` labels automatically
+- produce a dry-run output that shows proposed labels before applying them, and
+  require `--apply` to write labels to GitHub
+- integrate with the backlog generator so new backlog entries get labels at
+  creation time, not as a separate migration step
+- support batch re-triage of existing unlabeled or partially labeled issues via
+  a `--retriage` flag
+- add tests for taxonomy assignment, file-hint routing, `agent/*` label
+  selection, dry-run output, and batch re-triage with already-labeled issues
+- do not read or expose secret files such as `.env`, provider auth files, or
+  API keys
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 32. Implement agent/cost — dedicated cost tracking and budget alert agent
+
+
+Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `agent/cost`
+
+Priority: `2`
+
+Cost information exists in run reports and the dashboard but is scattered and
+passive. There is no agent that aggregates costs across runs, enforces budget
+ceilings, or proactively recommends cheaper providers when a budget threshold is
+approached. The cost agent makes budget constraints explicit and actionable.
+
+Suggested scope:
+- add a `cost_agent.py` script (or extend `solver_reporting.py`) that reads all
+  run reports in a configurable time window and aggregates cost by provider,
+  model, repo, and issue type
+- support configurable daily and per-run budget ceilings; emit a structured
+  warning when a ceiling would be exceeded before starting a new run
+- surface an escalation recommendation when the cheapest model that historically
+  solves an issue type is not the model currently configured
+- write a structured cost summary to `reports/cost/` after each batch or
+  overnight run, including: total cost, per-model breakdown, budget consumed,
+  remaining budget, and cheapest-model recommendation for the next run
+- add a cost section to the status dashboard that shows the current period
+  spend, per-model breakdown, and budget status at a glance
+- integrate with `solve_issues_batch.py` and `run_overnight.py` so budget
+  warnings appear before new solver jobs are queued
+- add tests for cost aggregation, budget ceiling logic, empty reports,
+  partial cost data, and dashboard rendering with missing or zero-cost runs
+- do not read or expose API keys, provider auth files, or secret files
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 33. Implement agent/research — structured research report framework
+
+
+Labels: `kind/automation`, `theme/research`, `theme/workflow`, `agent/research`
+
+Priority: `2`
+
+Research work is currently ad-hoc: `analyze_repos.py` exists for repository
+analysis but there is no structured framework for processing `agent/research`
+labeled issues, collecting evidence, or producing comparable research reports.
+Research findings are not logged in a reusable format, so the same questions
+get re-investigated from scratch.
+
+Suggested scope:
+- define a research issue template with fields: research question, scope,
+  deliverables, evidence sources, and success criteria
+- add a `research_agent.py` script that processes issues labeled `agent/research`
+  and produces a structured markdown report under `docs/research/`
+- support at minimum: web search via `gh` and repository inspection via
+  `analyze_repos.py` as evidence sources
+- define an evidence log schema with fields: source, claim, confidence, date,
+  and link; write evidence logs to `docs/research/evidence/`
+- add a `--dry-run` mode that shows which issues would be processed and what
+  evidence sources would be queried without making changes
+- surface research reports and evidence logs in the status dashboard under a
+  Research tab
+- add tests for report template rendering, evidence log schema validation, issue
+  selection by label, and dry-run output
+- do not expose API keys, provider auth files, or secret files in research
+  output or evidence logs
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 34. Implement agent/planner — idea-to-issue shaping pipeline
+
+
+Labels: `kind/automation`, `theme/backlog`, `theme/workflow`, `agent/planner`
+
+Priority: `2`
+
+The planner agent bridges raw ideas and ready implementation issues. Currently
+`NEXT_BACKLOG.md` entries go directly to `create_backlog_issues.py` with no
+intermediate shaping, scoring, or readiness gate. Ideas and ready issues live
+in the same file with no automated prioritization beyond manually set priority
+numbers. The planner agent introduces a deliberate shaping layer.
+
+Suggested scope:
+- define backlog entry states: `idea`, `candidate`, `shaped`, `ready`,
+  `generated`; add a `state:` field to `NEXT_BACKLOG.md` entries (coordinate
+  with the schema proposed in #22)
+- add a `planner_agent.py` script that reads `NEXT_BACKLOG.md`, scores each
+  entry using configurable criteria (priority, estimated complexity, dependency
+  on open issues, label coverage), and outputs a ranked candidate list
+- only entries in `ready` state should be eligible for `create_backlog_issues.py`
+  to generate GitHub issues; block `idea` and `candidate` entries from automatic
+  issue creation
+- support a `--shape` mode that takes a `candidate` entry and prompts the solver
+  worker to refine its scope, add acceptance criteria, and assign labels before
+  advancing it to `ready`
+- write a daily planning summary to `reports/planning/` with: entry counts per
+  state, top-5 ready candidates, blocked entries, and suggested next action
+- add tests for state transitions, scoring logic, readiness gate enforcement,
+  and planning summary output with missing or malformed entries
+- do not read or expose secret files such as `.env`, provider auth files, or API
+  keys
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+## 35. Implement agent/reviewer — automated PR review and rework detection
+
+
+Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `agent/reviewer`
+
+Priority: `2`
+
+Generated PRs are currently merged after a manual review with no structured
+quality gate from the solver side. The reviewer agent provides an automated
+first-pass review of AI-generated PRs: it checks for correctness signals,
+detects rework indicators, and creates a follow-up issue when the PR should not
+be merged as-is. This is distinct from #19 (rework workflow) and #26
+(post-solve tests), which cover specific sub-tasks the reviewer coordinates.
+
+Suggested scope:
+- add a `reviewer_agent.py` script that, given a PR number, fetches the diff,
+  test results, and run report, and produces a structured review summary
+- define review checks: post-solve test delta (from #26), diff size against
+  issue scope, touched files vs `Touches:` hint, no-change detection, and
+  obvious regression signals such as removed tests or weakened assertions
+- output a verdict: `approve`, `request-changes`, or `needs-rework` with a
+  brief rationale and a checklist of specific concerns
+- when verdict is `needs-rework`, create a GitHub issue using the rework
+  workflow from #19 with the reviewer's checklist as the issue body
+- post the review summary as a PR comment when `--comment` is passed, or print
+  to stdout for manual inspection by default
+- integrate with `solve_issues.py` via a `--auto-review` flag that runs the
+  reviewer after a successful PR is created
+- add tests for each verdict, the rework issue creation flow, PR comment
+  formatting, and edge cases such as empty diff or missing run report
+- do not expose API keys, provider auth files, or secret files in PR comments
+  or review output
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
 ## 39. Periodic documentation benchmark with free OpenCode models
+
 
 Labels: `kind/automation`, `kind/docs`, `theme/workflow`, `theme/provider`, `priority/2`
 
@@ -943,7 +1003,9 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
+---
 ## 40. Add compact growing progress heartbeat for long-running solver jobs
+
 
 Labels: `kind/feature`, `theme/workflow`, `agent/supervisor`, `priority/2`
 
@@ -978,46 +1040,4 @@ Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
 
-## Done — Skill: model-selection (foundation for routing)
-
-Closed via skill conversion. `scripts/model_selection.py` is now exposed
-as a reusable Codex Skill at
-[`.agents/skills/model-selection/`](.agents/skills/model-selection/SKILL.md).
-The skill accepts `--repo-type`, `--language`, `--task-type`, `--issue`,
-`--issue-text`, `--labels`, `--touched-files`, `--max-cost-tier`,
-`--history` and `--manual-model`, and returns a stable JSON or text
-result with `model`, `category`, `risk`, `cost_tier`, `fallback_plan`,
-`inputs` and `routing`. The skill is the foundation for the future
-routing rules referenced throughout this backlog (see #37, #38, #39,
-and the language- and task-type-aware heuristics discussed in #16).
-
-Touches: `.agents/skills/model-selection/`,
-         `scripts/model_selection.py` (unchanged), `README.md`
-
-## Done — Repo-Profile: GitHub-first, local-fallback (#16, #188, #213)
-
-Closed via the provider-neutral `RepoProfile` abstraction. The solver now
-asks `build_repo_profile()` for a profile whenever a run starts:
-
-- `GitHubRepoProfileProvider` is the primary source: it pulls language byte
-  shares from `/repos/{owner}/{repo}/languages`, repo metadata for the
-  default branch / archived / private / size / description, topics,
-  workflows, open PRs and open issues, plus a recursive git tree filtered
-  through `is_secret_path()`.
-- `LocalRepoProfileProvider` is the thin offline fallback that walks the
-  checked-out files and uses marker heuristics (`DESCRIPTION`, `renv.lock`,
-  `app.R`, `pyproject.toml`, `package.json`, …) without ever reading
-  `.env`, `auth.json`, or other secret files.
-- `build_repo_profile()` selects the provider via `select_profile_provider`
-  (GitHub-first, but switches to local when `offline=True` or no token is
-  configured) and transparently falls back to local on transient GitHub
-  errors so solver runs keep moving.
-- `solve_issues.py` uses the resulting `repo_kind` (e.g. `python`, `r`,
-  `node`, `docs-only`) for the `auto_model` path instead of hard-coded
-  `python`; the serialized profile is persisted to `metadata.json` and
-  `summary.txt` of every run report and is never allowed to leak secret
-  file paths.
-
-Touches: `scripts/repo_profile.py`, `scripts/solver_reporting.py`,
-         `scripts/solve_issues.py`, `tests/test_repo_profile.py`,
-         `tests/test_solver_reporting.py`
+---

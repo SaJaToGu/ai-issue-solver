@@ -45,7 +45,7 @@ Kurze englische Fachbegriffe sind okay, wenn sie ueblich sind, zum Beispiel
 
 Folgende Inhalte duerfen Englisch bleiben oder neu auf Englisch verfasst werden:
 
-- `docs/BACKLOG.md` und `docs/NEXT_BACKLOG.md`
+- `docs/BACKLOG.md` (historisch) und `docs/BACKLOG/open.md` (aktiv)
 - GitHub-Issue-Bodies, Acceptance Criteria und technische Aufgabenlisten
 - Test-Dateinamen, Testnamen und Assertions
 - Code-Kommentare, wenn sie technische Details erklaeren
@@ -66,7 +66,7 @@ may stay English.
 | Workflow-Dokumentation | Deutsch | `docs/WORKFLOW.md` |
 | CLI- und Dashboard-Texte | Deutsch | Status, Fehler, Buttons |
 | GitHub-Issues fuer Worker | Englisch | Issue-Bodies, Acceptance Criteria |
-| Backlog und Roadmap | Englisch | `docs/BACKLOG.md`, `docs/NEXT_BACKLOG.md` |
+| Backlog und Roadmap | Englisch | `docs/BACKLOG.md`, `docs/BACKLOG/open.md` |
 | Tests | Englisch | Testnamen, Assertions |
 | Code-Kommentare | Englisch | technische Implementierungsnotizen |
 

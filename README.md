@@ -169,7 +169,7 @@ Morpheus-Style Workflow komfortabler werden:
 - offene PRs und Issues nach einem Lauf automatisch zusammenfassen
 - gemergte AI-PRs nach dem Review sicher bereinigen
 
-Der geplante Backlog dafür liegt in [docs/NEXT_BACKLOG.md](docs/NEXT_BACKLOG.md).
+Der geplante Backlog dafür liegt in [docs/BACKLOG/open.md](docs/BACKLOG/open.md).
 
 ---
 
@@ -219,7 +219,7 @@ ai-issue-solver/
 │   └── .gitkeep
 ├── docs/
 │   ├── BACKLOG.md               # Erster Projekt-Backlog
-│   ├── NEXT_BACKLOG.md          # Nächste Ausbaustufe
+│   ├── docs/BACKLOG/open.md          # Nächste Ausbaustufe
 │   ├── WORKFLOW.md              # Detaillierter Workflow
 │   ├── SETUP_AIDER.md           # Aider-Einrichtung
 │   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi

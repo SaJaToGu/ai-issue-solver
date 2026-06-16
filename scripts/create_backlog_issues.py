@@ -308,8 +308,8 @@ def print_issue_preview(repo: str, issue: dict) -> None:
 def main() -> int:
     print_banner("BACKLOG-ISSUES ERSTELLEN")
 
-    parser = argparse.ArgumentParser(description="GitHub Issues aus docs/BACKLOG.md erstellen")
-    parser.add_argument("--backlog", default="docs/BACKLOG.md", help="Pfad zur Backlog-Datei")
+    parser = argparse.ArgumentParser(description="GitHub Issues aus dem Open-Backlog erstellen")
+    parser.add_argument("--backlog", default="docs/BACKLOG/open.md", help="Pfad zur Backlog-Datei")
     parser.add_argument("--repo", default="ai-issue-solver", help="Ziel-Repo ohne Owner")
     parser.add_argument("--owner", help="GitHub Owner, sonst GITHUB_USER aus config/.env")
     parser.add_argument("--apply", action="store_true", help="Echte GitHub-Issues erstellen")

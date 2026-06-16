@@ -40,7 +40,7 @@ bash .skills/plan-issue-batches/helpers/run_plan.sh \
 ```text
 Welle 1:
   #34 - Implement agent/planner — idea-to-issue shaping pipeline
-    Touches: scripts/planner_agent.py, docs/NEXT_BACKLOG.md
+    Touches: scripts/planner_agent.py, docs/BACKLOG/open.md
 
   #22 - Research backlog shaping frameworks before turning ideas into issues
     Touches: docs/, README.md

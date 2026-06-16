@@ -6,8 +6,8 @@ Identifies backlog entries whose matching GitHub issues are closed and
 provides options to remove or archive them from the backlog file.
 
 Usage:
-    python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md
-    python scripts/cleanup_backlog.py --backlog docs/NEXT_BACKLOG.md --apply --confirm-remove
+    python scripts/cleanup_backlog.py --backlog docs/BACKLOG/open.md
+    python scripts/cleanup_backlog.py --backlog docs/BACKLOG/open.md --apply --confirm-remove
 """
 
 from __future__ import annotations
@@ -220,8 +220,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--backlog",
-        default="docs/NEXT_BACKLOG.md",
-        help="Pfad zur Backlog-Datei (Standard: docs/NEXT_BACKLOG.md)",
+        default="docs/BACKLOG/open.md",
+        help="Pfad zur Backlog-Datei (Standard: docs/BACKLOG/open.md)",
     )
     parser.add_argument(
         "--repo",

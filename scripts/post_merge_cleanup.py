@@ -538,7 +538,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--backlog",
-        default="docs/NEXT_BACKLOG.md",
+        default="docs/BACKLOG/open.md",
         help="Backlog-Datei für --cleanup-backlog",
     )
     args = parser.parse_args()
