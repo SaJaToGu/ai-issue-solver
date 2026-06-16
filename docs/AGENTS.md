@@ -2,13 +2,14 @@
 
 This document defines the conceptual agent roles for the `ai-issue-solver`
 project. It was rewritten as part of the **Release 0.7.0 information
-architecture audit** (issue #309).
+architecture audit** (issue #309) and updated again with the **0.7.0 agent
+architecture decisions** recorded at the bottom of this file.
 
 For the **operational, label-based agent routing** that GitHub issues use
 today (`agent/triage`, `agent/solver`, `agent/reviewer`, etc.), see
-[`label_taxonomy.md`](label_taxonomy.md). The 7 label-based agents there map
-roughly — but not 1:1 — onto the 4 conceptual roles below. The mapping is
-under review (see "Pending Review for 0.7.0" below).
+[`label_taxonomy.md`](label_taxonomy.md). The 7 label-based agents there
+map roughly — but not 1:1 — onto the conceptual roles below. The mapping
+lives in `config/role_routing.yaml` (planned for 0.7.0).
 
 For the current release focus and open questions, see
 [`CURRENT_CONTEXT.md`](CURRENT_CONTEXT.md).
@@ -18,7 +19,7 @@ For the process we run after each release to revisit this document, see
 
 ---
 
-## Planner
+## Planner (LLM agent)
 
 **Purpose:** Determine what should happen next.
 
@@ -29,7 +30,7 @@ For the process we run after each release to revisit this document, see
 - Issue generation
 - Issue decomposition
 - Context curation
-- Promotion of important findings
+- Architecture decisions (human-in-the-loop)
 
 **Modes:**
 
@@ -37,6 +38,11 @@ For the process we run after each release to revisit this document, see
 - `backlog-planning`
 - `issue-splitting`
 - `roadmap-planning`
+
+**Note:** Knowledge lifecycle actions (`keep` / `promote` / `archive` /
+`delete`) used to be Planner responsibilities. As of the 0.7.0 decisions,
+they moved to the **Knowledge Manager** (a deterministic workflow, not
+an LLM agent).
 
 ---
 
@@ -57,29 +63,73 @@ For the process we run after each release to revisit this document, see
 - `resume-issue`
 - `rework-issue`
 
+**Settled principle (from 0.7.0 review):** Solver gets minimal context —
+the issue, the touched files, the relevant skill. Nothing else. Smaller
+context, cheaper model, faster runs.
+
 ---
 
-## Reviewer
+## Reviewer (subtypes)
 
-**Purpose:** Evaluate proposed solutions.
+The Reviewer role is split into three sub-roles as of the 0.7.0 decisions.
+Each subtype has its own prompt, its own context, and (eventually) its own
+model in `config/role_routing.yaml`.
+
+### Code Reviewer
+
+**Purpose:** Validate code changes and tests.
 
 **Responsibilities:**
 
-- Validate implementation
-- Validate tests
-- Check architectural compliance
-- Suggest improvements
+- Code review of the PR diff
+- Test coverage check
+- Lint / type / style validation
+- Logic correctness check
 
 **Modes:**
 
-- `review-pr`
-- `architecture-review`
+- `review-pr-code`
+- `review-test-coverage`
+
+### Architecture Reviewer
+
+**Purpose:** Validate architectural compliance and challenge assumptions.
+
+**Responsibilities:**
+
+- Architecture review of the PR
+- Outside-in review (does the change fit the larger direction?)
+- Assumption check
+- Strategic recommendation
+
+**Modes:**
+
+- `review-architecture`
+- `review-outside-in`
+
+### Documentation Reviewer
+
+**Purpose:** Keep documentation in sync with code.
+
+**Responsibilities:**
+
+- Documentation completeness check
+- Documentation accuracy check
+- Cross-reference validation (links, anchors, examples)
+
+**Modes:**
+
+- `review-docs-completeness`
+- `review-docs-accuracy`
 
 ---
 
-## Watchdog
+## Watchdog (workflow, not an agent)
 
-**Purpose:** Monitor execution.
+**Status:** The Watchdog is **not** an LLM agent as of the 0.7.0
+decisions. The responsibilities below are deterministic; a cron-driven
+script is the right shape. LLM-based escalation is optional and used
+only when the deterministic checks detect anomalies that need explanation.
 
 **Responsibilities:**
 
@@ -89,11 +139,42 @@ For the process we run after each release to revisit this document, see
 - Resume recommendations
 - Stop recommendations
 
-**Modes:**
+**Implementation shape:**
 
-- `cost-guard`
-- `progress-monitor`
-- `stuck-detection`
+```
+Watchdog
+├── scripts/watchdog.py        # deterministic checks
+├── cron / nightly run         # scheduling
+└── optional LLM escalation    # only when anomaly is detected
+```
+
+---
+
+## Knowledge Manager (deterministic workflow)
+
+**Status:** New role as of the 0.7.0 decisions. Not an LLM agent — a
+deterministic script with human-in-the-loop approval for destructive
+actions.
+
+**Purpose:** Manage the lifecycle of project knowledge — keep, promote,
+archive, delete.
+
+**Responsibilities:**
+
+- Detect outdated documents (mtime + reference analysis)
+- Run `archive` automatically for items that match the archive rules
+- Require human approval for `promote` (move to permanent knowledge)
+  and `delete` (irreversible)
+- Audit `docs/` and skills on a schedule
+
+**Implementation shape:**
+
+```
+Knowledge Manager
+├── scripts/knowledge_manager.py    # lifecycle engine
+├── config/lifecycle_rules.yaml     # what counts as outdated
+└── human review queue              # for promote / delete
+```
 
 ---
 
@@ -116,32 +197,30 @@ For the process we run after each release to revisit this document, see
 
 ---
 
-## Pending Review for 0.7.0
+## Decisions for 0.7.0 (resolved, replacing the prior "Pending Review")
 
-The 0.7.0 release-review discussion raised the following open questions
-about the roles above. They are **not yet decided** and may change before
-0.7.0 ships.
+The following five decisions were made during the 0.7.0 planning
+discussion and resolved the questions that were open in the audit
+deliverable. Each is now a follow-up **issue** for implementation.
 
-- **Watchdog may not be an agent.** The watchdog responsibilities above
-  (cost monitoring, progress monitoring, stuck detection) are largely
-  deterministic. A cron-driven skill or script is probably a better fit
-  than an LLM agent. A final decision is pending.
-- **Planner may need to be split.** The planner today does release
-  planning, context curation, knowledge promotion, and knowledge archiving.
-  A future split into **Planning** + **Knowledge Manager** is plausible;
-  the knowledge-management side is deterministic and would also belong
-  in a script/cron rather than an LLM agent.
-- **Reviewer subtypes.** The current reviewer role may need subtypes
-  (Code Reviewer, Architecture Reviewer, Documentation Reviewer) to
-  match the model-routing config and to keep the reviewer prompt focused.
-- **Label-based vs conceptual agents.** The 7 `agent/*` GitHub labels
-  (Triage, Supervisor, Cost, Research, Planner, Solver, Reviewer) are an
-  **operational** view that predates this document. They are not
-  1:1 with the 4 conceptual roles. A clean mapping (probably via
-  `config/role_routing.yaml`) is on the 0.7.0 backlog.
-- **Solver stays "dumb".** The 0.7.0 review confirmed: solver should
-  get the issue, the touched files, the relevant skill — nothing else.
-  Smaller context, cheaper model, faster runs.
+| # | Decision | Follow-up issue |
+|---|---|---|
+| 1 | **Watchdog** is a deterministic workflow (`scripts/watchdog.py` + cron), not an LLM agent. Optional LLM escalation only on anomalies. | #TBD: Watchdog as deterministic workflow |
+| 2 | **Planner** is split: Planner (LLM) handles roadmap, issue creation, prioritization, architecture decisions. **Knowledge Manager** (deterministic script) handles `keep` / `promote` / `archive` / `delete`. | #TBD: Planner vs Knowledge Manager split |
+| 3 | **Reviewer** is split into **Code Reviewer**, **Architecture Reviewer**, **Documentation Reviewer**. | #TBD: Reviewer subtypes |
+| 4 | **`config/role_routing.yaml`** is the canonical place to map role → provider → model → context. Implementation requires verified OpenRouter model slugs and per-role budget fields. | #TBD: role_routing.yaml draft |
+| 5 | **Skill folder split** (`.agents/skills/` + `.skills/`) is unified into one canonical path. The audit documented 8 skills; the unified structure maps them, it does not invent new skills. | #TBD: Skill folder unification |
+
+The skill list to be unified, with their current locations:
+
+- `model-selection` (`.agents/skills/`)
+- `run-overnight` (`.agents/skills/`)
+- `solve-issues` (`.agents/skills/`)
+- `solver-reporting` (`.agents/skills/`)
+- `git-cleanup` (`.skills/`)
+- `plan-issue-batches` (`.skills/`)
+- `recovery` (`.skills/`)
+- `rework` (`.skills/`)
 
 ---
 
@@ -160,13 +239,17 @@ about the roles above. They are **not yet decided** and may change before
 - **Reviewer** (label-based): partially implemented via PR validation
   and `scripts/rework_workflow.py`.
 
+The label-based agents above are the **operational** view that predates
+this document. They are not 1:1 with the conceptual roles. A clean
+mapping (probably via `config/role_routing.yaml`) is on the 0.7.0
+backlog.
+
 ## Next Steps
 
-1. Decide whether the **Watchdog** role becomes a skill, a workflow, or
-   stays an agent — see "Pending Review for 0.7.0" above.
-2. Decide whether **Planner** is split into Planning + Knowledge Manager
-   — also under "Pending Review".
-3. Add **subtypes** to the Reviewer role (Code / Architecture / Docs).
-4. Define a `config/role_routing.yaml` that maps role → provider → model
-   → context files (separate issue).
-5. Add **agent-based issue routing** in the triage step (label → script).
+1. Create follow-up issues for the five 0.7.0 decisions above (one
+   issue per row in the table).
+2. Implement `config/role_routing.yaml` (issue #TBD) — depends on
+   decisions #1, #2, #3.
+3. Unify the skill folder structure (issue #TBD).
+4. Add **agent-based issue routing** in the triage step (label →
+   script) — this is the operational layer that uses `role_routing.yaml`.
