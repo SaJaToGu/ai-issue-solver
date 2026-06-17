@@ -155,6 +155,13 @@ def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[st
         command.append("--skip-congestion-check")
     if args.verbosity:
         command.extend(["--verbosity", args.verbosity])
+    # OpenCode Budget-Limits an solve_issues_batch.py weiterreichen
+    if getattr(args, "max_run_cost_usd", None) is not None:
+        command.extend(["--max-run-cost-usd", str(args.max_run_cost_usd)])
+    if getattr(args, "max_run_input_tokens", None) is not None:
+        command.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
+    if getattr(args, "max_run_output_tokens", None) is not None:
+        command.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
     return command
 
 
@@ -692,6 +699,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--caffeinate",
         action="store_true",
         help="macOS waehrend des Nachtlaufs mit caffeinate wach halten",
+    )
+    # OpenCode Budget-Limits (nur fuer --model opencode); an solve_issues_batch.py weitergereicht
+    parser.add_argument(
+        "--max-run-cost-usd",
+        type=float,
+        default=None,
+        help="An Batch-Solver weiterreichen: Maximale Kosten in USD fuer einen einzelnen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-input-tokens",
+        type=int,
+        default=None,
+        help="An Batch-Solver weiterreichen: Maximale Input-Tokens fuer einen einzelnen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-output-tokens",
+        type=int,
+        default=None,
+        help="An Batch-Solver weiterreichen: Maximale Output-Tokens fuer einen einzelnen OpenCode-Run",
     )
     return parser.parse_args(argv)
 
