@@ -42,10 +42,10 @@ For the process we run after each release to revisit this document, see
 - `issue-splitting`
 - `roadmap-planning`
 
-**Note:** Knowledge lifecycle actions (`keep` / `promote` / `archive` /
-`delete`) used to be Planner responsibilities. As of the 0.7.0 decisions,
-they moved to the **Knowledge Manager** (a deterministic workflow, not
-an LLM agent).
+**Note:** The Planner does **not** handle knowledge lifecycle actions
+(`keep` / `promote` / `archive` / `delete`). Those are the responsibility
+of the **Knowledge Manager** (a deterministic workflow, not an LLM
+agent, implemented via issue #312) — see below.
 
 ---
 
@@ -188,9 +188,9 @@ Watchdog
 
 ## Knowledge Manager (deterministic workflow)
 
-**Status:** New role as of the 0.7.0 decisions. Not an LLM agent — a
+**Status:** Implemented via issue #312. Not an LLM agent — a
 deterministic script with human-in-the-loop approval for destructive
-actions.
+actions. Runs as a scheduled job (cron / launchd).
 
 **Purpose:** Manage the lifecycle of project knowledge — keep, promote,
 archive, delete.
@@ -201,16 +201,46 @@ archive, delete.
 - Run `archive` automatically for items that match the archive rules
 - Require human approval for `promote` (move to permanent knowledge)
   and `delete` (irreversible)
-- Audit `docs/` and skills on a schedule
+- Audit `docs/`, `.agents/skills/`, and `.skills/` on a schedule
+- Maintain a human review queue (`reports/knowledge-review-queue.json`)
 
 **Implementation shape:**
 
 ```
 Knowledge Manager
 ├── scripts/knowledge_manager.py    # lifecycle engine
-├── config/lifecycle_rules.yaml     # what counts as outdated
-└── human review queue              # for promote / delete
+│   ├── scan                        # run all rules, output candidates
+│   ├── archive                     # execute automatic archive moves
+│   ├── queue                       # show human review queue
+│   └── status                      # knowledge base health summary
+├── config/lifecycle_rules.yaml     # what counts as outdated (rules)
+└── reports/knowledge-review-queue.json  # human approval queue
 ```
+
+**Typical workflow:**
+
+1. `python scripts/knowledge_manager.py scan` — scans all knowledge
+   directories, identifies archive/promote/delete candidates, adds
+   promote/delete entries to the review queue.
+2. `python scripts/knowledge_manager.py archive` — moves automatic
+   archive candidates to `docs/archive/` (dry-run with `--dry-run`).
+3. `python scripts/knowledge_manager.py queue` — displays pending
+   promote/delete entries that require human approval.
+4. A human edits `reports/knowledge-review-queue.json` to set
+   `status: approved` or `status: rejected` for each entry.
+5. On the next scan, stale approved/rejected entries are cleaned up.
+
+**Archive rules** (automatic, no human needed):
+- `mtime_older_than`: files that haven't been modified in N days
+- `no_incoming_references`: files with zero cross-references
+
+**Promote rules** (human review required):
+- `frequently_referenced`: files referenced N+ times
+- `manual_tag`: files starting with a `promote-candidate` marker
+
+**Delete rules** (human review required):
+- `archived_longer_than`: archived files untouched for N days
+- `orphaned_long_term`: non-archived files with zero refs and old mtime
 
 ---
 
@@ -223,7 +253,7 @@ deliverable. Each is now a follow-up **issue** for implementation.
 | # | Decision | Follow-up issue |
 |---|---|---|
 | 1 | **Watchdog** is a deterministic workflow (`scripts/watchdog.py` + cron), not an LLM agent. Optional LLM escalation only on anomalies. | #311: Watchdog as deterministic workflow |
-| 2 | **Planner** is split: Planner (LLM) handles roadmap, issue creation, prioritization, architecture decisions. **Knowledge Manager** (deterministic script) handles `keep` / `promote` / `archive` / `delete`. | #312: Planner vs Knowledge Manager split |
+| 2 | **Planner** is split: Planner (LLM) handles roadmap, issue creation, prioritization, architecture decisions. **Knowledge Manager** (deterministic script) handles `keep` / `promote` / `archive` / `delete`. | #312: Implemented — `scripts/knowledge_manager.py`, `config/lifecycle_rules.yaml` |
 | 3 | **Reviewer** is split into **Code Reviewer**, **Architecture Reviewer**, **Documentation Reviewer**. | #313: Reviewer subtypes |
 | 4 | **`config/role_routing.yaml`** is the canonical place to map role → provider → model → context. Implementation requires verified OpenRouter model slugs and per-role budget fields. | #314: role_routing.yaml draft |
 | 5 | **Skill folder split** (`.agents/skills/` + `.skills/`) is unified into one canonical path. The audit documented 8 skills; the unified structure maps them, it does not invent new skills. | #315: Skill folder unification |
@@ -261,12 +291,17 @@ this document. They are not 1:1 with the conceptual roles. A clean
 mapping (probably via `config/role_routing.yaml`) is on the 0.7.0
 backlog.
 
-## Next Steps
+## Implementation Status
 
-1. Create follow-up issues for the five 0.7.0 decisions above (one
-   issue per row in the table).
-2. Implement `config/role_routing.yaml` (issue #314) — depends on
-   decisions #1, #2, #3.
-3. Unify the skill folder structure (issue #315).
-4. Add **agent-based issue routing** in the triage step (label →
-   script) — this is the operational layer that uses `role_routing.yaml`.
+| Decision | Status |
+|---|---|
+| #1 Watchdog as deterministic workflow (#311) | Implemented |
+| #2 Planner vs Knowledge Manager split (#312) | Implemented |
+| #3 Reviewer subtypes (#313) | Open — follow-up issue needed |
+| #4 role_routing.yaml draft (#314) | Implemented |
+| #5 Skill folder unification (#315) | Open — follow-up issue needed |
+
+The remaining open items above should be tracked as separate GitHub
+issues. Add **agent-based issue routing** in the triage step (label →
+script) once all role definitions are stable — this is the operational
+layer that uses `role_routing.yaml`.
