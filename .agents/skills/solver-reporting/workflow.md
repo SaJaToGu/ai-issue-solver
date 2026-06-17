@@ -165,7 +165,7 @@ damit Grep-basierte Auswertungen funktionieren.
    `vibe_log_snippet:`, Resource-Diagnose-Summary.
 
 Diese Klartext-Repräsentation ist die Grundlage für den
-`.skills/recovery`-Skill und das lokale HTML-Dashboard
+`.agents/skills/recovery`-Skill und das lokale HTML-Dashboard
 (`scripts/status_dashboard.py`).
 
 ## 6. Preserved Worktrees
@@ -213,7 +213,7 @@ Verzeichnisse älter als `retention_days` (Standard 14 Tage). Ohne
 ### 7.1 Run-Health-Stream
 
 `write_run_health` wird vom Solver regelmäßig aufgerufen, damit
-Dashboard und `.skills/recovery` einen laufenden Run verfolgen können.
+Dashboard und `.agents/skills/recovery` einen laufenden Run verfolgen können.
 Felder siehe `## 3. health.json`.
 
 ### 7.2 OpenCode-Session-Metriken
@@ -256,7 +256,7 @@ Beispiel siehe [examples/03_aggregate_scorecards.md](examples/03_aggregate_score
 
 ## 9. Fehlerklassifikation und Recovery-Brücke
 
-`build_run_outcome` und `.skills/recovery` teilen die folgende Brücke:
+`build_run_outcome` und `.agents/skills/recovery` teilen die folgende Brücke:
 
 | `failure_class` | Empfehlung Recovery-Skill |
 |-----------------|---------------------------|

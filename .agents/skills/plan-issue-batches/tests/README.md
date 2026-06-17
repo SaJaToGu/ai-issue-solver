@@ -9,7 +9,7 @@ sondern ergänzen sie um Skill-spezifische Checks.
 ## Schnellstart
 
 ```bash
-bash .skills/plan-issue-batches/tests/run_skill_tests.sh
+bash .agents/skills/plan-issue-batches/tests/run_skill_tests.sh
 ```
 
 Das Script führt nacheinander aus:
@@ -37,12 +37,12 @@ starten sie Worker.
 
 ```bash
 # 1. Argument-Parser
-python .skills/plan-issue-batches/helpers/parse_args.py --repo ai-issue-solver
-python .skills/plan-issue-batches/helpers/parse_args.py --model unknown
+python .agents/skills/plan-issue-batches/helpers/parse_args.py --repo ai-issue-solver
+python .agents/skills/plan-issue-batches/helpers/parse_args.py --model unknown
 # → zweiter Aufruf muss Exit-Code 2 liefern
 
 # 2. Bash-Helfer
-bash .skills/plan-issue-batches/helpers/run_plan.sh --repo ai-issue-solver --emit-commands
+bash .agents/skills/plan-issue-batches/helpers/run_plan.sh --repo ai-issue-solver --emit-commands
 ```
 
 ## Continuous Integration
@@ -51,7 +51,7 @@ In GitHub Actions genügt ein Schritt:
 
 ```yaml
 - name: Run plan-issue-batches skill tests
-  run: bash .skills/plan-issue-batches/tests/run_skill_tests.sh
+  run: bash .agents/skills/plan-issue-batches/tests/run_skill_tests.sh
 ```
 
 Der Schritt benötigt keinen GitHub-Token, weil alle Tests rein lokal

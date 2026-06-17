@@ -117,6 +117,6 @@ fi
 
 ## Verwandte Skills
 
-- `.skills/recovery` — wenn einzelne Runs Recovery brauchen.
-- `.skills/rework` — wenn die erzeugten PRs nachgearbeitet werden müssen.
-- `.skills/git-cleanup` — nach erfolgreichem Merge der AI-PRs.
+- `.agents/skills/recovery` — wenn einzelne Runs Recovery brauchen.
+- `.agents/skills/rework` — wenn die erzeugten PRs nachgearbeitet werden müssen.
+- `.agents/skills/git-cleanup` — nach erfolgreichem Merge der AI-PRs.

@@ -27,7 +27,7 @@ Verwende diesen Skill, wenn eines der folgenden Szenarien zutrifft:
 
 Nicht verwenden für reine Analyse (`analyze_repos.py`), Issue-Erstellung
 (`create_issues.py`) oder Rework eines bestehenden PRs
-(`rework_workflow.py` / `.skills/rework`).
+(`rework_workflow.py` / `.agents/skills/rework`).
 
 ## Voraussetzungen
 
@@ -213,9 +213,9 @@ bash .agents/skills/solve-issues/tests/run_skill_tests.sh
 
 ## Verwandte Skills
 
-- `.skills/git-cleanup` — Branch- und PR-Bereinigung nach Merge.
-- `.skills/recovery` — Recovery bei abgebrochenen Solver-Runs.
-- `.skills/rework` — Gezielte Nacharbeit an generierten PRs.
+- `.agents/skills/git-cleanup` — Branch- und PR-Bereinigung nach Merge.
+- `.agents/skills/recovery` — Recovery bei abgebrochenen Solver-Runs.
+- `.agents/skills/rework` — Gezielte Nacharbeit an generierten PRs.
 
 Diese Skills ergänzen den hier beschriebenen Workflow und sollten nach
 jedem Solver-Run in Betracht gezogen werden.

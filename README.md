@@ -187,10 +187,14 @@ ai-issue-solver/
 │       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
 ├── .agents/
 │   └── skills/
-│       ├── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
+│       ├── git-cleanup/         # Branch- und PR-Bereinigung nach Merge
 │       ├── model-selection/     # Codex-Skill für die automatische Modellauswahl
-│       └── solver-reporting/    # Codex-Skill für Run-Reports, Metriken & Provider-Scorecards (solver_reporting.py)
-├── .skills/                     # Ergänzende Codex-Skills (recovery, rework, git-cleanup, plan-issue-batches)
+│       ├── plan-issue-batches/  # Konfliktarme Issue-Wellen planen
+│       ├── recovery/            # Recovery bei abgebrochenen Solver-Runs
+│       ├── rework/              # Gezielte Nacharbeit an generierten PRs
+│       ├── run-overnight/       # Unbeaufsichtigter Batch-Betrieb
+│       ├── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
+│       └── solver-reporting/    # Codex-Skill für Run-Reports, Metriken & Provider-Scorecards
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
 ├── requirements-aider.txt       # Optionale Aider-Dependencies

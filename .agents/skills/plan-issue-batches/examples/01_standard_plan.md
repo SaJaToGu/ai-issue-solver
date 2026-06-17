@@ -18,7 +18,7 @@ python scripts/plan_issue_batches.py --repo ai-issue-solver
 Mit dem Skill-Wrapper:
 
 ```bash
-bash .skills/plan-issue-batches/helpers/run_plan.sh --repo ai-issue-solver
+bash .agents/skills/plan-issue-batches/helpers/run_plan.sh --repo ai-issue-solver
 ```
 
 ## Erwarteter Verlauf

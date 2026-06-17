@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 LIFECYCLE_RULES_PATH = ROOT / "config" / "lifecycle_rules.yaml"
 REVIEW_QUEUE_PATH = ROOT / "reports" / "knowledge-review-queue.json"
-KNOWLEDGE_DIRECTORIES = ["docs/", ".agents/skills/", ".skills/"]
+KNOWLEDGE_DIRECTORIES = ["docs/", ".agents/skills/"]
 ARCHIVE_DIR = ROOT / "docs" / "archive"
 
 

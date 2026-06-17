@@ -53,7 +53,6 @@ promote:
       paths:
         - "docs/"
         - ".agents/skills/"
-        - ".skills/"
     - name: manual_tag
       description: "Files containing a 'promote-candidate' marker in the first 5 lines"
       enabled: true
@@ -95,7 +94,6 @@ paths:
   knowledge_directories:
     - "docs/"
     - ".agents/skills/"
-    - ".skills/"
   archive_directory: "docs/archive/"
 
 # ── Reference scan ────────────────────────────────────────────────

@@ -48,15 +48,15 @@ alle Run-Reports aggregiert:
 ## Interpretation
 
 - **Hoher Anteil `pipeline_failure`**: Push oder PR-API ist instabil.
-  Token-Scope prüfen, ggf. `.skills/recovery` einsetzen.
+  Token-Scope prüfen, ggf. `.agents/skills/recovery` einsetzen.
 - **Hoher Anteil `model_failure`**: Worker liefert reproduzierbar keinen
-  Output. `.skills/rework` und ggf. Modell-Wechsel.
+  Output. `.agents/skills/rework` und ggf. Modell-Wechsel.
 - **Hoher Anteil `runtime_failure`** + `preserved_worktree`:
   Worktrees sichern, Recovery mit `RECOVERY.md` anstoßen.
 - **`noop` dominant**: Worker macht keine Änderungen. Prompt oder
   Branch-Plan prüfen.
 - **`interrupted`**: Run wurde abgebrochen, kein Worker-Output.
-  `.skills/recovery` für Resume-Empfehlung.
+  `.agents/skills/recovery` für Resume-Empfehlung.
 
 ## JSON-Ausgabe für Dashboards
 

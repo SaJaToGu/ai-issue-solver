@@ -21,7 +21,7 @@ python scripts/plan_issue_batches.py \
 Mit dem Skill-Wrapper:
 
 ```bash
-bash .skills/plan-issue-batches/helpers/run_plan.sh \
+bash .agents/skills/plan-issue-batches/helpers/run_plan.sh \
     --repo ai-issue-solver \
     --label agent/planner
 ```
