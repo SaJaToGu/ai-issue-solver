@@ -1,9 +1,10 @@
-# Agents
+# Agents & Workflows
 
-This document defines the conceptual agent roles for the `ai-issue-solver`
-project. It was rewritten as part of the **Release 0.7.0 information
-architecture audit** (issue #309) and updated again with the **0.7.0 agent
-architecture decisions** recorded at the bottom of this file.
+This document defines the conceptual agent roles and deterministic workflows
+for the `ai-issue-solver` project. It was rewritten as part of the **Release
+0.7.0 information architecture audit** (issue #309) and updated again with
+the **0.7.0 agent architecture decisions** recorded at the bottom of this
+file.
 
 For the **operational, label-based agent routing** that GitHub issues use
 today (`agent/triage`, `agent/solver`, `agent/reviewer`, etc.), see
@@ -18,6 +19,8 @@ For the process we run after each release to revisit this document, see
 [`RELEASE_REVIEW_AGENDA.md`](RELEASE_REVIEW_AGENDA.md).
 
 ---
+
+# Agents
 
 ## Planner (LLM agent)
 
@@ -124,29 +127,62 @@ model in `config/role_routing.yaml`.
 
 ---
 
-## Watchdog (workflow, not an agent)
+## Architecture Agent (future)
 
-**Status:** The Watchdog is **not** an LLM agent as of the 0.7.0
-decisions. The responsibilities below are deterministic; a cron-driven
-script is the right shape. LLM-based escalation is optional and used
-only when the deterministic checks detect anomalies that need explanation.
+**Purpose:** Challenge assumptions and review project direction.
 
 **Responsibilities:**
 
-- Cost monitoring
-- Progress monitoring
-- Stuck detection
-- Resume recommendations
-- Stop recommendations
+- Outside-in reviews
+- Architecture reviews
+- Assumption checks
+- Strategic recommendations
+
+**Modes:**
+
+- `architecture-review`
+- `outside-in-review`
+- `assumption-check`
+
+---
+
+# Workflows
+
+## Watchdog (deterministic workflow)
+
+**Status:** Implemented as of issue #311. The Watchdog is **not** an LLM
+agent. The responsibilities below are deterministic; a cron-driven script
+runs the checks. LLM escalation is optional and used only when the
+deterministic checks detect anomalies that need explanation.
+
+**Responsibilities:**
+
+- Cost monitoring (per-run, per-day, per-budget ratio)
+- Progress monitoring (no phase change within N minutes)
+- Stuck detection (no log activity within M minutes)
+- Status report generation (JSON for dashboard ingestion)
 
 **Implementation shape:**
 
 ```
 Watchdog
-├── scripts/watchdog.py        # deterministic checks
-├── cron / nightly run         # scheduling
-└── optional LLM escalation    # only when anomaly is detected
+├── scripts/watchdog.py          # deterministic checks (implemented)
+│   ├── check cost               # per-run, per-day, budget-ratio
+│   ├── check progress           # no-progress timeout
+│   ├── check stuck              # no-activity timeout
+│   └── status                   # JSON status report
+├── cron / nightly run           # scheduling
+├── reports/watchdog-status.json # structured output for dashboard
+└── --llm-escalate flag          # only when anomaly is detected
 ```
+
+**Configuration:**
+
+- `WATCHDOG_PROGRESS_TIMEOUT_MINUTES` — default 30
+- `WATCHDOG_STUCK_TIMEOUT_MINUTES` — default 15
+- `WATCHDOG_PER_RUN_COST_USD` — default 5.0
+- `WATCHDOG_PER_DAY_COST_USD` — default 20.0
+- `WATCHDOG_BUDGET_RATIO` — default 0.8
 
 ---
 
@@ -175,25 +211,6 @@ Knowledge Manager
 ├── config/lifecycle_rules.yaml     # what counts as outdated
 └── human review queue              # for promote / delete
 ```
-
----
-
-## Architecture Agent (future)
-
-**Purpose:** Challenge assumptions and review project direction.
-
-**Responsibilities:**
-
-- Outside-in reviews
-- Architecture reviews
-- Assumption checks
-- Strategic recommendations
-
-**Modes:**
-
-- `architecture-review`
-- `outside-in-review`
-- `assumption-check`
 
 ---
 
@@ -231,7 +248,7 @@ The skill list to be unified, with their current locations:
 - **Supervisor** (label-based): partially implemented via
   `scripts/solver_supervisor.py` and the status dashboard.
 - **Cost** (label-based): partially implemented via run reports and
-  budget dashboard.
+  budget dashboard; consolidated by the deterministic Watchdog workflow.
 - **Research** (label-based): ad-hoc implementation via custom scripts.
 - **Planner** (label-based): partially implemented via backlog scripts.
 - **Solver** (label-based): core implementation via
