@@ -1,0 +1,198 @@
+# ═══════════════════════════════════════════════════════════════════
+# ai-issue-solver — Per-Role Model Routing Configuration
+# ═══════════════════════════════════════════════════════════════════
+#
+# Schema (introduced in 0.7.0, issue #309 follow-up):
+#   Each role maps to a provider, a model slug, a list of context
+#   files, a monthly budget in USD, and an optional cost alert
+#   threshold (0.0 - 1.0, fraction of budget that emits a warning).
+#
+# The Solver MUST verify the `model` slugs against the live
+# OpenRouter /models endpoint at startup. Missing or stale slugs
+# are a hard fail (no silent fallback).
+#
+# Per-run cost-limit flags (`--max-run-cost-usd`,
+# `--max-run-input-tokens`, `--max-run-output-tokens`) remain as
+# per-run overrides on top of the monthly budget.
+#
+# Slug verification date: 2026-06-17
+# Verified against: https://openrouter.ai/api/v1/models (336 models)
+# ═══════════════════════════════════════════════════════════════════
+
+defaults:
+  # When a role is missing from this file, fall back to these values.
+  # Default provider is OpenRouter; default model is the cheap MiniMax-M3.
+  provider: openrouter
+  model: minimax/minimax-m3
+  context_files: []
+  monthly_budget_usd: 10.0
+  cost_alert_threshold: 0.8
+
+# ── Planner (LLM agent) ──────────────────────────────────────────
+# Purpose: roadmap, issue generation, prioritization, architecture
+# decisions. Heavy reasoning. GPT-5 is the strongest available
+# general-purpose model on OpenRouter as of 2026-06.
+planner:
+  provider: openrouter
+  model: openai/gpt-5
+  context_files:
+    - README.md
+    - docs/AGENTS.md
+    - docs/ROADMAP.md
+    - docs/BACKLOG/open.md
+    - docs/BACKLOG/done.md
+    - docs/CURRENT_CONTEXT.md
+    - docs/RELEASE_REVIEW_AGENDA.md
+    - docs/label_taxonomy.md
+  monthly_budget_usd: 10.0
+  cost_alert_threshold: 0.8
+
+# ── Solver ───────────────────────────────────────────────────────
+# Purpose: solve a specific issue. Minimal context, cheap model,
+# many runs. The Solver gets the issue text, the touched files,
+# and the relevant skill — nothing else. Cost efficiency matters
+# more than peak quality here.
+solver:
+  provider: openrouter
+  model: minimax/minimax-m3
+  context_files:
+    - "{issue.body}"   # the GitHub issue body
+    - "{issue.touched_files}"   # only the files the issue affects
+    - "{skill.loaded}"   # exactly one skill, loaded on demand
+  monthly_budget_usd: 30.0
+  cost_alert_threshold: 0.9
+
+# ── Code Reviewer ────────────────────────────────────────────────
+# Purpose: code review of the PR diff, test coverage, lint / type /
+# style. Claude Sonnet 4 is strong on code review.
+reviewer_code:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  context_files:
+    - "{pr.diff}"
+    - "{pr.touched_files}"
+    - docs/AGENTS.md   # only the "Settled principle: Solver stays dumb" section
+  monthly_budget_usd: 5.0
+  cost_alert_threshold: 0.8
+  prompt_file: .agents/reviewers/reviewer-code.md
+  notes: |
+    Per-PR code review (logic, tests, lint/type/style). System prompt
+    at `.agents/reviewers/reviewer-code.md`. Selectable via
+    `agent/reviewer-code` label. Do NOT comment on architecture or
+    documentation -- escalate to the respective sub-role.
+
+# ── Architecture Reviewer ────────────────────────────────────────
+# Purpose: architecture review, outside-in review, assumption
+# check, strategic recommendation. Heavy reasoning. GPT-5
+# again, or Claude Opus if the user wants an alternative.
+reviewer_architecture:
+  provider: openrouter
+  model: openai/gpt-5
+  context_files:
+    - "{pr.diff}"
+    - "{pr.architecture_impact}"
+    - docs/AGENTS.md
+    - docs/ROADMAP.md
+    - README.md
+  monthly_budget_usd: 5.0
+  cost_alert_threshold: 0.8
+  prompt_file: .agents/reviewers/reviewer-architecture.md
+  notes: |
+    Per-PR architecture review (fit with project direction, outside-in,
+    assumption check, strategic recs). System prompt at
+    `.agents/reviewers/reviewer-architecture.md`. Selectable via
+    `agent/reviewer-architecture` label. Distinct from
+    `architecture_agent` below: this role is per-PR and runs often;
+    `architecture_agent` is project-direction and runs rarely.
+
+# ── Documentation Reviewer ───────────────────────────────────────
+# Purpose: documentation completeness and accuracy. Cheaper model
+# is fine here; the work is mostly mechanical.
+reviewer_documentation:
+  provider: openrouter
+  model: minimax/minimax-m2.5
+  context_files:
+    - "{pr.diff}"
+    - "{pr.docs_touched}"
+    - README.md
+    - docs/
+  monthly_budget_usd: 2.0
+  cost_alert_threshold: 0.8
+  prompt_file: .agents/reviewers/reviewer-documentation.md
+  notes: |
+    Per-PR documentation review (completeness, accuracy,
+    cross-references). System prompt at
+    `.agents/reviewers/reviewer-documentation.md`. Selectable via
+    `agent/reviewer-documentation` label. Do NOT comment on code logic
+    or architecture -- escalate to the respective sub-role.
+
+# ── Knowledge Manager (deterministic workflow) ──────────────────
+# Purpose: keep / promote / archive / delete lifecycle actions.
+# This is NOT an LLM role. `provider: none` is mandatory.
+# The Solver must not attempt to load this role into an LLM.
+knowledge_manager:
+  provider: none
+  workflow: scripts/knowledge_manager.py
+  context_files: []
+  monthly_budget_usd: 0.0
+  cost_alert_threshold: null
+  notes: |
+    Human-in-the-loop for `promote` and `delete`. See issue #2 of
+    the 0.7.0 follow-up set.
+
+# ── Watchdog (deterministic workflow) ────────────────────────────
+# Purpose: cost monitoring, progress monitoring, stuck detection.
+# NOT an LLM role. `provider: none` is mandatory. Optional LLM
+# escalation is only triggered when deterministic checks fail in
+# a way that needs an explanation.
+watchdog:
+  provider: none
+  workflow: scripts/watchdog.py
+  context_files: []
+  monthly_budget_usd: 0.0
+  cost_alert_threshold: null
+  notes: |
+    Cron / launchd / systemd schedule. The script writes a
+    structured status report (JSON or YAML) that the dashboard
+    ingests. LLM escalation is opt-in via CLI flag, not default.
+
+# ── Architecture Agent (future) ──────────────────────────────────
+# Purpose: outside-in reviews, architecture reviews, assumption
+# checks, strategic recommendations. Heavy reasoning, runs rarely.
+# Not yet wired into the Solver; included for completeness.
+architecture_agent:
+  provider: openrouter
+  model: anthropic/claude-opus-4.8
+  context_files:
+    - README.md
+    - docs/AGENTS.md
+    - docs/ROADMAP.md
+    - docs/CURRENT_CONTEXT.md
+  monthly_budget_usd: 3.0
+  cost_alert_threshold: 0.8
+  notes: |
+    Future role. Per the 0.7.0 decisions, this is NOT in active
+    use. The entry exists so that the role registry is complete
+    and the Operator can enable it later by setting
+    `architecture_agent.enabled: true`.
+
+    Distinct from `reviewer_architecture`: this role is for
+    project-direction / outside-in reviews (runs rarely, Opus
+    reasoning). `reviewer_architecture` is for per-PR architecture
+    review (runs often, GPT-5). They share a lens but differ in
+    scope and cadence. Do not duplicate prompts across them.
+
+# ── Budget Summary (informational, enforced by the Solver) ───────
+# Total monthly API budget (LLM roles only):
+#   planner:                       10.0 USD
+#   solver:                        30.0 USD
+#   reviewer_code:                  5.0 USD
+#   reviewer_architecture:          5.0 USD
+#   reviewer_documentation:         2.0 USD
+#   architecture_agent (future):    3.0 USD
+#   ─────────────────────────────────────────
+#   total:                         55.0 USD / month
+#
+# Workflows (knowledge_manager, watchdog) cost $0 in API tokens.
+# Prepaid OpenRouter credit is the only enforcement mechanism
+# (no auto-reload); see docs/CURRENT_CONTEXT.md for the policy.

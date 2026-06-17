@@ -28,7 +28,7 @@ Verwende diesen Skill, wenn eines der folgenden Szenarien zutrifft:
 Nicht verwenden für reine Analyse (`analyze_repos.py`), Issue-Erstellung
 (`create_issues.py`), das eigentliche Lösen (`solve_issues.py` /
 `.agents/skills/solve-issues`) oder Rework eines bestehenden PRs
-(`.skills/rework`).
+(`.agents/skills/rework`).
 
 ## Voraussetzungen
 
@@ -152,7 +152,7 @@ Der Skill integriert sich in die bestehenden Helfer im Projekt:
 | `scripts/plan_issue_batches.py` | Planungs-Logik (`plan_waves`, `render_plan`, …) |
 
 Zusätzlich enthält der Skill eigene, dünnere Helfer unter
-`.skills/plan-issue-batches/`:
+`.agents/skills/plan-issue-batches/`:
 
 - `helpers/run_plan.sh` — kapselt die häufigsten
   `python scripts/plan_issue_batches.py`-Aufrufe.
@@ -162,7 +162,7 @@ Zusätzlich enthält der Skill eigene, dünnere Helfer unter
 ## Beispiele
 
 Minimale Beispiele liegen unter
-[`.skills/plan-issue-batches/examples/`](examples/README.md). Häufige
+[`.agents/skills/plan-issue-batches/examples/`](examples/README.md). Häufige
 Aufrufe:
 
 ```bash
@@ -192,7 +192,7 @@ Der Skill-Wrapper `helpers/run_plan.sh` nimmt dieselben Argumente und
 normalisiert den Aufruf:
 
 ```bash
-bash .skills/plan-issue-batches/helpers/run_plan.sh \
+bash .agents/skills/plan-issue-batches/helpers/run_plan.sh \
     --repo ai-issue-solver \
     --emit-commands \
     --model opencode
@@ -216,7 +216,7 @@ Diese Regeln werden vom Planungs-Script bereits eingehalten und sind
 ## Test-Workflow
 
 Der Skill liefert einen Test-Workflow unter
-[`.skills/plan-issue-batches/tests/`](tests/README.md):
+[`.agents/skills/plan-issue-batches/tests/`](tests/README.md):
 
 - `tests/test_skill_artifacts.py` — prüft, dass alle erwarteten
   Dateien vorhanden und nicht leer sind.
@@ -230,7 +230,7 @@ Der Skill liefert einen Test-Workflow unter
 Ausführen mit:
 
 ```bash
-bash .skills/plan-issue-batches/tests/run_skill_tests.sh
+bash .agents/skills/plan-issue-batches/tests/run_skill_tests.sh
 ```
 
 Die bestehenden Planungs-Tests in `tests/test_plan_issue_batches.py`
@@ -241,9 +241,9 @@ bleiben unverändert aktiv und sichern die Kernlogik von
 
 - `.agents/skills/solve-issues` — eigentliches Lösen der geplanten
   Issues mit KI-Workern.
-- `.skills/rework` — gezielte Nacharbeit an generierten PRs.
-- `.skills/recovery` — Recovery bei abgebrochenen Solver-Runs.
-- `.skills/git-cleanup` — Branch- und PR-Bereinigung nach Merge.
+- `.agents/skills/rework` — gezielte Nacharbeit an generierten PRs.
+- `.agents/skills/recovery` — Recovery bei abgebrochenen Solver-Runs.
+- `.agents/skills/git-cleanup` — Branch- und PR-Bereinigung nach Merge.
 
 Diese Skills ergänzen den hier beschriebenen Planungs-Workflow: der
 `plan-issue-batches`-Skill entscheidet, **was** in welcher Welle gelöst

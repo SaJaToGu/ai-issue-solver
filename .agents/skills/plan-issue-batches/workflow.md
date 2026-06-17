@@ -168,7 +168,7 @@ Der Plan, den dieser Skill erzeugt, ist die direkte Eingabe für den
    Batch-Kommandos.
 2. Pro Welle wird `solve_issues_batch.py` aufgerufen, das intern
    `solve_issues.py` pro Issue startet.
-3. Nach dem Lauf: `.skills/recovery` und `.skills/rework` wie in
+3. Nach dem Lauf: `.agents/skills/recovery` und `.agents/skills/rework` wie in
    `SKILL.md` (`## Verwandte Skills`) beschrieben.
 
 ## 9. Erweiterung

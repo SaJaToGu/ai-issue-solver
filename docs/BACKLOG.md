@@ -8,7 +8,7 @@
 
 This backlog captures the first issues for the `develop` workflow. These tasks
 formed the first implementation round and are kept as project history. The next
-planned work lives in [NEXT_BACKLOG.md](NEXT_BACKLOG.md).
+planned work lives in [BACKLOG/open.md](BACKLOG/open.md).
 
 Create them as GitHub issues with:
 

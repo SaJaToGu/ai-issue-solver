@@ -184,7 +184,7 @@ Räumt nach gemergten AI-Pull-Requests auf.
 - Offene Issues schließen (bei Closing-Keywords oder Branch-Referenz)
 - Gemergte AI-Branches löschen
 - Stale Branches melden
-- Optional abgeschlossene Einträge aus `docs/NEXT_BACKLOG.md` entfernen
+- Optional abgeschlossene Einträge aus `docs/BACKLOG/open.md` entfernen
 
 **Beispiel:**
 ```bash

@@ -17,10 +17,10 @@ den aktuell offenen Issues im Zielrepo ab.
 
 ```bash
 # Standardplan anzeigen
-bash .skills/plan-issue-batches/helpers/run_plan.sh --repo ai-issue-solver
+bash .agents/skills/plan-issue-batches/helpers/run_plan.sh --repo ai-issue-solver
 
 # Plan inklusive fertiger Batch-Kommandos für OpenCode
-bash .skills/plan-issue-batches/helpers/run_plan.sh \
+bash .agents/skills/plan-issue-batches/helpers/run_plan.sh \
     --repo ai-issue-solver \
     --emit-commands \
     --model opencode
@@ -30,7 +30,7 @@ bash .skills/plan-issue-batches/helpers/run_plan.sh \
 
 - [`.agents/skills/solve-issues`](../solve-issues/examples/README.md) —
   führt die geplanten Wellen tatsächlich aus.
-- [`.skills/recovery`](../recovery/SKILL.md) — Recovery bei
+- [`.agents/skills/recovery`](../recovery/SKILL.md) — Recovery bei
   abgebrochenen Solver-Runs.
-- [`.skills/rework`](../rework/SKILL.md) — gezielte Nacharbeit an
+- [`.agents/skills/rework`](../rework/SKILL.md) — gezielte Nacharbeit an
   generierten PRs.

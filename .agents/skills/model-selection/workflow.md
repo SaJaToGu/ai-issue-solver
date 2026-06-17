@@ -60,7 +60,7 @@ Erweiterungen an einer einzigen Stelle ansetzen:
   `repo_profile.as_model_selection_context` vorbefüllt.
 - **Sprache** (`--language`) — wird derzeit nur in `args.json` weitergereicht
   und ist die Grundlage für künftige sprachspezifische Regeln
-  (siehe `docs/NEXT_BACKLOG.md` Roadmap).
+  (siehe `docs/BACKLOG/open.md` Roadmap).
 - **Task-Typ** (`--task-type`) — gleiche Idee für `bug-fix`, `refactor`,
   `docs`, `tests`, `feature`.
 - **Run-Historie** (`--history` oder `--issue` + `reports/runs/`) — der

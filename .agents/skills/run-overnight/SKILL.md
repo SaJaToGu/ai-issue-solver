@@ -23,7 +23,7 @@ Verwende diesen Skill, wenn eines der folgenden Szenarien zutrifft:
 - Du brauchst einen Smoke-Test, der Preflight + leeren Batch ausführt, bevor
   der echte Lauf startet.
 - Du willst einen bestehenden, abgebrochenen Overnight-Lauf über den
-  `.skills/recovery`-Skill mit den Session-Logs rekonstruieren.
+  `.agents/skills/recovery`-Skill mit den Session-Logs rekonstruieren.
 - Du möchtest den Nachtlauf auf einem Mac mit `caffeinate` am Schlafen
   hindern.
 
@@ -191,7 +191,7 @@ auch in andere Skripte einbinden, zum Beispiel in
 `scripts/post_merge_cleanup.py`.
 
 Für die Fehlersuche nach einem Absturz sind die Hinweise im
-`.skills/recovery`-Skill weiterhin gültig: dort wird Schritt für Schritt
+`.agents/skills/recovery`-Skill weiterhin gültig: dort wird Schritt für Schritt
 erklärt, wie du aus den Run-Reports und den Session-Logs den Zustand
 rekonstruierst.
 
@@ -240,9 +240,9 @@ bash .agents/skills/run-overnight/tests/run_skill_tests.sh
 
 - `.agents/skills/solve-issues` — der eigentliche Issue-Solver, der vom
   Batch im Overnight-Lauf aufgerufen wird.
-- `.skills/recovery` — Recovery nach abgebrochenen Solver-Runs.
-- `.skills/rework` — Gezielte Nacharbeit an generierten PRs.
-- `.skills/git-cleanup` — Branch- und PR-Bereinigung nach Merge.
+- `.agents/skills/recovery` — Recovery nach abgebrochenen Solver-Runs.
+- `.agents/skills/rework` — Gezielte Nacharbeit an generierten PRs.
+- `.agents/skills/git-cleanup` — Branch- und PR-Bereinigung nach Merge.
 
 Diese Skills ergänzen den hier beschriebenen Workflow und sollten nach
 jedem Nachtlauf in Betracht gezogen werden.

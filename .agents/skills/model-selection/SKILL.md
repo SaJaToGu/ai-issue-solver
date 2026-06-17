@@ -31,8 +31,8 @@ Verwende diesen Skill, wenn eines der folgenden Szenarien zutrifft:
   ohne Solver-Aufruf.
 
 Nicht verwenden für die reine Solver-Ausführung (`.agents/skills/solve-issues`)
-oder die Nachbearbeitung (`.skills/rework`, `.skills/recovery`,
-`.skills/git-cleanup`).
+oder die Nachbearbeitung (`.agents/skills/rework`, `.agents/skills/recovery`,
+`.agents/skills/git-cleanup`).
 
 ## Voraussetzungen
 
@@ -209,9 +209,9 @@ bash .agents/skills/model-selection/tests/run_skill_tests.sh
 
 - `.agents/skills/solve-issues` — nutzt die Modellauswahl über
   `--auto-model` und ruft `scripts/model_selection.py` direkt auf.
-- `.skills/rework` — kann einen Rework-Slice mit anderer Modellklasse
+- `.agents/skills/rework` — kann einen Rework-Slice mit anderer Modellklasse
   anstoßen, falls ein PR verworfen wurde.
-- `.skills/recovery` — nutzt `reports/runs/.../metadata.json`, die
+- `.agents/skills/recovery` — nutzt `reports/runs/.../metadata.json`, die
   derselbe Skill optional als Eskalationsquelle liest.
 
 Diese Skills ergänzen den hier beschriebenen Workflow und sollten

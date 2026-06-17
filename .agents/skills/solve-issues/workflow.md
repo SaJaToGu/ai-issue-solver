@@ -29,7 +29,7 @@ Drei typische Aufrufmuster:
 
 Jeder Run durchläuft sieben klar getrennte Phasen. Der Phase-String wird in
 `reports/runs/<run_id>/health.json` festgehalten, damit das Dashboard und
-der `.skills/recovery`-Skill den Status einordnen können.
+der `.agents/skills/recovery`-Skill den Status einordnen können.
 
 | Phase | Bedeutung | Exit-Strategie |
 |-------|-----------|----------------|
@@ -72,7 +72,7 @@ Dateien unter `reports/runs/<run_id>/`:
 
 | Datei | Inhalt |
 |-------|--------|
-| `summary.txt` | Kompakte Zusammenfassung für `.skills/recovery` und das Dashboard |
+| `summary.txt` | Kompakte Zusammenfassung für `.agents/skills/recovery` und das Dashboard |
 | `metadata.json` | Repo, Issue, Branch, Provider, Modell-Name, Zeitstempel |
 | `worker-output.log` | Vollständiger Worker-Output (kann mehrere MB groß sein) |
 | `health.json` | Phasenstatus, Worker-PID, letzter Aktivitätszeitpunkt |
@@ -92,7 +92,7 @@ sichtbar bleiben:
   Phase, Worker-PID und Zeitstempel. Das Dashboard liest diese Datei.
 - **Resource-Diagnostics** — `write_resource_diagnostics_to_report`
   schreibt Lock- und Branch-Konflikt-Informationen. Damit kann der
-  `.skills/recovery`-Skill nach einem Absturz entscheiden, ob ein
+  `.agents/skills/recovery`-Skill nach einem Absturz entscheiden, ob ein
   Resume möglich ist.
 - **OpenCode-Session-Metriken** — Bei `--model opencode` werden
   `cost_usd`, Token-Zähler und `budget_exceeded` aus der Session
@@ -104,7 +104,7 @@ sichtbar bleiben:
 
 `SKILL.md` (`## Sicherheits- und Geheimnisschutz-Regeln`) und
 `reports/runs/.../summary.txt` verwenden konsistente Status-Strings, die
-das Dashboard und der `.skills/recovery`-Skill auswerten:
+das Dashboard und der `.agents/skills/recovery`-Skill auswerten:
 
 | Status | Bedeutung | Empfohlene Aktion |
 |--------|-----------|-------------------|
@@ -112,30 +112,30 @@ das Dashboard und der `.skills/recovery`-Skill auswerten:
 | `pr_created_with_warning` | Vibe-Turn-Limit erreicht, PR trotzdem offen | Manueller Review-Fokus auf Vollständigkeit |
 | `pr_created_from_existing_branch` | `--continue-run`, vorhandene Änderungen genutzt | Direkter Review |
 | `pr_skipped` | `--skip-pr` (Benchmark-Modus) | Diff selbst inspizieren |
-| `pr_failed` | PR-API-Aufruf fehlgeschlagen | `.skills/recovery` |
-| `push_failed` | Commit/Push fehlgeschlagen | `.skills/recovery` (meist Pipeline-Problem) |
+| `pr_failed` | PR-API-Aufruf fehlgeschlagen | `.agents/skills/recovery` |
+| `push_failed` | Commit/Push fehlgeschlagen | `.agents/skills/recovery` (meist Pipeline-Problem) |
 | `clone_failed` | Klonen fehlgeschlagen | Base-Branch prüfen, Token prüfen |
 | `branch_create_failed` | Branch konnte nicht angelegt werden | Recovery-Plan erneut starten |
-| `checkout_failed` | `checkout_existing_remote_branch` fehlgeschlagen | `.skills/recovery` |
+| `checkout_failed` | `checkout_existing_remote_branch` fehlgeschlagen | `.agents/skills/recovery` |
 | `validation_failed` | Syntax/Schreibrechte/Konfliktmarker | Meist Modell- oder Sandbox-Problem |
-| `no_changes` | Worker ohne Änderungen beendet | Prompt prüfen, ggf. `.skills/rework` |
+| `no_changes` | Worker ohne Änderungen beendet | Prompt prüfen, ggf. `.agents/skills/rework` |
 | `nonzero_with_changes` | Worker-Fehler, aber Änderungen da | Diff manuell prüfen |
-| `nonzero_without_changes` | Worker-Fehler ohne Änderungen | `.skills/rework` |
+| `nonzero_without_changes` | Worker-Fehler ohne Änderungen | `.agents/skills/rework` |
 | `rate_limit_deferred` | Codex-Rate-Limit erreicht | Bei Batch: erneut einplanen |
 | `lock_failed` | Issue-Lock konnte nicht erworben werden | Später erneut versuchen |
 | `branch_conflict` | Anderer Run arbeitet am gleichen Branch | Auf Konflikt-Run warten |
-| `started` | Initialer Zustand, kein Worker-Output | Wahrscheinlich Abbruch — `.skills/recovery` |
+| `started` | Initialer Zustand, kein Worker-Output | Wahrscheinlich Abbruch — `.agents/skills/recovery` |
 | `skip_existing_pr` | Branch hatte bereits offenen PR | Manuell prüfen |
-| `skip_merged_pr` | PR war bereits gemergt | Branch ggf. mit `.skills/git-cleanup` löschen |
-| `skip_closed_pr` | PR war geschlossen, ungemergt | `.skills/rework` empfohlen |
+| `skip_merged_pr` | PR war bereits gemergt | Branch ggf. mit `.agents/skills/git-cleanup` löschen |
+| `skip_closed_pr` | PR war geschlossen, ungemergt | `.agents/skills/rework` empfohlen |
 
 ## 7. Aufräumen
 
 Nach einem Merge des PRs kommen diese Schritte:
 
-1. `.skills/rework` — falls Reviewer Anmerkungen haben.
-2. `.skills/recovery` — falls Artefakte aufgeräumt werden müssen.
-3. `.skills/git-cleanup` — gemergte AI-Branches sicher löschen.
+1. `.agents/skills/rework` — falls Reviewer Anmerkungen haben.
+2. `.agents/skills/recovery` — falls Artefakte aufgeräumt werden müssen.
+3. `.agents/skills/git-cleanup` — gemergte AI-Branches sicher löschen.
 4. `python scripts/post_merge_cleanup.py` — Bulk-Cleanup vieler Repos.
 
 ## 8. Erweiterung

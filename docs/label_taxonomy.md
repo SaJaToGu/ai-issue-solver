@@ -93,7 +93,10 @@ Labels that map issues to specific agent roles for automated routing.
 | `agent/research` | Issues for research and evidence collection |
 | `agent/planner` | Issues for planning and backlog shaping |
 | `agent/solver` | Issues for implementation and coding work |
-| `agent/reviewer` | Issues for PR review and quality assurance |
+| `agent/reviewer` | Issues for PR review and quality assurance (general) |
+| `agent/reviewer-code` | Per-PR code review (logic, tests, lint/type/style). See `.agents/reviewers/reviewer-code.md` |
+| `agent/reviewer-architecture` | Per-PR architecture review (fit, outside-in, assumptions). See `.agents/reviewers/reviewer-architecture.md` |
+| `agent/reviewer-documentation` | Per-PR documentation review (completeness, accuracy, cross-refs). See `.agents/reviewers/reviewer-documentation.md` |
 
 ## Mapping: Existing Labels to New Taxonomy
 

@@ -18,8 +18,8 @@ bash .agents/skills/solve-issues/helpers/recovery_check.sh \
   beginnen.
 - Pro Branch: ein Eintrag pro PR mit Status
   - **OFFEN** — Solver überspringt diesen Branch.
-  - **GEMERGED** — Branch ist obsolet, `.skills/git-cleanup` empfohlen.
-  - **GESCHLOSSEN (unmerged)** — `.skills/rework` empfohlen.
+  - **GEMERGED** — Branch ist obsolet, `.agents/skills/git-cleanup` empfohlen.
+  - **GESCHLOSSEN (unmerged)** — `.agents/skills/rework` empfohlen.
 
 ## Anwendungsfälle
 

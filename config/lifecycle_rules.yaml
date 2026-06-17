@@ -1,0 +1,113 @@
+# ═══════════════════════════════════════════════════════════════════
+# ai-issue-solver — Knowledge Lifecycle Rules
+# ═══════════════════════════════════════════════════════════════════
+#
+# This file defines the deterministic rules used by
+# scripts/knowledge_manager.py to decide what to keep, archive,
+# promote, or delete.
+#
+# Two tiers:
+#   archive  — fully automatic (files are moved to an archive dir)
+#   promote  — queued for human review (candidate → permanent knowledge)
+#   delete   — queued for human review (irreversible)
+#   keep     — the default for everything that matches no rule
+#
+# Human review queue: reports/knowledge-review-queue.json
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Archive rules (automatic) ─────────────────────────────────────
+# Files matching ANY rule are moved to docs/archive/ without human
+# approval. The move is logged and reversible (archive dir is not
+# git-ignored).
+archive:
+  enabled: true
+  conditions:
+    - name: mtime_older_than
+      description: "Archive files with no modification in N days"
+      days: 90
+      paths:
+        - "docs/BACKLOG/"
+        - "docs/archive/"
+    - name: no_incoming_references
+      description: "Archive files not referenced by any other tracked document"
+      enabled: true
+      min_references: 0
+  # Paths exempt from all archive rules
+  excluded_paths:
+    - "docs/AGENTS.md"
+    - "docs/ROADMAP.md"
+    - "docs/CURRENT_CONTEXT.md"
+    - "docs/label_taxonomy.md"
+    - "docs/RELEASE_REVIEW_AGENDA.md"
+
+# ── Promote rules (human review required) ─────────────────────────
+# Candidates are added to the review queue. The Knowledge Manager
+# does NOT auto-promote; a human must approve each entry.
+promote:
+  enabled: true
+  require_human_approval: true
+  conditions:
+    - name: frequently_referenced
+      description: "Files referenced more than N times across the knowledge base"
+      min_reference_count: 3
+      paths:
+        - "docs/"
+        - ".agents/skills/"
+    - name: manual_tag
+      description: "Files containing a 'promote-candidate' marker in the first 5 lines"
+      enabled: true
+      marker: "promote-candidate"
+
+# ── Delete rules (human review required) ──────────────────────────
+# Destructive. The Knowledge Manager queues candidates; a human must
+# explicitly approve each one before the file is removed.
+delete:
+  enabled: true
+  require_human_approval: true
+  conditions:
+    - name: archived_longer_than
+      description: "Delete archived files that have been untouched for N days"
+      days: 365
+      path: "docs/archive/"
+    - name: orphaned_long_term
+      description: "Delete non-archived files with zero references and old mtime"
+      days: 180
+      min_references: 0
+  # Protected paths — never queued for deletion
+  excluded_paths:
+    - "docs/AGENTS.md"
+    - "docs/ROADMAP.md"
+    - "docs/CURRENT_CONTEXT.md"
+    - "docs/label_taxonomy.md"
+    - "README.md"
+    - "LICENSE"
+
+# ── Human review queue ────────────────────────────────────────────
+# Location and format of the queue file that the Knowledge Manager
+# writes promote/delete candidates into.
+human_review_queue:
+  path: "reports/knowledge-review-queue.json"
+  format: json
+
+# ── Scanned directories ───────────────────────────────────────────
+paths:
+  knowledge_directories:
+    - "docs/"
+    - ".agents/skills/"
+  archive_directory: "docs/archive/"
+
+# ── Reference scan ────────────────────────────────────────────────
+# Controls how the script resolves cross-references between files.
+# A "reference" is any match of the filename stem (without extension)
+# inside another tracked document's content.
+reference_scan:
+  enabled: true
+  file_patterns:
+    - "*.md"
+    - "*.yaml"
+    - "*.yml"
+    - "*.py"
+  # Files that should not be scanned FOR references (but still scanned
+  # as potential targets)
+  exclude_from_reference_search:
+    - "docs/archive/"

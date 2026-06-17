@@ -297,8 +297,16 @@ class CodexEnvironmentPreflightTests(unittest.TestCase):
     def test_preflight_uses_default_runner_without_token_validation(self):
         # Ohne GITHUB_TOKEN sollte der Preflight früh fehlschlagen,
         # nicht stillschweigend `requests is None` maskieren.
-        with self.assertRaises((SystemExit, Exception)):
-            run_codex_environment_preflight({})
+        # Der Fallback ``gh auth token`` wird deterministisch auf
+        # ``FileNotFoundError`` gepatcht, damit der Test in jeder
+        # Umgebung (CI, Developer-Maschine mit ``gh auth login``,
+        # Mavis-Shell) gleich verhält.
+        import unittest.mock as mock
+        with mock.patch(
+            "subprocess.run", side_effect=FileNotFoundError("gh not found")
+        ):
+            with self.assertRaises((SystemExit, Exception)):
+                run_codex_environment_preflight({})
 
 
 if __name__ == "__main__":

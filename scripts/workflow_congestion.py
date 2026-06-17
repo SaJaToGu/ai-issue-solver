@@ -187,7 +187,7 @@ def is_green_unreviewed_pr(pr: WorkflowPullRequest) -> bool:
 
 
 def parse_backlog_entries(backlog_path: Path) -> list[BacklogEntry]:
-    """Liest Backlog-Eintraege aus docs/NEXT_BACKLOG.md und gibt sie strukturiert zurueck."""
+    """Liest Backlog-Eintraege aus docs/BACKLOG/open.md und gibt sie strukturiert zurueck."""
     if not backlog_path.exists():
         return []
     try:

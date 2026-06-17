@@ -3,3 +3,6 @@
 
 # GitHub API
 requests>=2.31.0
+
+# YAML parsing (role_routing.yaml)
+pyyaml>=6.0

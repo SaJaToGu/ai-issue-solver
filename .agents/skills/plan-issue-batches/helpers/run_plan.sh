@@ -22,7 +22,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 # 1. Argumente parsen und validieren
-PARSE_OUT="$(python "$ROOT_DIR/.skills/plan-issue-batches/helpers/parse_args.py" "$@")"
+PARSE_OUT="$(python "$ROOT_DIR/.agents/skills/plan-issue-batches/helpers/parse_args.py" "$@")"
 PARSE_RC=$?
 if [ "$PARSE_RC" -ne 0 ]; then
   echo "$PARSE_OUT" >&2
