@@ -566,7 +566,7 @@ class RunScanIntegrationTests(unittest.TestCase):
     def tearDown(self):
         import knowledge_manager as km
         km.ROOT = self._original_root
-        km.KNOWLEDGE_DIRECTORIES = ["docs/", ".agents/skills/", ".skills/"]
+        km.KNOWLEDGE_DIRECTORIES = ["docs/", ".agents/skills/"]
         km.ARCHIVE_DIR = Path(__file__).resolve().parents[1] / "docs" / "archive"
         self.tmpdir.cleanup()
 

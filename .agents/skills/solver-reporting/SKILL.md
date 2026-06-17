@@ -30,7 +30,7 @@ Verwende diesen Skill, wenn eines der folgenden Szenarien zutrifft:
 
 Nicht verwenden für reine Solver-Läufe (`.agents/skills/solve-issues`),
 reine Analyse (`analyze_repos.py`) oder Rework eines bestehenden PRs
-(`.skills/rework`).
+(`.agents/skills/rework`).
 
 ## Voraussetzungen
 
@@ -85,7 +85,7 @@ Der Skill liefert drei übliche Aggregations-Perspektiven:
 `git_change_summary` in ein einheitliches Schema mit sechs Feldern
 (`worker_status`, `has_changes`, `test_status`, `delivery_status`,
 `failure_class`, `recovery_status`), das von Dashboard, Benchmark und
-`.skills/recovery` ausgewertet wird.
+`.agents/skills/recovery` ausgewertet wird.
 
 ## Metriken und Scorecards
 
@@ -285,9 +285,9 @@ bash .agents/skills/solver-reporting/tests/run_skill_tests.sh
 
 - `.agents/skills/solve-issues` — erzeugt die Run-Reports, die dieser
   Skill aggregiert.
-- `.skills/recovery` — inspiziert einzelne Run-Report-Artefakte und
+- `.agents/skills/recovery` — inspiziert einzelne Run-Report-Artefakte und
   empfiehlt Resume / Push / Retry / Delete.
-- `.skills/rework` — zielt auf gezielte Nacharbeit an generierten PRs.
-- `.skills/git-cleanup` — löscht gemergte AI-Branches.
+- `.agents/skills/rework` — zielt auf gezielte Nacharbeit an generierten PRs.
+- `.agents/skills/git-cleanup` — löscht gemergte AI-Branches.
 
 Diese Skills ergänzen den hier beschriebenen Reporting-Workflow.

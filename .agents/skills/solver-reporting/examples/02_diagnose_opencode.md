@@ -64,6 +64,6 @@ Exit-Code:         0 = keine Befunde, 2 = Befunde vorhanden
 ## Wann ist die Diagnose sinnvoll?
 
 - Nach einem OpenCode-Run mit `worker_exit_code != 0`.
-- Vor einem `.skills/rework`-Schritt, um zu prüfen, ob das Problem beim
+- Vor einem `.agents/skills/rework`-Schritt, um zu prüfen, ob das Problem beim
   Worker oder in der Pipeline lag.
 - Bei wiederholt fehlschlagenden Edit-Versuchen in einer Datei.

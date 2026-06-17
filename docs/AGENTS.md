@@ -201,7 +201,7 @@ archive, delete.
 - Run `archive` automatically for items that match the archive rules
 - Require human approval for `promote` (move to permanent knowledge)
   and `delete` (irreversible)
-- Audit `docs/`, `.agents/skills/`, and `.skills/` on a schedule
+- Audit `docs/` and `.agents/skills/` on a schedule
 - Maintain a human review queue (`reports/knowledge-review-queue.json`)
 
 **Implementation shape:**
@@ -256,18 +256,18 @@ deliverable. Each is now a follow-up **issue** for implementation.
 | 2 | **Planner** is split: Planner (LLM) handles roadmap, issue creation, prioritization, architecture decisions. **Knowledge Manager** (deterministic script) handles `keep` / `promote` / `archive` / `delete`. | #312: Implemented — `scripts/knowledge_manager.py`, `config/lifecycle_rules.yaml` |
 | 3 | **Reviewer** is split into **Code Reviewer**, **Architecture Reviewer**, **Documentation Reviewer**. | #313: Reviewer subtypes |
 | 4 | **`config/role_routing.yaml`** is the canonical place to map role → provider → model → context. Implementation requires verified OpenRouter model slugs and per-role budget fields. | #314: role_routing.yaml draft |
-| 5 | **Skill folder split** (`.agents/skills/` + `.skills/`) is unified into one canonical path. The audit documented 8 skills; the unified structure maps them, it does not invent new skills. | #315: Skill folder unification |
+| 5 | **Skill folder split** (`.agents/skills/` + `.skills/`) is unified into one canonical path. All 8 skills now live under `.agents/skills/`. | #315: Skill folder unification — **implemented** |
 
-The skill list to be unified, with their current locations:
+All 8 skills now live under a single canonical path:
 
 - `model-selection` (`.agents/skills/`)
 - `run-overnight` (`.agents/skills/`)
 - `solve-issues` (`.agents/skills/`)
 - `solver-reporting` (`.agents/skills/`)
-- `git-cleanup` (`.skills/`)
-- `plan-issue-batches` (`.skills/`)
-- `recovery` (`.skills/`)
-- `rework` (`.skills/`)
+- `git-cleanup` (`.agents/skills/`)
+- `plan-issue-batches` (`.agents/skills/`)
+- `recovery` (`.agents/skills/`)
+- `rework` (`.agents/skills/`)
 
 ---
 
@@ -299,7 +299,7 @@ backlog.
 | #2 Planner vs Knowledge Manager split (#312) | Implemented |
 | #3 Reviewer subtypes (#313) | Open — follow-up issue needed |
 | #4 role_routing.yaml draft (#314) | Implemented |
-| #5 Skill folder unification (#315) | Open — follow-up issue needed |
+| #5 Skill folder unification (#315) | Implemented |
 
 The remaining open items above should be tracked as separate GitHub
 issues. Add **agent-based issue routing** in the triage step (label →

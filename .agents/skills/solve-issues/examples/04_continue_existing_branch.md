@@ -35,7 +35,7 @@ python scripts/solve_issues.py \
 ## Verwandt: Recovery-Skill
 
 Wenn unklar ist, ob der Branch wiederverwendet werden kann, hilft der
-`.skills/recovery`-Skill weiter — er klassifiziert vorhandene
+`.agents/skills/recovery`-Skill weiter — er klassifiziert vorhandene
 Run-Report-Artefakte in `resume` / `push-pr` / `retry-clean` /
 `manual-review` / `delete`.
 

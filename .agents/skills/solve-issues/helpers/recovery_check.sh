@@ -140,5 +140,5 @@ for branch in candidates:
         else:
             print(f"  • {branch}: GESCHLOSSENER (unmerged) PR #{pr['number']} {pr['html_url']} (Rework prüfen)")
 
-print("→ Empfehlung: in `.skills/recovery` weiterlesen, dann passende Aktion wählen.")
+print("→ Empfehlung: in `.agents/skills/recovery` weiterlesen, dann passende Aktion wählen.")
 PY

@@ -2,14 +2,14 @@
 # Wrapper, der die unittest-Suite des `plan-issue-batches`-Skills ausführt.
 #
 # Verwendung:
-#   bash .skills/plan-issue-batches/tests/run_skill_tests.sh
-#   bash .skills/plan-issue-batches/tests/run_skill_tests.sh --verbose
+#   bash .agents/skills/plan-issue-batches/tests/run_skill_tests.sh
+#   bash .agents/skills/plan-issue-batches/tests/run_skill_tests.sh --verbose
 
 set -euo pipefail
 
-# tests/ → plan-issue-batches/ → skills/ → .skills/ → REPO_ROOT
+# tests/ → plan-issue-batches/ → skills/ → .agents/skills/ → REPO_ROOT
 ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
-TESTS_DIR="$ROOT_DIR/.skills/plan-issue-batches/tests"
+TESTS_DIR="$ROOT_DIR/.agents/skills/plan-issue-batches/tests"
 
 PYTHON="${PYTHON:-python}"
 

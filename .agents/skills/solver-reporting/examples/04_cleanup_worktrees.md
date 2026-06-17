@@ -49,7 +49,7 @@ Kandidaten (älter als 14 Tage):
 - Verzeichnisse werden **nur** über `shutil.rmtree` gelöscht, niemals
   mit `rm -rf`.
 - Vor `--apply` sollte der Dry-Run-output mit der
-  [`.skills/recovery`](../SKILL.md)-Empfehlung abgeglichen werden.
+  [`.agents/skills/recovery`](../SKILL.md)-Empfehlung abgeglichen werden.
 
 ## Alternative: Über den Solver-Script
 

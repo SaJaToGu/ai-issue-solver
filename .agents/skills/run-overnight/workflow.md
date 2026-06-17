@@ -115,7 +115,7 @@ Hintergrund gut sichtbar bleiben:
 ## 7. Fehlerklassifikation
 
 Die `summary.txt` und der `summary_check.sh`-Helfer verwenden konsistente
-Status-Strings, die das Dashboard und der `.skills/recovery`-Skill
+Status-Strings, die das Dashboard und der `.agents/skills/recovery`-Skill
 auswerten:
 
 | Status in `summary.txt` | Bedeutung | Empfohlene Aktion |
@@ -136,7 +136,7 @@ der Zustand aus zwei Quellen rekonstruierbar:
    auch ohne abschließende Overnight-Summary aussagekräftig sind
    (`summary.txt`, `health.json`, `worker-output.log`).
 
-Der `.skills/recovery`-Skill erklärt die Schritte im Detail; die
+Der `.agents/skills/recovery`-Skill erklärt die Schritte im Detail; die
 wichtigsten Befehle sind in `SKILL.md` (`## Monitoring und Reporting`)
 verlinkt.
 
