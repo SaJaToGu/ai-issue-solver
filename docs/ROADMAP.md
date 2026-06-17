@@ -27,8 +27,17 @@ project. It is intentionally lean and strategic; concrete tasks live in
   routing, release-review process. Close-out:
   [`RELEASE_REVIEW_0.7.0.md`](RELEASE_REVIEW_0.7.0.md).
   Release notes: [`RELEASE_NOTES_0.7.0.md`](RELEASE_NOTES_0.7.0.md).
-- **0.8.0** — TBD. Candidate anchors in
-  [`RELEASE_REVIEW_0.7.0.md` §6](../../docs/RELEASE_REVIEW_0.7.0.md#6-suggested-080-anchors).
+- **0.8.0** skipped — planned as Governance & Knowledge Release,
+  but the scope (Handover Audit + Reviewer Runtime + Knowledge
+  Dry Run) had no independent identity once meta-planning began.
+  Pivoted.
+- **0.9.0** planned — Solver Validation Release. The first release
+  whose success criterion is empirical evidence that the solver
+  resolves real GitHub issues end-to-end. Plan:
+  [`PLANNING_0.9.0.md`](PLANNING_0.9.0.md).
+  Four pieces: Backlog Cleanup (Pre-Work), Cost-Limit-Forwarding
+  Fix, Reviewer Runtime, Validation Metrics & Run. Hard Definition
+  of Solved: PR merged + CI green.
 
 ## Strategic Items (not yet in Backlog)
 
