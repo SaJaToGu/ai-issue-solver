@@ -74,6 +74,12 @@ reviewer_code:
     - docs/AGENTS.md   # only the "Settled principle: Solver stays dumb" section
   monthly_budget_usd: 5.0
   cost_alert_threshold: 0.8
+  prompt_file: .agents/reviewers/reviewer-code.md
+  notes: |
+    Per-PR code review (logic, tests, lint/type/style). System prompt
+    at `.agents/reviewers/reviewer-code.md`. Selectable via
+    `agent/reviewer-code` label. Do NOT comment on architecture or
+    documentation -- escalate to the respective sub-role.
 
 # ── Architecture Reviewer ────────────────────────────────────────
 # Purpose: architecture review, outside-in review, assumption
@@ -90,6 +96,14 @@ reviewer_architecture:
     - README.md
   monthly_budget_usd: 5.0
   cost_alert_threshold: 0.8
+  prompt_file: .agents/reviewers/reviewer-architecture.md
+  notes: |
+    Per-PR architecture review (fit with project direction, outside-in,
+    assumption check, strategic recs). System prompt at
+    `.agents/reviewers/reviewer-architecture.md`. Selectable via
+    `agent/reviewer-architecture` label. Distinct from
+    `architecture_agent` below: this role is per-PR and runs often;
+    `architecture_agent` is project-direction and runs rarely.
 
 # ── Documentation Reviewer ───────────────────────────────────────
 # Purpose: documentation completeness and accuracy. Cheaper model
@@ -104,6 +118,13 @@ reviewer_documentation:
     - docs/
   monthly_budget_usd: 2.0
   cost_alert_threshold: 0.8
+  prompt_file: .agents/reviewers/reviewer-documentation.md
+  notes: |
+    Per-PR documentation review (completeness, accuracy,
+    cross-references). System prompt at
+    `.agents/reviewers/reviewer-documentation.md`. Selectable via
+    `agent/reviewer-documentation` label. Do NOT comment on code logic
+    or architecture -- escalate to the respective sub-role.
 
 # ── Knowledge Manager (deterministic workflow) ──────────────────
 # Purpose: keep / promote / archive / delete lifecycle actions.
@@ -154,6 +175,12 @@ architecture_agent:
     use. The entry exists so that the role registry is complete
     and the Operator can enable it later by setting
     `architecture_agent.enabled: true`.
+
+    Distinct from `reviewer_architecture`: this role is for
+    project-direction / outside-in reviews (runs rarely, Opus
+    reasoning). `reviewer_architecture` is for per-PR architecture
+    review (runs often, GPT-5). They share a lens but differ in
+    scope and cadence. Do not duplicate prompts across them.
 
 # ── Budget Summary (informational, enforced by the Solver) ───────
 # Total monthly API budget (LLM roles only):

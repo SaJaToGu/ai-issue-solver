@@ -297,7 +297,7 @@ backlog.
 |---|---|
 | #1 Watchdog as deterministic workflow (#311) | Implemented |
 | #2 Planner vs Knowledge Manager split (#312) | Implemented |
-| #3 Reviewer subtypes (#313) | Open — follow-up issue needed |
+| #3 Reviewer subtypes (#313) | Implemented |
 | #4 role_routing.yaml draft (#314) | Implemented |
 | #5 Skill folder unification (#315) | Implemented |
 
