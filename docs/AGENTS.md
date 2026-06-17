@@ -205,11 +205,11 @@ deliverable. Each is now a follow-up **issue** for implementation.
 
 | # | Decision | Follow-up issue |
 |---|---|---|
-| 1 | **Watchdog** is a deterministic workflow (`scripts/watchdog.py` + cron), not an LLM agent. Optional LLM escalation only on anomalies. | #TBD: Watchdog as deterministic workflow |
-| 2 | **Planner** is split: Planner (LLM) handles roadmap, issue creation, prioritization, architecture decisions. **Knowledge Manager** (deterministic script) handles `keep` / `promote` / `archive` / `delete`. | #TBD: Planner vs Knowledge Manager split |
-| 3 | **Reviewer** is split into **Code Reviewer**, **Architecture Reviewer**, **Documentation Reviewer**. | #TBD: Reviewer subtypes |
-| 4 | **`config/role_routing.yaml`** is the canonical place to map role → provider → model → context. Implementation requires verified OpenRouter model slugs and per-role budget fields. | #TBD: role_routing.yaml draft |
-| 5 | **Skill folder split** (`.agents/skills/` + `.skills/`) is unified into one canonical path. The audit documented 8 skills; the unified structure maps them, it does not invent new skills. | #TBD: Skill folder unification |
+| 1 | **Watchdog** is a deterministic workflow (`scripts/watchdog.py` + cron), not an LLM agent. Optional LLM escalation only on anomalies. | #311: Watchdog as deterministic workflow |
+| 2 | **Planner** is split: Planner (LLM) handles roadmap, issue creation, prioritization, architecture decisions. **Knowledge Manager** (deterministic script) handles `keep` / `promote` / `archive` / `delete`. | #312: Planner vs Knowledge Manager split |
+| 3 | **Reviewer** is split into **Code Reviewer**, **Architecture Reviewer**, **Documentation Reviewer**. | #313: Reviewer subtypes |
+| 4 | **`config/role_routing.yaml`** is the canonical place to map role → provider → model → context. Implementation requires verified OpenRouter model slugs and per-role budget fields. | #314: role_routing.yaml draft |
+| 5 | **Skill folder split** (`.agents/skills/` + `.skills/`) is unified into one canonical path. The audit documented 8 skills; the unified structure maps them, it does not invent new skills. | #315: Skill folder unification |
 
 The skill list to be unified, with their current locations:
 
@@ -248,8 +248,8 @@ backlog.
 
 1. Create follow-up issues for the five 0.7.0 decisions above (one
    issue per row in the table).
-2. Implement `config/role_routing.yaml` (issue #TBD) — depends on
+2. Implement `config/role_routing.yaml` (issue #314) — depends on
    decisions #1, #2, #3.
-3. Unify the skill folder structure (issue #TBD).
+3. Unify the skill folder structure (issue #315).
 4. Add **agent-based issue routing** in the triage step (label →
    script) — this is the operational layer that uses `role_routing.yaml`.
