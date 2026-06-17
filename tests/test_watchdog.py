@@ -20,6 +20,8 @@ from watchdog import (  # noqa: E402
     check_cost,
     check_progress,
     check_stuck,
+    parse_args,
+    run_check,
     write_status_report,
     _active_runs,
 )
@@ -343,6 +345,69 @@ class WatchdogActiveRunsTests(unittest.TestCase):
         self._write_run("run-001", "started")
         runs = _active_runs(self.runs_dir)
         self.assertEqual(len(runs), 1)
+
+
+class WatchdogExitCodeTests(unittest.TestCase):
+    """End-to-end: run_check() Exit-Code-Mapping.
+
+    Mapping (cron-tauglich):
+      0 = keine Anomalien
+      1 = nur Warnungen
+      2 = mindestens ein 'critical'-Finding
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.runs_dir = Path(self.tmpdir.name) / "runs"
+        self.runs_dir.mkdir()
+        self.budget_path = Path(self.tmpdir.name) / "budget_tracker.json"
+        self.output_path = Path(self.tmpdir.name) / "status.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _write_run(self, name: str, last_activity_min_ago: int) -> None:
+        run_dir = self.runs_dir / name
+        run_dir.mkdir()
+        ts = (datetime.now() - timedelta(minutes=last_activity_min_ago)).isoformat()
+        (run_dir / "metadata.json").write_text(
+            json.dumps({"phase": "started", "last_activity_at": ts}),
+            encoding="utf-8",
+        )
+
+    def test_exit_code_zero_on_clean_state(self):
+        args = parse_args([
+            "check",
+            "--runs-dir", str(self.runs_dir),
+            "--output", str(self.output_path),
+        ])
+        self.assertEqual(run_check(args), 0)
+
+    def test_exit_code_one_on_warning_finding(self):
+        # Budget-ratio warning (80%-99% of budget) → severity warning
+        tracker = {"solver": {"spent": 18.0, "budget": 20.0}}
+        self.budget_path.write_text(json.dumps(tracker), encoding="utf-8")
+        self._write_run("run-001", last_activity_min_ago=1)
+        args = parse_args([
+            "check",
+            "--runs-dir", str(self.runs_dir),
+            "--budget-tracker", str(self.budget_path),
+            "--output", str(self.output_path),
+        ])
+        self.assertEqual(run_check(args), 1)
+
+    def test_exit_code_two_on_critical_finding(self):
+        # Budget-ratio >= 100% → severity critical
+        tracker = {"solver": {"spent": 20.0, "budget": 20.0}}
+        self.budget_path.write_text(json.dumps(tracker), encoding="utf-8")
+        self._write_run("run-001", last_activity_min_ago=1)
+        args = parse_args([
+            "check",
+            "--runs-dir", str(self.runs_dir),
+            "--budget-tracker", str(self.budget_path),
+            "--output", str(self.output_path),
+        ])
+        self.assertEqual(run_check(args), 2)
 
 
 if __name__ == "__main__":

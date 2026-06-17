@@ -489,6 +489,10 @@ def run_check(args: argparse.Namespace) -> int:
     )
 
     anomalies = cost_findings or progress_findings or stuck_findings
+    has_critical = any(
+        f.severity == "critical"
+        for f in (*cost_findings, *progress_findings, *stuck_findings)
+    )
 
     # Print findings
     if cost_findings:
@@ -522,7 +526,11 @@ def run_check(args: argparse.Namespace) -> int:
             print("[watchdog] LLM escalation requested with context:")
             for line in context_lines:
                 print(f"  {line}")
-        return 1
+        # Exit-Code-Stufen (cron-tauglich):
+        #   0 = keine Anomalien
+        #   1 = nur Warnungen (Monitoring-Alert auslösen)
+        #   2 = mindestens ein 'critical'-Finding (Run abbrechen / Pager)
+        return 2 if has_critical else 1
     else:
         print("[watchdog] All checks passed. No anomalies detected.")
         return 0
