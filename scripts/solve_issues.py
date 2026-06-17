@@ -62,6 +62,47 @@ from utils import (
     require_config_value,
     require_github_config,
 )
+
+# Role routing & budget enforcement (optional, no hard import failure)
+_ROLE_ROUTING: dict | None = None
+_ROLE_ROUTING_LOADED: bool = False
+_BUDGET_TRACKING_ACTIVE: bool = False
+
+def _ensure_role_routing() -> dict | None:
+    """Lazy-load role routing config. Returns None on failure (non-fatal for CLI)."""
+    global _ROLE_ROUTING, _ROLE_ROUTING_LOADED
+    if _ROLE_ROUTING_LOADED:
+        return _ROLE_ROUTING
+    _ROLE_ROUTING_LOADED = True
+    try:
+        from role_routing_loader import load_role_config
+        _ROLE_ROUTING = load_role_config()
+        return _ROLE_ROUTING
+    except (ImportError, FileNotFoundError, ValueError) as exc:
+        print_err(f"Role routing not available: {exc}")
+        return None
+
+def _ensure_slug_verification() -> bool:
+    """Verify OpenRouter slugs. Returns True if OK or skipped, False on failure."""
+    try:
+        from verify_openrouter_slugs import verify_configured_slugs
+        missing = verify_configured_slugs()
+        if missing:
+            print_err(
+                "OpenRouter model slugs missing from live catalogue:\n"
+                + "\n".join(f"    - {s}" for s in sorted(missing))
+            )
+            print_err("Update config/role_routing.yaml or run:")
+            print_err("  python scripts/verify_openrouter_slugs.py --list-models")
+            return False
+        return True
+    except ImportError:
+        return True
+    except FileNotFoundError:
+        return True
+    except Exception as exc:
+        print_warn(f"Slug verification skipped: {exc}")
+        return True
 from solver_repository import (
     branch_has_changes_against_base,
     checkout_existing_remote_branch,
@@ -2586,7 +2627,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 max_run_input_tokens: int | None = None,
                 max_run_output_tokens: int | None = None,
                 max_run_cache_read_tokens: int | None = None,
-                ensemble: int = 0) -> bool:
+                ensemble: int = 0,
+                role_routing: dict | None = None) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -3013,6 +3055,19 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             if adapter_diagnostics.opencode_budget_exceeded:
                 opencode_session_metrics["budget_exceeded"] = adapter_diagnostics.opencode_budget_exceeded
 
+        # Monthly spending erfassen (solver role)
+        if role_routing is not None:
+            try:
+                from role_routing_loader import record_spending
+                cost_usd = 0.0
+                if adapter_diagnostics.opencode_session_totals:
+                    cost_usd = float(
+                        adapter_diagnostics.opencode_session_totals.get("cost_usd", 0.0)
+                    )
+                record_spending("solver", cost_usd)
+            except Exception as exc:
+                print_warn(f"Could not record spending: {exc}")
+
         # Modellauswahl-Metadaten im Report speichern (falls vorhanden)
         model_selection_metadata = None
         if auto_model:
@@ -3419,6 +3474,16 @@ def main():
 
     parser = argparse.ArgumentParser(description="GitHub Issues automatisch mit KI lösen")
     parser.add_argument(
+        "--skip-slug-verification",
+        action="store_true",
+        help="OpenRouter-Slug-Verifikation beim Start überspringen",
+    )
+    parser.add_argument(
+        "--skip-budget-check",
+        action="store_true",
+        help="Monatliches Budget-Limit pro Rolle ignorieren",
+    )
+    parser.add_argument(
         "--model", choices=list(MODEL_CONFIGS.keys()),
         help="KI-Modell: codex, mistral-vibe, opencode, openrouter, claude, openai, mistral oder ollama"
     )
@@ -3603,6 +3668,18 @@ def main():
 
     # Config laden
     cfg = load_env()
+
+    # Role routing config laden (überlebt Fehler — nur Warnung)
+    global _ROLE_ROUTING, _BUDGET_TRACKING_ACTIVE
+    _ROLE_ROUTING = _ensure_role_routing()
+
+    # OpenRouter-Slugs verifizieren (überspringbar mit --skip-slug-verification)
+    if _ROLE_ROUTING and not args.skip_slug_verification and not args.dry_run:
+        if not _ensure_slug_verification():
+            sys.exit(1)
+        print("   ✅ OpenRouter model slugs verified")
+
+    _BUDGET_TRACKING_ACTIVE = bool(_ROLE_ROUTING and not args.skip_budget_check)
 
     # Preflight-Checks durchfuehren
     if args.repo:
@@ -3802,6 +3879,19 @@ def main():
                 except Exception:
                     pass
 
+            # Monthly budget check (solver role)
+            if _BUDGET_TRACKING_ACTIVE and _ROLE_ROUTING:
+                solver_role = _ROLE_ROUTING.get("roles", {}).get("solver", {})
+                from role_routing_loader import check_budget
+                allowed, budget_msg = check_budget("solver", solver_role)
+                if not allowed:
+                    print_err(budget_msg)
+                    print_err("Use --skip-budget-check to bypass.")
+                    failed += 1
+                    continue
+                if budget_msg:
+                    print_warn(budget_msg)
+
             ok = solve_issue(
                 client=client,
                 issue=issue,
@@ -3826,6 +3916,7 @@ def main():
                 max_run_output_tokens=args.max_run_output_tokens,
                 max_run_cache_read_tokens=args.max_run_cache_read_tokens,
                 ensemble=args.ensemble,
+                role_routing=_ROLE_ROUTING if _BUDGET_TRACKING_ACTIVE else None,
             )
             if ok:
                 solved += 1
