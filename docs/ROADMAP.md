@@ -22,10 +22,13 @@ project. It is intentionally lean and strategic; concrete tasks live in
 
 ## Release Anchors
 
-- **0.6.0** ✅ — completed; skills + rework + batch cost forwarding.
-- **0.7.0** 🎯 — Information architecture, role-based context routing,
-  release-review process. Tracked via issue #309.
-- **0.8.0+** — TBD after 0.7.0 review.
+- **0.6.0** done — skills + rework + batch cost forwarding.
+- **0.7.0** done — Information architecture, role-based context
+  routing, release-review process. Close-out:
+  [`RELEASE_REVIEW_0.7.0.md`](RELEASE_REVIEW_0.7.0.md).
+  Release notes: [`RELEASE_NOTES_0.7.0.md`](RELEASE_NOTES_0.7.0.md).
+- **0.8.0** — TBD. Candidate anchors in
+  [`RELEASE_REVIEW_0.7.0.md` §6](../../docs/RELEASE_REVIEW_0.7.0.md#6-suggested-080-anchors).
 
 ## Strategic Items (not yet in Backlog)
 

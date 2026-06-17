@@ -2,6 +2,7 @@
 
 Created: 2026-06-15 (file introduced as part of Release 0.7.0 information
 architecture audit, issue #309).
+Last rewritten: 2026-06-18 (after Release 0.7.0 close-out).
 
 This document is a **short-lived snapshot** of where the project stands. It
 should be revisited after every release via
@@ -10,63 +11,59 @@ whenever the situation changes materially.
 
 ## Current Release
 
-- Release 0.6.0 completed.
-- `develop` merged into `main`.
-- Version 0.6.0 released.
-- Issue #309 opened as starting point for Release 0.7.0 planning.
+- Release 0.7.0 closed (see
+  [`RELEASE_REVIEW_0.7.0.md`](RELEASE_REVIEW_0.7.0.md) and
+  [`RELEASE_NOTES_0.7.0.md`](RELEASE_NOTES_0.7.0.md)).
+- HEAD at close: `b8fabf5`. Five architecture issues (#311, #312, #313,
+  #314, #315) plus the #309 audit all delivered.
+- Issue #309 is the meta-issue and is closed by the release review
+  document.
+- 0.8.0 planning has not started.
 
 ## Current Focus Areas
 
-### Information Architecture
+### 0.8.0 candidates (from the 0.7.0 close-out)
 
-Review and simplify project documentation.
+- **Wire reviewer prompts to a runtime** in a separate script (not in
+  `solve_issues.py`). Issue to be filed.
+- **Handover document audit** — deferred from #309. Issue to be filed.
+- **`architecture_agent` (future) — promote or remove.** Issue to be
+  filed.
+- **Backlog triage for 0.8.0** — `docs/BACKLOG/open.md` is 1043 lines and
+  most items are not prioritised.
+- **Knowledge Manager first dry-run** for the `archive` rule (no human
+  review). `promote` / `delete` stay human-gated.
+- **Watchdog cron + dashboard wiring** — verify the JSON status report
+  is consumable by `status_dashboard.py`.
 
-**Questions:**
+### Architectural invariants to preserve
 
-- What information belongs where?
-- Which documents are still needed?
-- Which documents are obsolete?
+- "Solver stays dumb" — the solver gets the issue, the touched files,
+  and one skill. Nothing else. 0.8.0 must not add LLM
+  responsibilities to `solve_issues.py`.
+- `.agents/skills/` for workflows with helpers/tests/examples;
+  `.agents/reviewers/` for LLM invocation profiles. Do not collapse.
+- Knowledge Manager is fail-closed: the solver role cannot run
+  `promote` or `delete`. The same posture applies to any future
+  destructive operation.
 
-### Agent Context Routing
+## Resolved Questions (closed by 0.7.0)
 
-**Define:**
-
-- Planner context
-- Solver context
-- Reviewer context
-- Watchdog context
-
-**Goal:** Provide each agent only the information required for its role.
-
-### Release Review Process
-
-Introduce a repeatable release review workflow.
-Planner should eventually prepare release review discussions.
-
-### Knowledge Structure
-
-Current discussion suggests separation between:
-
-- Long-term project context
-- Current release context
-- Discussions
-- Issues
-
-Exact structure still under review.
+- ~~Should `NEXT_BACKLOG.md` be renamed?~~ Yes — done in the audit
+  (`BACKLOG/open.md` + `BACKLOG/done.md` + `ROADMAP.md`).
+- ~~How should context be routed to agents?~~ `config/role_routing.yaml`
+  (delivered in #314).
+- ~~How should outdated information be removed?~~ `keep / promote /
+  archive / delete` lifecycle, deterministic script
+  (`scripts/knowledge_manager.py`), human-in-the-loop for destructive
+  actions.
+- ~~How should outside-in reviews be performed?~~ `architecture_agent`
+  (future, parked) for project direction; `reviewer_architecture`
+  for per-PR review. Roles split to avoid overlap.
 
 ## Open Questions
 
-- Should `NEXT_BACKLOG.md` be renamed? → **Yes, done in this audit** (now
-  `docs/BACKLOG/open.md` + `docs/BACKLOG/done.md` + `docs/ROADMAP.md`).
-- Which existing documents can be removed? → see the
-  [Release 0.7.0 audit document](#) (or issue #309) for the per-document
-  decisions.
-- How should discussion results be captured? → **Rule:** a discussion
-  result only becomes permanent project knowledge if it survives the
-  release-review process. Otherwise it stays as a discussion artifact.
-- How should context be routed to agents? → `config/role_routing.yaml`
-  (planned, not yet implemented).
-- How should outdated information be removed? → lifecycle: `keep`,
-  `promote`, `archive`, `delete`. Handled via the release-review agenda.
-- How should outside-in reviews be performed? → Architecture Agent
-  (future); see [`AGENTS.md`](AGENTS.md).
+- **Handover document audit** — the audit deliverable for #309 was
+  deferred. Open.
+- **Backlog health** — `docs/BACKLOG/open.md` is large and
+  under-prioritised. Open.
