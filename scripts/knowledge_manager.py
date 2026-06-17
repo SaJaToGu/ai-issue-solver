@@ -744,6 +744,40 @@ def run_scan(
 # ── CLI ───────────────────────────────────────────────────────────
 
 
+# Issue #312: promote/delete are irreversible knowledge-governance actions.
+# They must fail closed and require explicit source-of-truth + confirmation.
+
+ALLOWED_PROMOTE_SOURCES = ("user", "planner")
+ALLOWED_DELETE_SOURCES = ("user",)
+
+
+def _refuse(action: str, reason: str) -> "NoReturn":
+    """Single exit point for all governance rejections (issue #312).
+
+    Always exits with code 1 and a clear, action-prefixed message on
+    stderr. Used by every fail-closed check in this module so that
+    the exit code is consistent regardless of which rule was violated.
+    """
+    print(f"Refusing {action}: {reason}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _validate_source_of_truth(action: str, source: str | None) -> str:
+    """Fail-closed: missing or invalid source-of-truth is always rejected."""
+    if not source:
+        _refuse(action, "source-of-truth is required; fail-closed.")
+    if action == "promote" and source not in ALLOWED_PROMOTE_SOURCES:
+        _refuse(action, f"--source-of-truth must be one of: {', '.join(ALLOWED_PROMOTE_SOURCES)}.")
+    if action == "delete" and source not in ALLOWED_DELETE_SOURCES:
+        _refuse(action, "--source-of-truth must be user.")
+    return source
+
+
+def _validate_user_confirmed(action: str, confirmed: bool) -> None:
+    if not confirmed:
+        _refuse(action, "--user-confirmed is required.")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Knowledge Manager — deterministic knowledge lifecycle engine",
@@ -804,6 +838,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--queue",
         default=str(REVIEW_QUEUE_PATH),
         help="Path to review queue JSON",
+    )
+
+    # promote command (Issue #312 governance)
+    promote_parser = subparsers.add_parser(
+        "promote",
+        help="Promote a file to permanent knowledge (requires explicit authorization)",
+    )
+    promote_parser.add_argument(
+        "--target", required=True, help="File path to promote"
+    )
+    promote_parser.add_argument(
+        "--source-of-truth",
+        required=True,
+        help="Authorization source (must be 'user' or 'planner') — issue #312",
+    )
+    promote_parser.add_argument(
+        "--user-confirmed",
+        action="store_true",
+        help="Explicit human confirmation that this action is authorized",
+    )
+    promote_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually perform the action (default: dry-run preview only)",
+    )
+
+    # delete command (Issue #312 governance)
+    delete_parser = subparsers.add_parser(
+        "delete",
+        help="Delete a file from the knowledge base (requires explicit authorization)",
+    )
+    delete_parser.add_argument(
+        "--target", required=True, help="File path to delete"
+    )
+    delete_parser.add_argument(
+        "--source-of-truth",
+        required=True,
+        help="Authorization source (must be 'user') — issue #312",
+    )
+    delete_parser.add_argument(
+        "--user-confirmed",
+        action="store_true",
+        help="Explicit human confirmation that this action is authorized",
+    )
+    delete_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually perform the action (default: dry-run preview only)",
     )
 
     return parser.parse_args(argv)
@@ -902,6 +984,37 @@ def run_status_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_promote_command(args: argparse.Namespace) -> int:
+    """Issue #312 governance: explicit, fail-closed promote.
+
+    Subcommand structure makes combine-with-archive/delete structurally
+    impossible (different commands, different argv). Defense in depth:
+    validate the argv-level flags here as well.
+    """
+    _validate_user_confirmed("promote", bool(getattr(args, "user_confirmed", False)))
+    source = _validate_source_of_truth("promote", getattr(args, "source_of_truth", None))
+    target = args.target
+    if getattr(args, "apply", False):
+        print(f"[knowledge] promote (apply): source={source}, target={target}")
+        # TODO: actual promote logic — move/copy target to permanent knowledge.
+        return 0
+    print(f"[knowledge] promote (dry-run): source={source}, target={target}")
+    return 0
+
+
+def run_delete_command(args: argparse.Namespace) -> int:
+    """Issue #312 governance: explicit, fail-closed delete."""
+    _validate_user_confirmed("delete", bool(getattr(args, "user_confirmed", False)))
+    source = _validate_source_of_truth("delete", getattr(args, "source_of_truth", None))
+    target = args.target
+    if getattr(args, "apply", False):
+        print(f"[knowledge] delete (apply): source={source}, target={target}")
+        # TODO: actual delete logic — backup then remove.
+        return 0
+    print(f"[knowledge] delete (dry-run): source={source}, target={target}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.command == "scan":
@@ -912,6 +1025,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_archive_command(args)
     elif args.command == "status":
         return run_status_command(args)
+    elif args.command == "promote":
+        return run_promote_command(args)
+    elif args.command == "delete":
+        return run_delete_command(args)
     return 1
 
 

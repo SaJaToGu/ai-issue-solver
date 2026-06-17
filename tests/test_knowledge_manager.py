@@ -32,6 +32,7 @@ from knowledge_manager import (  # noqa: E402
     execute_archive,
     run_scan,
     parse_args,
+    main,
 )
 
 
@@ -612,6 +613,111 @@ class RepoRelativeTests(unittest.TestCase):
         known = km.ROOT / "docs" / "test.md"
         rel = _repo_relative(known)
         self.assertEqual(rel, "docs/test.md")
+
+
+class TestGovernanceEnforcement(unittest.TestCase):
+    """Issue #312 governance: fail-closed authorization for promote/delete."""
+
+    def setUp(self):
+        self._cwd = tempfile.TemporaryDirectory()
+        self.addCleanup(self._cwd.cleanup)
+        os.chdir(self._cwd.name)
+
+    def tearDown(self):
+        os.chdir(str(Path.home()))
+
+    def _run(self, argv):
+        """Run main(argv) and return (exit_code, stderr)."""
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            try:
+                main(argv)
+            except SystemExit as e:
+                return (int(e.code) if e.code is not None else 0, buf.getvalue())
+        return (0, buf.getvalue())
+
+    # Case 1: promote without --user-confirmed
+    def test_promote_without_user_confirmed_rejects(self):
+        argv = ["promote", "--target", "x.md", "--source-of-truth", "user"]
+        rc, err = self._run(argv)
+        self.assertEqual(rc, 1)
+        self.assertIn("--user-confirmed is required", err)
+
+    # Case 2: promote with source-of-truth=solver (hard rule)
+    def test_promote_with_solver_source_rejects(self):
+        argv = ["promote", "--target", "x.md", "--source-of-truth", "solver", "--user-confirmed"]
+        rc, err = self._run(argv)
+        self.assertEqual(rc, 1)
+        self.assertIn("must be one of: user, planner", err)
+
+    # Case 3: promote without source-of-truth (argparse required=True)
+    def test_promote_without_source_of_truth_rejects(self):
+        argv = ["promote", "--target", "x.md", "--user-confirmed"]
+        rc, _ = self._run(argv)
+        self.assertEqual(rc, 2)  # argparse usage error
+
+    # Case 4: promote with user + confirmed → ALLOWED
+    def test_promote_user_confirmed_allows_dry_run(self):
+        argv = ["promote", "--target", "x.md", "--source-of-truth", "user", "--user-confirmed"]
+        rc, _ = self._run(argv)
+        self.assertEqual(rc, 0)
+
+    # Case 5: promote with planner + confirmed → ALLOWED
+    def test_promote_planner_confirmed_allows(self):
+        argv = ["promote", "--target", "x.md", "--source-of-truth", "planner", "--user-confirmed"]
+        rc, _ = self._run(argv)
+        self.assertEqual(rc, 0)
+
+    # Case 6: delete without --user-confirmed
+    def test_delete_without_user_confirmed_rejects(self):
+        argv = ["delete", "--target", "x.md", "--source-of-truth", "user"]
+        rc, err = self._run(argv)
+        self.assertEqual(rc, 1)
+        self.assertIn("--user-confirmed is required", err)
+
+    # Case 7: delete with source-of-truth=planner (only user allowed)
+    def test_delete_with_planner_source_rejects(self):
+        argv = ["delete", "--target", "x.md", "--source-of-truth", "planner", "--user-confirmed"]
+        rc, err = self._run(argv)
+        self.assertEqual(rc, 1)
+        self.assertIn("--source-of-truth must be user", err)
+
+    # Case 8: delete with source-of-truth=solver (hard rule)
+    def test_delete_with_solver_source_rejects(self):
+        argv = ["delete", "--target", "x.md", "--source-of-truth", "solver", "--user-confirmed"]
+        rc, _ = self._run(argv)
+        self.assertEqual(rc, 1)
+
+    # Case 9: delete with user + confirmed → ALLOWED
+    def test_delete_user_confirmed_allows(self):
+        argv = ["delete", "--target", "x.md", "--source-of-truth", "user", "--user-confirmed"]
+        rc, _ = self._run(argv)
+        self.assertEqual(rc, 0)
+
+    # Case 10: combine promote + archive structurally impossible
+    def test_combine_promote_with_archive_structurally_impossible(self):
+        argv = ["promote", "--target", "x.md", "--source-of-truth", "user",
+                "--user-confirmed", "--archive", "--apply"]
+        rc, _ = self._run(argv)
+        self.assertEqual(rc, 2)  # argparse rejects unknown args
+
+    # Case 11: solver never allowed for either action (hard rule)
+    def test_solver_never_allowed_for_knowledge_governance(self):
+        for action in ("promote", "delete"):
+            argv = [action, "--target", "x.md", "--source-of-truth", "solver",
+                    "--user-confirmed", "--apply"]
+            rc, _ = self._run(argv)
+            self.assertEqual(rc, 1, f"Expected reject for {action} with source=solver")
+
+    # Case 12: dry-run doesn't touch filesystem
+    def test_promote_dry_run_does_not_modify_filesystem(self):
+        target = Path(self._cwd.name) / "test.md"
+        target.write_text("original")
+        argv = ["promote", "--target", str(target), "--source-of-truth", "user", "--user-confirmed"]
+        rc, _ = self._run(argv)
+        self.assertEqual(rc, 0)
+        self.assertEqual(target.read_text(), "original")
 
 
 if __name__ == "__main__":
