@@ -67,6 +67,12 @@ class AdapterDiagnostics:
     opencode_session_totals: dict | None = None
     # OpenCode-Budget-Ueberschreitung (nur für OpenCodeAdapter)
     opencode_budget_exceeded: str | None = None
+    # OpenRouter-Direct Usage (nur für OpenRouterDirectAdapter)
+    openrouter_usage: dict | None = None
+    # OpenRouter-Direct Budget-Ueberschreitung (nur für OpenRouterDirectAdapter)
+    openrouter_budget_exceeded: str | None = None
+    # OpenRouter-Direct Request-Timeout (nur für OpenRouterDirectAdapter)
+    openrouter_request_timed_out: bool = False
 
 
 # ─────────────────────────────────────────────────────────────

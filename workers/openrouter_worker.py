@@ -9,6 +9,9 @@ Der Worker kann:
 - Unified-Diff-Patches aus der Modellantwort extrahieren (extract_patches)
 - Patches sicher im Zielverzeichnis anwenden (apply_patches)
 - Einen kompletten Durchlauf mit Datei-Editierung ausführen (run_direct)
+- Usage-Metriken aus der API-Antwort extrahieren (prompt_tokens,
+  completion_tokens, total_tokens, cost, tatsächlich verwendetes Modell)
+- Konfigurierbares Request-Timeout und Post-Response Budget-Enforcement
 """
 
 from __future__ import annotations
@@ -38,6 +41,10 @@ _DIFF_BARE_RE = re.compile(
 )
 
 
+# Standard-Request-Timeout in Sekunden (wird von Adapter überschrieben).
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 180
+
+
 @dataclass
 class PatchResult:
     """Ergebnis der Patch-Anwendung für eine einzelne Diff-Datei."""
@@ -45,6 +52,34 @@ class PatchResult:
     success: bool
     applied_file: Optional[str] = None
     error: Optional[str] = None
+
+
+@dataclass
+class OpenRouterUsage:
+    """Usage-Metriken aus einer OpenRouter API-Antwort.
+
+    Felder sind mit None vorbelegt; nur die tatsächlich von der API gemeldeten
+    Werte werden gesetzt. cost ist nur vorhanden, wenn OpenRouter den Preis
+    mit ausliefert (typisch bei responses mit usage-Block).
+    """
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    cost_usd: Optional[float] = None
+    model: Optional[str] = None
+    request_seconds: Optional[float] = None
+    timed_out: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "cost_usd": self.cost_usd,
+            "model": self.model,
+            "request_seconds": self.request_seconds,
+            "timed_out": self.timed_out,
+        }
 
 
 @dataclass
@@ -58,11 +93,13 @@ class DirectRunResult:
         output: Kombinierter Ausgabe-Text (Modell-Antwort + Patch-Protokoll).
         patch_results: Liste der Einzel-Patch-Ergebnisse.
         raw_response: Rohe Modell-Antwort.
+        usage: Extrahierte Usage-Metriken (None wenn keine Antwort erhalten wurde).
     """
     returncode: int
     output: str
     patch_results: List[PatchResult] = field(default_factory=list)
     raw_response: str = ""
+    usage: Optional[OpenRouterUsage] = None
 
 
 class OpenRouterWorker:
@@ -75,6 +112,7 @@ class OpenRouterWorker:
         base_url: str = "https://openrouter.ai/api/v1",
         referer: Optional[str] = None,
         x_title: Optional[str] = None,
+        request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ):
         """
         Args:
@@ -83,6 +121,7 @@ class OpenRouterWorker:
             base_url: OpenRouter API Base URL.
             referer: HTTP-Referer für OpenRouter.
             x_title: X-Title für OpenRouter.
+            request_timeout_seconds: Timeout für den synchronen API-Aufruf.
         """
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
@@ -92,6 +131,7 @@ class OpenRouterWorker:
         self.base_url = base_url
         self.referer = referer or os.getenv("OPENROUTER_REFERER", "https://github.com/anomalyco/opencode")
         self.x_title = x_title or os.getenv("OPENROUTER_X_TITLE", "OpenCode")
+        self.request_timeout_seconds = request_timeout_seconds
 
     def build_headers(self) -> Dict[str, str]:
         """Erzeugt die HTTP-Header für OpenRouter API-Aufrufe."""
@@ -107,6 +147,7 @@ class OpenRouterWorker:
         prompt: str,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Führt einen OpenRouter API-Aufruf durch und gibt die Antwort zurück.
@@ -115,12 +156,16 @@ class OpenRouterWorker:
             prompt: Eingabe-Prompt für das Model.
             temperature: Sampling-Temperatur.
             max_tokens: Maximale Token-Anzahl für die Antwort.
+            timeout: Optionales Request-Timeout in Sekunden (überschreibt
+                den Worker-Default self.request_timeout_seconds).
 
         Returns:
             Generierte Antwort als String.
 
         Raises:
             ValueError: Bei API-Fehlern oder ungültigen Antworten.
+            requests.Timeout: Wenn der Request das Timeout überschreitet.
+            requests.RequestException: Bei anderen HTTP-Fehlern.
         """
         headers = self.build_headers()
         payload: Dict[str, Any] = {
@@ -130,10 +175,13 @@ class OpenRouterWorker:
             "max_tokens": max_tokens,
         }
 
+        effective_timeout = timeout if timeout is not None else self.request_timeout_seconds
+
         response = requests.post(
             f"{self.base_url}/chat/completions",
             headers=headers,
             json=payload,
+            timeout=effective_timeout,
         )
         response.raise_for_status()
 
@@ -142,6 +190,105 @@ class OpenRouterWorker:
             raise ValueError("Ungültige Antwort von OpenRouter API.")
 
         return result["choices"][0]["message"]["content"]
+
+    def generate_with_usage(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        timeout: Optional[float] = None,
+    ) -> tuple[str, OpenRouterUsage]:
+        """
+        Wie generate(), gibt aber zusätzlich die extrahierten Usage-Metriken zurück.
+
+        Usage-Daten werden aus dem OpenRouter-Response-Block gelesen:
+            - response.usage.{prompt_tokens, completion_tokens, total_tokens}
+            - response.usage.cost (von OpenRouter berichtet, falls verfügbar)
+            - response.model (das tatsächlich genutzte Modell)
+
+        Args:
+            prompt: Eingabe-Prompt für das Modell.
+            temperature: Sampling-Temperatur.
+            max_tokens: Maximale Token-Anzahl für die Antwort.
+            timeout: Optionales Request-Timeout in Sekunden.
+
+        Returns:
+            Tupel (content, usage). usage enthält alle verfügbaren Felder
+            und timed_out=True wenn der Request per Timeout beendet wurde.
+
+        Raises:
+            ValueError: Bei API-Fehlern oder ungültigen Antworten.
+            requests.Timeout: Wenn der Request das Timeout überschreitet.
+            requests.RequestException: Bei anderen HTTP-Fehlern.
+        """
+        import time
+
+        headers = self.build_headers()
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        effective_timeout = timeout if timeout is not None else self.request_timeout_seconds
+
+        usage = OpenRouterUsage()
+        start = time.monotonic()
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=effective_timeout,
+            )
+        except requests.Timeout:
+            usage.timed_out = True
+            usage.request_seconds = round(time.monotonic() - start, 3)
+            raise
+        usage.request_seconds = round(time.monotonic() - start, 3)
+
+        response.raise_for_status()
+        result = response.json()
+
+        self._populate_usage_from_response(result, usage)
+
+        if "choices" not in result or not result["choices"]:
+            raise ValueError("Ungültige Antwort von OpenRouter API.")
+
+        content = result["choices"][0]["message"]["content"]
+        return content, usage
+
+    @staticmethod
+    def _populate_usage_from_response(result: Dict[str, Any], usage: OpenRouterUsage) -> None:
+        """Überträgt usage-bezogene Felder aus dem OpenRouter-JSON in das Usage-Dataclass."""
+        if not isinstance(result, dict):
+            return
+        if "model" in result and isinstance(result["model"], str):
+            usage.model = result["model"]
+        usage_block = result.get("usage") or {}
+        if isinstance(usage_block, dict):
+            prompt_tokens = usage_block.get("prompt_tokens")
+            completion_tokens = usage_block.get("completion_tokens")
+            total_tokens = usage_block.get("total_tokens")
+            if isinstance(prompt_tokens, (int, float)):
+                usage.prompt_tokens = int(prompt_tokens)
+            if isinstance(completion_tokens, (int, float)):
+                usage.completion_tokens = int(completion_tokens)
+            if isinstance(total_tokens, (int, float)):
+                usage.total_tokens = int(total_tokens)
+            else:
+                # Falls total_tokens fehlt, aus prompt+completion berechnen
+                if usage.prompt_tokens is not None and usage.completion_tokens is not None:
+                    usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+            cost = usage_block.get("cost")
+            if isinstance(cost, (int, float)):
+                usage.cost_usd = float(cost)
+        # Manche Provider liefern cost_top_level statt in usage
+        if usage.cost_usd is None:
+            top_cost = result.get("cost")
+            if isinstance(top_cost, (int, float)):
+                usage.cost_usd = float(top_cost)
 
     def build_patch_prompt(self, prompt: str) -> str:
         """
@@ -351,6 +498,7 @@ class OpenRouterWorker:
         file_targets: List[str] | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        request_timeout: Optional[float] = None,
     ) -> DirectRunResult:
         """
         Führt einen vollständigen Durchlauf aus: API-Aufruf → Patch-Extraktion → Anwendung.
@@ -358,12 +506,15 @@ class OpenRouterWorker:
         1. Ruft das Modell mit dem gegebenen Prompt auf.
         2. Extrahiert Unified-Diff-Patches aus der Antwort.
         3. Wendet alle Patches im Ziel-Repository an.
-        4. Gibt ein DirectRunResult mit Returncode, Log und Einzel-Ergebnissen zurück.
+        4. Gibt ein DirectRunResult mit Returncode, Log, Einzel-Ergebnissen und
+           Usage-Metriken zurück.
 
         Returncode-Semantik:
             0  — Mindestens ein Patch erfolgreich angewendet.
-            1  — Patches gefunden, aber alle fehlgeschlagen (oder kein Patch erkannt).
+            1  — Patches gefunden, aber alle fehlgeschlagen (oder kein Patch erkannt)
+                 oder API-Fehler.
             2  — Modell hat Prosa ohne auswertbare Diffs zurückgegeben.
+            3  — Request-Timeout überschritten.
 
         Args:
             prompt: Eingabe-Prompt für das Modell.
@@ -372,20 +523,48 @@ class OpenRouterWorker:
                 als Kontext in den Prompt aufgenommen wird.
             temperature: Sampling-Temperatur.
             max_tokens: Maximale Token-Anzahl für die Antwort.
+            request_timeout: Optionales Override für den Request-Timeout.
 
         Returns:
-            DirectRunResult mit Ergebnis-Details.
+            DirectRunResult mit Ergebnis-Details und Usage-Metriken.
         """
-        log_lines: List[str] = []
+        import time
 
-        # --- Schritt 1: API-Aufruf ---
+        log_lines: List[str] = []
+        usage: Optional[OpenRouterUsage] = None
+        request_seconds: Optional[float] = None
+
+        # --- Schritt 1: API-Aufruf (mit Usage-Erfassung) ---
         try:
             context = self.build_file_context(repo_dir, file_targets)
-            raw_response = self.generate(
-                self.build_patch_prompt(prompt + context),
-                temperature=temperature,
-                max_tokens=max_tokens,
+            effective_timeout = (
+                request_timeout if request_timeout is not None else self.request_timeout_seconds
             )
+            start = time.monotonic()
+            try:
+                raw_response, usage = self.generate_with_usage(
+                    self.build_patch_prompt(prompt + context),
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=effective_timeout,
+                )
+            except requests.Timeout as timeout_exc:
+                request_seconds = round(time.monotonic() - start, 3)
+                error_msg = (
+                    f"[openrouter_direct] API-Timeout nach {request_seconds:.1f}s "
+                    f"(Limit {effective_timeout:.1f}s): {timeout_exc}"
+                )
+                log_lines.append(error_msg)
+                return DirectRunResult(
+                    returncode=3,
+                    output="\n".join(log_lines),
+                    raw_response="",
+                    usage=OpenRouterUsage(
+                        timed_out=True,
+                        request_seconds=request_seconds,
+                    ),
+                )
+            request_seconds = round(time.monotonic() - start, 3)
         except Exception as exc:
             error_msg = f"[openrouter_direct] API-Fehler: {exc}"
             log_lines.append(error_msg)
@@ -393,7 +572,13 @@ class OpenRouterWorker:
                 returncode=1,
                 output="\n".join(log_lines),
                 raw_response="",
+                usage=usage,
             )
+
+        if usage is None:
+            usage = OpenRouterUsage()
+        if usage.request_seconds is None:
+            usage.request_seconds = request_seconds
 
         log_lines.append(f"[openrouter_direct] Modell: {self.model}")
         log_lines.append(f"[openrouter_direct] Antwort erhalten ({len(raw_response)} Zeichen)")
@@ -410,6 +595,7 @@ class OpenRouterWorker:
                 returncode=2,
                 output="\n".join(log_lines) + "\n\n--- Modell-Antwort ---\n" + raw_response,
                 raw_response=raw_response,
+                usage=usage,
             )
 
         log_lines.append(f"[openrouter_direct] {len(patches)} Patch(es) gefunden")
@@ -449,4 +635,95 @@ class OpenRouterWorker:
             output="\n".join(log_lines),
             patch_results=patch_results,
             raw_response=raw_response,
+            usage=usage,
         )
+
+
+# ─────────────────────────────────────────────────────────────
+# Budget-Enforcement (Post-Response)
+# ─────────────────────────────────────────────────────────────
+
+@dataclass
+class OpenRouterBudgetLimits:
+    """Per-Run Budget-Limits für OpenRouter Direct.
+
+    Felder mit None werden nicht geprüft. cache_read_tokens_limit ist
+    für OpenRouter Direct typischerweise unsupported (None).
+    """
+    max_cost_usd: Optional[float] = None
+    max_input_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    max_cache_read_tokens: Optional[int] = None
+    exceeded_reason: Optional[str] = None
+
+
+def check_openrouter_budget_limits(
+    usage: Optional[OpenRouterUsage],
+    limits: OpenRouterBudgetLimits,
+) -> OpenRouterBudgetLimits:
+    """Prüft, ob die Usage einer OpenRouter-Antwort die Limits überschreitet.
+
+    Args:
+        usage: Aus der API-Antwort extrahierte Usage-Daten (None wenn keine Antwort kam).
+        limits: Konfigurierte Budget-Limits.
+
+    Returns:
+        OpenRouterBudgetLimits mit gesetztem exceeded_reason bei Überschreitung.
+    """
+    exceeded: List[str] = []
+    effective = usage or OpenRouterUsage()
+
+    if limits.max_cost_usd is not None and effective.cost_usd is not None:
+        if effective.cost_usd > limits.max_cost_usd:
+            exceeded.append(
+                f"cost ${effective.cost_usd:.4f} exceeds ${limits.max_cost_usd:.4f}"
+            )
+    if limits.max_input_tokens is not None and effective.prompt_tokens is not None:
+        if effective.prompt_tokens > limits.max_input_tokens:
+            exceeded.append(
+                f"input_tokens {effective.prompt_tokens} exceeds {limits.max_input_tokens}"
+            )
+    if limits.max_output_tokens is not None and effective.completion_tokens is not None:
+        if effective.completion_tokens > limits.max_output_tokens:
+            exceeded.append(
+                f"output_tokens {effective.completion_tokens} exceeds {limits.max_output_tokens}"
+            )
+    if limits.max_cache_read_tokens is not None:
+        # OpenRouter Direct liefert keine Cache-Read-Tokens im Standard-usage-Block.
+        # Wir markieren das Limit explizit als nicht durchsetzbar.
+        exceeded.append(
+            f"cache_read_tokens unsupported by OpenRouter Direct "
+            f"(configured limit {limits.max_cache_read_tokens})"
+        )
+
+    return OpenRouterBudgetLimits(
+        max_cost_usd=limits.max_cost_usd,
+        max_input_tokens=limits.max_input_tokens,
+        max_output_tokens=limits.max_output_tokens,
+        max_cache_read_tokens=limits.max_cache_read_tokens,
+        exceeded_reason="; ".join(exceeded) if exceeded else None,
+    )
+
+
+def has_openrouter_any_limit(limits: OpenRouterBudgetLimits) -> bool:
+    """Prüft ob mindestens eine Budgetgrenze konfiguriert ist."""
+    return any((
+        limits.max_cost_usd is not None,
+        limits.max_input_tokens is not None,
+        limits.max_output_tokens is not None,
+        limits.max_cache_read_tokens is not None,
+    ))
+
+
+def openrouter_unsupported_pre_call_fields() -> tuple[str, ...]:
+    """Liefert die Namen der Felder, die OpenRouter Direct nicht hard pre-call durchsetzen kann.
+
+    Token-Limits sind im synchronen Single-Call-Modus erst nach der Antwort
+    prüfbar; cache_read_tokens wird strukturell nicht unterstützt; cost ist
+    erst nach der API-Antwort verfügbar.
+    """
+    return (
+        "max_cost_usd",
+        "max_input_tokens",
+        "max_cache_read_tokens",
+    )
