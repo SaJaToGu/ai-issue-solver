@@ -32,7 +32,7 @@ from workers.base import WorkerAdapter, WorkerRunResult, AdapterDiagnostics
 
 
 # Standard-Modell für OpenRouter Direct
-OPENROUTER_DIRECT_DEFAULT_MODEL = "mistralai/mistral-large"
+OPENROUTER_DIRECT_DEFAULT_MODEL = "minimax/minimax-m3"
 
 # Standard-Request-Timeout in Sekunden (wird durch kwargs überschrieben).
 DEFAULT_OPENROUTER_RUNTIME_SECONDS = 180
