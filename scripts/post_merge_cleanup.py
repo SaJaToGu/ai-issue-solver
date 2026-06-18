@@ -17,8 +17,10 @@ import argparse
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import re
+import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 from urllib.parse import quote
 
 try:
@@ -519,6 +521,284 @@ def collect_repos(client: GitHubClient, repo: str | None) -> list[str]:
     return [item["name"] for item in client.get_repos()]
 
 
+# ── Lokale Branch-Bereinigung ──────────────────────────────
+#
+# Sicherheitsregel (siehe Issue #331):
+#   - Protected Branches (main, develop, current) werden NIE gelöscht.
+#   - Gelöscht werden darf NUR, was "merged into base" ist UND nicht protected.
+#   - "gone-upstream" allein ist KEIN Löschgrund — es ist nur ein Hinweis,
+#     dass der Remote-Ast bereits weg ist. Ein gone-upstream Branch, der
+#     nicht gemergt ist, wird in der Manual-Review-Liste aufgeführt
+#     (besonders sichtbar mit --show-unmerged), aber NIE automatisch
+#     gelöscht.
+#
+# Diese Funktion erweitert post_merge_cleanup.py um eine `--local-branches`
+# Option. Die Remote-Branch-Logik oben bleibt byte-identisch.
+
+
+# Branches, die als "deleted" an git übergeben werden — `git branch -d`
+# weigert sich, einen Branch zu löschen, der nicht gemergt ist. Wir
+# filtern vorher, also ist -d sicher.
+GIT_DELETE_FLAG = "-d"
+
+
+def run_git(
+    args: list[str],
+    cwd: str | Path | None = None,
+) -> subprocess.CompletedProcess:
+    """Run a git command. Returns CompletedProcess; never raises on non-zero exit.
+
+    Default cwd is the project root (parent of scripts/). Injected in
+    tests via the `git_runner` parameter on cleanup_local_branches.
+    """
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd is not None else str(Path(__file__).resolve().parent.parent),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@dataclass(frozen=True)
+class LocalBranchEntry:
+    """Single local branch and its classification."""
+    name: str
+    category: str  # "protected" | "merged" | "unmerged-gone" | "unmerged-alive"
+    reason: str
+
+
+@dataclass
+class LocalBranchReport:
+    """Result of cleanup_local_branches."""
+    fetch_ok: bool
+    fetch_error: str
+    current_branch: str
+    base: str
+    protected: list[LocalBranchEntry] = field(default_factory=list)
+    to_delete: list[LocalBranchEntry] = field(default_factory=list)
+    manual_review: list[LocalBranchEntry] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def would_delete(self) -> list[LocalBranchEntry]:
+        return list(self.to_delete)
+
+    @property
+    def has_deletable(self) -> bool:
+        return bool(self.to_delete)
+
+
+def _parse_branch_listing(text: str) -> list[str]:
+    """Parse the output of `git for-each-ref --format=%(refname:short) refs/heads/`.
+
+    Each non-empty line is a branch name. We strip whitespace defensively.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        name = line.strip()
+        if name:
+            out.append(name)
+    return out
+
+
+def _parse_merged_listing(text: str) -> set[str]:
+    """Parse the output of `git branch --list --merged <base>`.
+
+    Each line may be prefixed with `* ` (current) or `  ` (other) and
+    may end with `+` for worktree-pinned branches. We extract just the
+    branch name.
+    """
+    out: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # Strip the leading markers `* `, `  `, `+ `
+        # The format is e.g. "* main", "  feature/foo", "+  worktree"
+        while line and line[0] in {"*", "+", " "}:
+            line = line[1:]
+        if line:
+            out.add(line.strip())
+    return out
+
+
+def cleanup_local_branches(
+    base: str = "develop",
+    show_unmerged: bool = False,
+    dry_run: bool = True,
+    protected_names: tuple[str, ...] = ("main", "develop"),
+    git_runner: Callable[..., subprocess.CompletedProcess] = run_git,
+) -> LocalBranchReport:
+    """
+    Classify local branches and return a report.
+
+    Safety rule (see Issue #331): only branches that are merged into
+    `base` AND not protected become deletion candidates. Branches
+    whose upstream is gone are listed as manual-review items if
+    they are unmerged; merged-and-gone branches ARE deletable (their
+    upstream was deleted because the PR was merged, the commits live
+    on `base`).
+
+    Never deletes anything; deletion is the caller's job, gated on
+    `dry_run` and a separate --apply flag at the CLI layer.
+    """
+    # 1. Prune stale remote-tracking refs so upstream-gone detection is fresh.
+    fetch_proc = git_runner(["fetch", "--prune", "origin"])
+    fetch_ok = fetch_proc.returncode == 0
+    fetch_error = "" if fetch_ok else (fetch_proc.stderr.strip() or "git fetch fehlgeschlagen")
+
+    # 2. Find the current branch — never delete it.
+    current_proc = git_runner(["rev-parse", "--abbrev-ref", "HEAD"])
+    current = ""
+    if current_proc.returncode == 0:
+        current = current_proc.stdout.strip()
+
+    # 3. Enumerate local branches.
+    list_proc = git_runner(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+    if list_proc.returncode != 0:
+        return LocalBranchReport(
+            fetch_ok=fetch_ok,
+            fetch_error=fetch_error,
+            current_branch=current,
+            base=base,
+            errors=[
+                "kann lokale Branches nicht auflisten: "
+                + (list_proc.stderr.strip() or "git for-each-ref fehlgeschlagen")
+            ],
+        )
+    local_branches = _parse_branch_listing(list_proc.stdout)
+
+    # 4. Determine which branches are merged into `base`.
+    merged_proc = git_runner(["branch", "--list", "--merged", base])
+    merged_into_base: set[str] = set()
+    if merged_proc.returncode == 0:
+        merged_into_base = _parse_merged_listing(merged_proc.stdout)
+    # Also consider base itself as "merged into itself" (it always is).
+    if base:
+        merged_into_base.add(base)
+
+    # 5. Classify each local branch.
+    protected_set: set[str] = set(protected_names) | ({current} if current else set())
+
+    protected_entries: list[LocalBranchEntry] = []
+    to_delete: list[LocalBranchEntry] = []
+    manual_review: list[LocalBranchEntry] = []
+
+    for branch in local_branches:
+        if branch in protected_set:
+            protected_entries.append(LocalBranchEntry(
+                name=branch,
+                category="protected",
+                reason=_protected_reason(branch, protected_names, current),
+            ))
+            continue
+
+        upstream_proc = git_runner(
+            ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"]
+        )
+        upstream_exists = upstream_proc.returncode == 0
+
+        is_merged = branch in merged_into_base
+
+        if is_merged:
+            upstream_note = "" if upstream_exists else " (Upstream bereits weg, unbedenklich)"
+            to_delete.append(LocalBranchEntry(
+                name=branch,
+                category="merged",
+                reason=f"in {base} gemergt{upstream_note}",
+            ))
+            continue
+
+        # Unmerged. Always a manual-review item, never auto-deleted.
+        if not upstream_exists:
+            reason = f"nicht in {base} gemergt; Upstream bereits weg (manuell prüfen — möglicherweise unbeabsichtigte Lokalarbeit)"
+            category = "unmerged-gone"
+        else:
+            reason = f"nicht in {base} gemergt; Upstream existiert (manuell prüfen — könnte offener PR oder unbeabsichtigte Lokalarbeit sein)"
+            category = "unmerged-alive"
+        manual_review.append(LocalBranchEntry(
+            name=branch,
+            category=category,
+            reason=reason,
+        ))
+
+    # Without --show-unmerged, hide unmerged manual-review entries from
+    # the "would show" output. We still keep them in the report so a
+    # caller that wants the full picture can access them.
+    if not show_unmerged:
+        manual_review = []
+
+    return LocalBranchReport(
+        fetch_ok=fetch_ok,
+        fetch_error=fetch_error,
+        current_branch=current,
+        base=base,
+        protected=protected_entries,
+        to_delete=to_delete,
+        manual_review=manual_review,
+    )
+
+
+def _protected_reason(branch: str, protected_names: tuple[str, ...], current: str) -> str:
+    """Build a human-readable reason string for a protected branch."""
+    parts: list[str] = []
+    if branch in protected_names:
+        parts.append("geschützt per Default-Liste")
+    if current and branch == current:
+        parts.append("aktuell ausgecheckter Branch")
+    return "; ".join(parts) if parts else "geschützt"
+
+
+def print_local_branch_report(report: LocalBranchReport, dry_run: bool) -> None:
+    """Print a LocalBranchReport in the existing script's German style."""
+    if not report.fetch_ok:
+        print_warn(f"`git fetch --prune origin` fehlgeschlagen: {report.fetch_error}")
+
+    if report.protected:
+        print("\n   Geschützte Branches (nie löschen):")
+        for entry in report.protected:
+            print(f"      - {entry.name}  ({entry.reason})")
+
+    if report.to_delete:
+        action = "Würde löschen" if dry_run else "Löscht"
+        print(f"\n   {action} (in {report.base} gemergt, nicht geschützt):")
+        for entry in report.to_delete:
+            print(f"      - {entry.name}  ({entry.reason})")
+
+    if report.manual_review:
+        print("\n   Manuelle Prüfung (nicht gemergt — wird NIE automatisch gelöscht):")
+        for entry in report.manual_review:
+            print(f"      - {entry.name}  [{entry.category}]  ({entry.reason})")
+
+    if not report.to_delete and not report.manual_review and not report.protected:
+        print("   Keine lokalen Branches gefunden.")
+
+
+def apply_local_branch_cleanup(
+    report: LocalBranchReport,
+    dry_run: bool,
+    git_runner: Callable[..., subprocess.CompletedProcess] = run_git,
+) -> list[str]:
+    """Delete the branches in report.to_delete. Returns a list of action descriptions.
+
+    Called only when --apply is set. Never deletes anything protected or
+    unmerged (those are not in report.to_delete by construction).
+    """
+    if dry_run:
+        return []
+
+    actions: list[str] = []
+    for entry in report.to_delete:
+        proc = git_runner(["branch", GIT_DELETE_FLAG, entry.name])
+        if proc.returncode == 0:
+            actions.append(f"gelöscht: {entry.name}")
+        else:
+            err = proc.stderr.strip() or f"git branch {GIT_DELETE_FLAG} {entry.name} fehlgeschlagen"
+            actions.append(f"FEHLGESCHLAGEN beim Löschen von {entry.name}: {err}")
+    return actions
+
+
 def main() -> int:
     print_banner("POST-MERGE CLEANUP")
 
@@ -540,6 +820,30 @@ def main() -> int:
         "--backlog",
         default="docs/BACKLOG/open.md",
         help="Backlog-Datei für --cleanup-backlog",
+    )
+    parser.add_argument(
+        "--local-branches",
+        action="store_true",
+        help=(
+            "Auch lokale Branches prüfen: `git fetch --prune origin` ausführen "
+            "und in --base gemergte, nicht geschützte Branches zum Löschen "
+            "vorschlagen. Niemals nicht-gemergte Branches löschen."
+        ),
+    )
+    parser.add_argument(
+        "--base",
+        default="develop",
+        help="Base-Branch für den Merge-Check bei --local-branches (Standard: develop)",
+    )
+    parser.add_argument(
+        "--show-unmerged",
+        action="store_true",
+        help=(
+            "Mit --local-branches: auch nicht-gemergte Branches als "
+            "Manual-Review-Hinweis anzeigen. Ohne dieses Flag werden "
+            "nur die zum Löschen vorgeschlagenen (gemergten) Branches "
+            "ausgegeben."
+        ),
     )
     args = parser.parse_args()
 
@@ -591,6 +895,17 @@ def main() -> int:
         )
         print_backlog_cleanup_result(backlog_result, dry_run)
 
+    local_actions: list[str] = []
+    if args.local_branches:
+        print_step(3 if args.cleanup_backlog else 2, "Prüfe lokale Branches")
+        local_report = cleanup_local_branches(
+            base=args.base,
+            show_unmerged=args.show_unmerged,
+            dry_run=dry_run,
+        )
+        print_local_branch_report(local_report, dry_run)
+        local_actions = apply_local_branch_cleanup(local_report, dry_run)
+
     print("\n" + "─" * 50)
     print(
         "  Cleanup: "
@@ -602,6 +917,17 @@ def main() -> int:
     if backlog_result:
         changed = backlog_result.removed_count if not dry_run else len(backlog_result.completed_titles)
         print(f"  Backlog: {changed} Einträge {'würden entfernt' if dry_run else 'entfernt'}")
+    if args.local_branches:
+        deleted = sum(1 for a in local_actions if a.startswith("gelöscht:"))
+        failed = sum(1 for a in local_actions if a.startswith("FEHLGESCHLAGEN"))
+        verb = "würden gelöscht" if dry_run else "gelöscht"
+        print(
+            f"  Lokale Branches: {len(local_actions)} {verb if not failed else 'versucht'} | "
+            f"{deleted} {verb} | {failed} fehlgeschlagen"
+        )
+        for action in local_actions:
+            if action.startswith("FEHLGESCHLAGEN"):
+                print_warn(action)
     print("─" * 50 + "\n")
     if dry_run:
         print_ok("Dry-Run abgeschlossen. Für echte Änderungen erneut mit --apply starten.")
