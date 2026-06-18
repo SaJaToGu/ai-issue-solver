@@ -42,6 +42,94 @@ python scripts/cleanup_backlog.py --backlog docs/BACKLOG/open.md --apply --confi
 
 ## Priority 1
 
+## 40. Align OpenRouter Direct guardrails with OpenCode solver runs
+
+
+Labels: `kind/feature`, `theme/provider`, `theme/quality`, `agent/solver`, `priority/1`
+
+Priority: `1`
+
+OpenRouter Direct is now usable without Aider, but its run guardrails are not
+yet comparable to the OpenCode/OpenSource solver path. OpenCode runs can be
+bounded and diagnosed with cost, token, and runtime controls. OpenRouter Direct
+currently performs a synchronous API call and patch application, but does not
+enforce the same abort criteria or persist equivalent provider metrics.
+
+This blocks fair 0.9.0+ validation comparisons across provider interfaces.
+Before OpenRouter Direct is used for broader measurement runs, it needs the
+same operational safety shape as the OpenCode path.
+
+Context:
+- OpenRouter Direct uses `OPENROUTER_API_KEY` and calls the OpenRouter API
+  directly, without Aider.
+- The direct path can now produce valid patches when given target file context.
+- The current CLI budget flags are forwarded into worker adapter kwargs, but
+  OpenRouter Direct does not consume them consistently.
+- OpenCode has an explicit budget-monitoring path around cost and token usage;
+  OpenRouter Direct needs equivalent reporting and abort semantics where the
+  API allows it.
+- Without this, OpenRouter Direct validation runs can look successful while
+  missing cost, token, or runtime comparability in `reports/runs/...`.
+
+Suggested scope:
+- add OpenRouter Direct support for the existing per-run CLI limits:
+  - `--max-run-cost-usd`
+  - `--max-run-input-tokens`
+  - `--max-run-output-tokens`
+  - `--max-run-cache-read-tokens` where applicable, or explicitly mark it
+    unsupported for OpenRouter Direct
+- map `--max-run-output-tokens` to the OpenRouter `max_tokens` request
+  parameter
+- add an explicit request timeout / runtime limit for the direct OpenRouter
+  API call and return a clear budget/runtime failure status on timeout
+- capture OpenRouter usage metadata from responses, including at least:
+  - prompt/input tokens
+  - completion/output tokens
+  - total tokens
+  - cost, when OpenRouter reports it
+  - model actually used, when available
+- persist these values in the per-run report and provider scorecard so they
+  can be aggregated alongside OpenCode runs
+- enforce post-response abort criteria when usage exceeds configured limits:
+  - do not commit or create a PR if the configured token or cost ceiling was
+    exceeded
+  - report the run as a budget/control failure, not as an ordinary model
+    failure
+- add preflight validation or clear warnings for controls that OpenRouter
+  Direct cannot enforce before spending tokens
+- document the difference between hard pre-call limits, post-call enforcement,
+  and future streaming-based live aborts
+- consider a streaming follow-up only if needed; the first implementation may
+  keep the single-call request model as long as it records honest limitations
+- align naming and report fields with the OpenCode budget diagnostics where
+  possible, so dashboards and validation reports do not need provider-specific
+  special cases
+
+Acceptance criteria:
+- OpenRouter Direct consumes the same `--max-run-*` CLI flags that are already
+  meaningful for OpenCode, or explicitly records unsupported fields.
+- A run that exceeds configured OpenRouter Direct cost or token limits does not
+  produce a commit or PR.
+- OpenRouter Direct request runtime is bounded by a configurable timeout.
+- Run reports contain comparable cost/token/runtime fields for OpenRouter
+  Direct and OpenCode.
+- The 0.9.0 validation report can distinguish OpenRouter Direct budget/control
+  failures from ordinary model patch failures.
+- Tests cover successful usage capture, token-limit abort, cost-limit abort,
+  timeout handling, and unsupported cache-token semantics.
+
+Touches: `workers/openrouter_worker.py`, `workers/openrouter_direct_adapter.py`,
+         `workers/base.py`, `scripts/solve_issues.py`,
+         `scripts/solver_reporting.py`, `tests/test_openrouter_worker.py`,
+         `tests/test_worker_adapters.py`, `tests/test_solve_issues.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_openrouter_worker tests.test_worker_adapters`
+- `python -m unittest discover -s tests`
+
+---
+
 ## 22. Research backlog shaping frameworks before turning ideas into issues
 
 
