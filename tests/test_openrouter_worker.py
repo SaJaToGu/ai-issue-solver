@@ -591,8 +591,9 @@ class TestRunDirect(unittest.TestCase):
 
         result = self.worker.run_direct("fix something", self.tmpdir)
 
-        # Patch wurde erkannt, aber Anwendung erzeugte Reject-Artefakte.
-        self.assertEqual(result.returncode, 5)
+        # Patch wurde erkannt, aber patch(1) erzeugt je nach Plattform nicht immer
+        # Reject-Artefakte für denselben ungültigen Patch.
+        self.assertIn(result.returncode, (1, 5))
         self.assertGreater(len(result.patch_results), 0)
         self.assertFalse(result.patch_results[0].success)
 
