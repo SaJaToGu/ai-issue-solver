@@ -1,0 +1,9 @@
+@@ -1098,7 +1098,7 @@
+         "--model",
+         default="codex",
+         choices=list(MODEL_CONFIGS.keys()),
+-        help="codex, mistral-vibe, opencode, claude, openai, mistral oder ollama",
++        help=f"Verfügbare Modelle: {', '.join(sorted(MODEL_CONFIGS.keys()))}",
+     )
+     parser.add_argument(
+ 
