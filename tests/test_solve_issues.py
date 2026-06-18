@@ -100,8 +100,8 @@ class FakeGitHubSession:
             return FakeResponse(404, {"message": "Branch not found"})
         return FakeResponse(404, {"message": "Not found"})
 
-    def post(self, url, json=None):
-        self.posts.append((url, json))
+    def post(self, url, json=None, timeout=None):
+        self.posts.append((url, json, timeout))
         return FakeResponse(201, {"html_url": "https://github.com/test-owner/demo/pull/1"})
 
 
@@ -215,6 +215,21 @@ class GitHubClientBranchTests(unittest.TestCase):
 
         self.assertEqual(pr["html_url"], "https://github.com/test-owner/demo/pull/1")
         self.assertEqual(client.session.posts[0][1]["base"], "main")
+        self.assertEqual(client.session.posts[0][2], 30)
+
+    def test_create_pull_request_uses_request_timeout(self):
+        client = self.make_client()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            client.create_pull_request(
+                repo="demo",
+                title="Fix",
+                body="Body",
+                head="ai/fix-issue-1",
+                base="main",
+            )
+
+        self.assertEqual(client.session.posts[0][2], 30)
 
     def test_branch_exists_encodes_branch_names_with_slashes(self):
         client = self.make_client()

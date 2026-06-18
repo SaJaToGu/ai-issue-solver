@@ -638,12 +638,14 @@ class GitHubClient:
         # Kommentar hinzufügen
         self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}/comments",
-            json={"body": comment}
+            json={"body": comment},
+            timeout=30,
         )
         # Issue schließen
         self.session.patch(
             f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}",
-            json={"state": "closed"}
+            json={"state": "closed"},
+            timeout=30,
         )
 
     def create_pull_request(self, repo: str, title: str, body: str,
@@ -660,7 +662,8 @@ class GitHubClient:
 
         resp = self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
-            json={"title": title, "body": body, "head": head, "base": resolved_base}
+            json={"title": title, "body": body, "head": head, "base": resolved_base},
+            timeout=30,
         )
         if resp.status_code == 201:
             return resp.json()
@@ -3647,7 +3650,15 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             )
             return False
 
-        pushed = commit_and_push(repo_dir, branch_name, commit_msg, token, config["owner"], repo)
+        pushed = commit_and_push(
+            repo_dir,
+            branch_name,
+            commit_msg,
+            token,
+            config["owner"],
+            repo,
+            timeout_seconds=post_worker_deadline_seconds or DEFAULT_POST_WORKER_RUNTIME_SECONDS,
+        )
 
         # Nach erfolgreichem Push die "pushing"-Phase markieren. Falls
         # commit_and_push teilweise erfolgreich war (Commit ok, Push fehlt),
@@ -4077,6 +4088,12 @@ def main():
         default=None,
         help="Maximale Laufzeit in Sekunden fuer direkte API-Worker wie OpenRouter Direct",
     )
+    parser.add_argument(
+        "--max-post-worker-runtime-seconds",
+        type=float,
+        default=None,
+        help="Maximale Laufzeit in Sekunden fuer Validierung, Tests, Commit, Push und PR-Erstellung",
+    )
     args = parser.parse_args()
 
     if args.cleanup_preserved_worktrees:
@@ -4372,6 +4389,7 @@ def main():
                 max_run_output_tokens=args.max_run_output_tokens,
                 max_run_cache_read_tokens=args.max_run_cache_read_tokens,
                 max_run_runtime_seconds=args.max_run_runtime_seconds,
+                max_post_worker_runtime_seconds=args.max_post_worker_runtime_seconds,
                 ensemble=args.ensemble,
                 role_routing=_ROLE_ROUTING if _BUDGET_TRACKING_ACTIVE else None,
             )
