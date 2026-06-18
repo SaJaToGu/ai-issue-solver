@@ -1,0 +1,9 @@
+@@ -250,7 +250,7 @@
+ 
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(description="Batch-Solver für GitHub Issues")
+-    parser.add_argument("--model", default="codex", help="codex, mistral-vibe, opencode, claude, openai, mistral oder ollama")
++    parser.add_argument("--model", default="codex", help=f"Verfügbare Modelle: {', '.join(MODEL_CONFIGS.keys())}")
+     parser.add_argument("--model-name", default=None, help="Optionaler Modell-Name")
+     parser.add_argument("--fallback-model", default=None, help="Fallback-Modell bei Rate-Limit")
+ 

@@ -196,7 +196,7 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
     cmd = [
         sys.executable,
         str(solve_script),
-        "--model", 
+        "--model",
         selected_model,
         "--repo",
         job.repo,
