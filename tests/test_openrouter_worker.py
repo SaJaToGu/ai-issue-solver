@@ -121,6 +121,12 @@ class TestOpenRouterWorkerFileContext(unittest.TestCase):
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
 
+    def _read_file(self, rel_path: str) -> str:
+        return (Path(self.tmpdir) / rel_path).read_text(encoding="utf-8")
+
+    def _read_file(self, rel_path: str) -> str:
+        return (Path(self.tmpdir) / rel_path).read_text(encoding="utf-8")
+
     def test_build_file_context_includes_repo_relative_target(self):
         self._write_file("docs/SETUP_AIDER.md", "# Setup\n\nOpenRouter\n")
 
@@ -505,6 +511,9 @@ class TestRunDirect(unittest.TestCase):
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
 
+    def _read_file(self, rel_path: str) -> str:
+        return (Path(self.tmpdir) / rel_path).read_text(encoding="utf-8")
+
     @patch("requests.post")
     def test_run_direct_success(self, mock_post):
         """Erfolgreicher Durchlauf: Patch wird angewendet, returncode=0."""
@@ -582,8 +591,8 @@ class TestRunDirect(unittest.TestCase):
 
         result = self.worker.run_direct("fix something", self.tmpdir)
 
-        # Patch wurde erkannt, aber Anwendung fehlgeschlagen
-        self.assertEqual(result.returncode, 1)
+        # Patch wurde erkannt, aber Anwendung erzeugte Reject-Artefakte.
+        self.assertEqual(result.returncode, 5)
         self.assertGreater(len(result.patch_results), 0)
         self.assertFalse(result.patch_results[0].success)
 

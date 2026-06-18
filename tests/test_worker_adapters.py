@@ -765,6 +765,7 @@ class TestOpenRouterDirectAdapter(unittest.TestCase):
             api_key="test-key",
             model="mistralai/mistral-large",
             request_timeout_seconds=180.0,
+            use_structured_output=False,
         )
         worker_cls.return_value.run_direct.assert_called_once_with(
             prompt="Fix issue",

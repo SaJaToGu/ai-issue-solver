@@ -696,9 +696,17 @@ class OpenRouterWorker:
                         )
                     except Exception:
                         pass
-                    # Falls die Datei nicht im Git-Index ist (neu erstellt), lösche sie
+                    # Falls die Datei nicht im Git-Index ist (neu erstellt), lösche sie.
+                    # Getrackte Dateien wurden durch checkout bereits wiederhergestellt
+                    # und dürfen nicht entfernt werden.
                     applied_path = Path(repo_dir) / applied_file
-                    if applied_path.exists():
+                    tracked = subprocess.run(
+                        ["git", "ls-files", "--error-unmatch", applied_file],
+                        cwd=repo_dir,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if tracked.returncode != 0 and applied_path.exists():
                         try:
                             applied_path.unlink()
                         except OSError:
