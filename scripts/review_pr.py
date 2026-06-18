@@ -273,6 +273,35 @@ def parse_verdict(text: str) -> str | None:
     All three reviewer prompts declare a `**Verdict**: <value>` line in
     their "## Output" section (see `.agents/reviewers/reviewer-*.md`).
     Returns the lowercased verdict string, or None if the line is missing.
+
+    ## Examples
+
+    Well-formed `**Verdict**: approve` line (single-token value):
+
+    >>> parse_verdict("Some preamble\\n\\n**Verdict**: approve\\n\\nMore text")
+    'approve'
+
+    Well-formed `**Verdict**: request changes` line (note the embedded
+    space inside the value — the regex collapses it to a single space):
+
+    >>> parse_verdict("**Verdict**: request changes\\n")
+    'request changes'
+
+    Malformed input without a verdict line returns ``None``:
+
+    >>> parse_verdict("Some text without any verdict") is None
+    True
+
+    ## Notes
+
+    - The regex is case-insensitive (e.g. ``**Verdict**: APPROVE`` parses
+      as ``'approve'``) and tolerates extra whitespace around the colon
+      and the value (e.g. ``**Verdict**:   approve  ``).
+    - Only the FIRST matching ``**Verdict**:`` line in the text is
+      considered. Any later verdict lines in the same output are ignored.
+    - Unrecognized verdict values (anything that is not ``approve``,
+      ``request changes`` or ``comment`` — e.g. ``**Verdict**: maybe``)
+      return ``None`` rather than the raw value as a string.
     """
     if not text:
         return None
