@@ -762,6 +762,38 @@ class TestOpenRouterDirectAdapter(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("[openrouter_direct]", result.output)
         worker_cls.assert_called_once_with(api_key="test-key", model="mistralai/mistral-large")
+        worker_cls.return_value.run_direct.assert_called_once_with(
+            prompt="Fix issue",
+            repo_dir="/tmp/repo",
+            file_targets=[],
+        )
+
+    def test_run_passes_explicit_file_targets_to_openrouter_worker(self):
+        """OpenRouter Direct bekommt Datei-Targets als Prompt-Kontext."""
+        from workers.openrouter_direct_adapter import OpenRouterDirectAdapter
+
+        direct_result = SimpleNamespace(
+            returncode=0,
+            output="[openrouter_direct] 1 Patch angewendet.",
+        )
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), \
+             patch("workers.openrouter_worker.OpenRouterWorker") as worker_cls, \
+             contextlib.redirect_stdout(io.StringIO()):
+            worker_cls.return_value.run_direct.return_value = direct_result
+            adapter = OpenRouterDirectAdapter()
+            adapter.run(
+                "Fix docs/SETUP_AIDER.md",
+                "/tmp/repo",
+                env={"OPENROUTER_API_KEY": "test-key"},
+                file_targets=["docs/SETUP_AIDER.md"],
+            )
+
+        worker_cls.return_value.run_direct.assert_called_once_with(
+            prompt="Fix docs/SETUP_AIDER.md",
+            repo_dir="/tmp/repo",
+            file_targets=["docs/SETUP_AIDER.md"],
+        )
 
     def test_run_returncode_2_for_prose_output(self):
         """Returncode 2 bei Prosa-Ausgabe ohne Diffs."""

@@ -103,6 +103,47 @@ class TestOpenRouterWorkerInit(unittest.TestCase):
         self.assertIn("Fix docs/SETUP_AIDER.md", prompt)
 
 
+class TestOpenRouterWorkerFileContext(unittest.TestCase):
+    """Tests für bounded Datei-Kontext im direkten OpenRouter-Prompt."""
+
+    def setUp(self):
+        self.worker = OpenRouterWorker(api_key="k")
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_file(self, rel_path: str, content: str) -> None:
+        full_path = Path(self.tmpdir) / rel_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+
+    def test_build_file_context_includes_repo_relative_target(self):
+        self._write_file("docs/SETUP_AIDER.md", "# Setup\n\nOpenRouter\n")
+
+        context = self.worker.build_file_context(
+            self.tmpdir,
+            ["docs/SETUP_AIDER.md"],
+        )
+
+        self.assertIn("--- FILE: docs/SETUP_AIDER.md ---", context)
+        self.assertIn("# Setup", context)
+        self.assertIn("--- END FILE: docs/SETUP_AIDER.md ---", context)
+
+    def test_build_file_context_ignores_missing_and_external_targets(self):
+        self._write_file("docs/SETUP_AIDER.md", "# Setup\n")
+
+        context = self.worker.build_file_context(
+            self.tmpdir,
+            ["missing.md", "../outside.md", "docs/SETUP_AIDER.md"],
+        )
+
+        self.assertIn("docs/SETUP_AIDER.md", context)
+        self.assertNotIn("missing.md", context)
+        self.assertNotIn("outside.md", context)
+
+
 # ---------------------------------------------------------------------------
 # Klasse: generate()-Tests
 # ---------------------------------------------------------------------------
