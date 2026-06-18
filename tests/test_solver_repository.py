@@ -103,6 +103,22 @@ class SolverRepositoryBranchLifecycleTests(unittest.TestCase):
                 commit_and_push(tmpdir, "main", "msg", "secret-token", "test-owner", "demo")
             )
 
+    def test_commit_and_push_returns_false_on_git_timeout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._init_repo(Path(tmpdir))
+            with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(["git", "add"], 1)):
+                self.assertFalse(
+                    commit_and_push(
+                        tmpdir,
+                        "main",
+                        "msg",
+                        "secret-token",
+                        "test-owner",
+                        "demo",
+                        timeout_seconds=1,
+                    )
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

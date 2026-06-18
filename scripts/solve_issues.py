@@ -113,15 +113,18 @@ from solver_repository import (
 )
 from solver_reporting import (  # noqa: F401 (re-exports used by tests/batch)
     PRESERVED_WORKTREE_RETENTION_DAYS,
+    POST_PUSH_INCOMPLETE_STATUSES,
     RUN_REPORTS_ROOT,
     RunReport,
     cleanup_preserved_worktrees,
     create_run_report,
     detect_opencode_runtime_diagnostics,
     format_git_change_summary,
+    format_post_push_recovery_note,
     format_worker_output_tail,
     preserve_worker_worktree,
     print_opencode_runtime_diagnostics,
+    pr_recovery_command,
     safe_run_repo_name,
     should_preserve_worktree,
     should_surface_worker_line,
@@ -305,6 +308,24 @@ CODEX_RATE_LIMIT_RETRY_LIMIT = 3
 # Wird in run_post_solve_tests() ausgefuehrt; Status landet in PR-Body und Run-Report.
 POST_SOLVE_TEST_COMMAND = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
 POST_SOLVE_TEST_TIMEOUT_SECONDS = 300
+# Post-Worker-Phasen (Issue #350): Validierung, Tests, Commit, Push, PR.
+# Diese Phasen laufen _nach_ dem eigentlichen KI-Worker, koennen aber in der
+# Praxis blockieren (z.B. GitHub-API haengt). Wir setzen fuer jede Phase
+# explizite Health-Updates und eine harte Watchdog-Obergrenze, damit ein
+# stiller Single-Run nicht endlos haengt.
+POST_WORKER_PHASES: tuple[str, ...] = (
+    "validating",
+    "post_solve_tests",
+    "committing",
+    "pushing",
+    "creating_pr",
+)
+# Default-Budget fuer die _gesamte_ Post-Worker-Phase (Validierung bis
+# PR-Erstellung). Wird durch ``--max-post-worker-runtime-seconds``
+# ueberschrieben.
+DEFAULT_POST_WORKER_RUNTIME_SECONDS = 600
+# Watchdog-Heartbeat-Intervall fuer die Post-Worker-Health-Datei.
+POST_WORKER_HEARTBEAT_SECONDS = 15
 CONFLICT_MARKER_RE = re.compile(r"^\s*(?:<{7}\s|>{7}\s|={7}\s*$)")
 COMMON_REPO_FILES = {
     ".dockerignore",
@@ -617,12 +638,14 @@ class GitHubClient:
         # Kommentar hinzufügen
         self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}/comments",
-            json={"body": comment}
+            json={"body": comment},
+            timeout=30,
         )
         # Issue schließen
         self.session.patch(
             f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}",
-            json={"state": "closed"}
+            json={"state": "closed"},
+            timeout=30,
         )
 
     def create_pull_request(self, repo: str, title: str, body: str,
@@ -639,7 +662,8 @@ class GitHubClient:
 
         resp = self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
-            json={"title": title, "body": body, "head": head, "base": resolved_base}
+            json={"title": title, "body": body, "head": head, "base": resolved_base},
+            timeout=30,
         )
         if resp.status_code == 201:
             return resp.json()
@@ -2145,6 +2169,152 @@ class PostSolveTestResult:
         return f"{prefix} ({command_text})"
 
 
+class PostWorkerTimeoutError(RuntimeError):
+    """Wird ausgeloest, wenn eine Post-Worker-Phase das Zeitbudget ueberschreitet.
+
+    Der Solver faengt diesen Fehler in ``solve_issue`` ab, schreibt einen
+    ``pr_creation_timeout``-bzw. ``pushed_without_pr``-Run-Report und
+    hinterlegt einen Recovery-Hinweis inkl. PR-Befehl.
+    """
+
+
+@dataclass(frozen=True)
+class PostWorkerPhaseResult:
+    """Ergebnis einer einzelnen Post-Worker-Phase (Issue #350)."""
+    phase: str
+    started_at: datetime
+    finished_at: datetime
+    timed_out: bool = False
+    error: str | None = None
+
+    @property
+    def duration_seconds(self) -> float:
+        return (self.finished_at - self.started_at).total_seconds()
+
+
+def _post_worker_phase_started(phase: str) -> datetime:
+    """Heartbeat fuer den Watchdog: Phase + Start-Zeitpunkt festhalten.
+
+    Wird am Anfang _jeder_ Post-Worker-Phase aufgerufen. Der externe
+    Watchdog-Cron liest ``health.json`` und kann so eine haengende Phase
+    erkennen.
+    """
+    if phase not in POST_WORKER_PHASES:
+        raise ValueError(
+            f"Unbekannte Post-Worker-Phase: {phase!r} (erwartet: {POST_WORKER_PHASES})"
+        )
+    print(f"      ▶ Post-Worker-Phase: {phase}")
+    return datetime.now()
+
+
+def _post_worker_phase_finished(
+    run_report: RunReport | None,
+    phase: str,
+    started_at: datetime,
+    *,
+    note: str | None = None,
+    last_activity: str = "",
+) -> PostWorkerPhaseResult:
+    """Heartbeat fuer den Watchdog: Phase sauber abschliessen."""
+    finished_at = datetime.now()
+    if run_report is not None:
+        # Health-Datei mit aktuellem Stand aktualisieren, damit das
+        # Batch-Watchdog weiss, dass diese Phase sauber durchgelaufen ist.
+        write_run_health(
+            run_report,
+            last_activity,
+            finished_at,
+            status="running",
+            phase=phase,
+        )
+    return PostWorkerPhaseResult(
+        phase=phase,
+        started_at=started_at,
+        finished_at=finished_at,
+        error=note,
+    )
+
+
+def _check_post_worker_deadline(
+    started_at: datetime,
+    deadline_seconds: float,
+    phase: str,
+) -> None:
+    """Wirft :class:`PostWorkerTimeoutError`, wenn das Post-Worker-Budget
+    ueberschritten ist.
+    """
+    if deadline_seconds <= 0:
+        return
+    elapsed = (datetime.now() - started_at).total_seconds()
+    if elapsed > deadline_seconds:
+        raise PostWorkerTimeoutError(
+            f"Post-Worker-Phase '{phase}' ueberschritt das Zeitbudget "
+            f"({int(elapsed)}s > {int(deadline_seconds)}s)"
+        )
+
+
+def compute_post_worker_deadline(
+    run_started_at: datetime,
+    max_run_runtime_seconds: float | None,
+    max_post_worker_runtime_seconds: float | None,
+) -> float:
+    """Berechnet das verbleibende Post-Worker-Budget in Sekunden.
+
+    Beruecksichtigt sowohl das globale ``--max-run-runtime-seconds`` als
+    auch das dedizierte ``--max-post-worker-runtime-seconds``. Wenn beide
+    gesetzt sind, gewinnt der kleinere Wert.
+    """
+    candidates: list[float] = []
+    if max_post_worker_runtime_seconds and max_post_worker_runtime_seconds > 0:
+        candidates.append(float(max_post_worker_runtime_seconds))
+    if max_run_runtime_seconds and max_run_runtime_seconds > 0:
+        elapsed = (datetime.now() - run_started_at).total_seconds()
+        remaining = float(max_run_runtime_seconds) - elapsed
+        if remaining > 0:
+            candidates.append(remaining)
+    if not candidates:
+        return 0.0
+    return min(candidates)
+
+
+def _run_post_worker_with_watchdog(
+    run_report: RunReport | None,
+    phase: str,
+    post_worker_started_at: datetime,
+    post_worker_deadline_seconds: float,
+    operation,
+):
+    """Fuehrt eine Post-Worker-Phase unter Watchdog-Schutz aus (Issue #350).
+
+    Aktualisiert vor dem Start die Health-Datei (Phase + Heartbeat) und
+    wirft :class:`PostWorkerTimeoutError`, sobald das Budget ueberschritten
+    ist. So hinterlaesst eine haengende Phase (commit, push, PR) immer
+    einen klaren ``last_phase``-Eintrag im Health-File und einen
+    ``pr_creation_timeout``- bzw. ``pushed_without_pr``-Status, der im
+    Watchdog als terminal und recovery-faehig erkannt wird.
+    """
+    phase_started = _post_worker_phase_started(phase)
+    _check_post_worker_deadline(
+        post_worker_started_at,
+        post_worker_deadline_seconds,
+        phase,
+    )
+    if run_report is not None:
+        write_run_health(
+            run_report,
+            status="running",
+            phase=phase,
+        )
+    result = operation()
+    _post_worker_phase_finished(
+        run_report,
+        phase,
+        phase_started,
+    )
+    return result
+
+
+
 def format_post_solve_test_command(command: list[str] | None = None) -> list[str]:
     """Gibt den auszufuehrenden Post-Solve-Testbefehl zurueck.
 
@@ -2711,6 +2881,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 max_run_output_tokens: int | None = None,
                 max_run_cache_read_tokens: int | None = None,
                 max_run_runtime_seconds: float | None = None,
+                max_post_worker_runtime_seconds: float | None = None,
                 ensemble: int = 0,
                 role_routing: dict | None = None) -> bool:
     number = issue["number"]
@@ -2865,6 +3036,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         write_run_report(run_report, "started")
         write_run_health(run_report, status="running", phase="clone")
         print(f"      Run-Report: {run_report.path}")
+    # Issue #350: Zeitpunkt fuer das Post-Worker-Watchdog-Budget festhalten.
+    # Der Watchdog misst die _gesamte_ Post-Worker-Phase (Validierung bis
+    # PR-Erstellung) gegen ``--max-post-worker-runtime-seconds`` bzw. das
+    # verbleibende ``--max-run-runtime-seconds``.
+    run_started_at = datetime.now()
+    post_worker_started_at: datetime | None = None
+    post_worker_deadline_seconds: float = 0.0
     # Fruehes Repo-Profil fuer Skip-Pfade (vorhandener PR, geschlossene Issue)
     early_repo_profile_obj, early_repo_profile_dict = build_repo_profile_for_run(
         repo, config["config"], branch=base_branch,
@@ -3321,6 +3499,84 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 )
             return False
 
+        # Ab hier beginnt die Post-Worker-Phase (Issue #350).
+        post_worker_started_at = datetime.now()
+        post_worker_deadline_seconds = compute_post_worker_deadline(
+            run_started_at,
+            max_run_runtime_seconds,
+            max_post_worker_runtime_seconds,
+        )
+        branch_pushed_remote = False
+
+        def _write_post_push_recovery_report(
+            status_value: str,
+            note_text: str,
+            *,
+            worker_result_for_report=diagnostic_result,
+        ) -> None:
+            """Schreibt einen Run-Report fuer ``pushed_without_pr``/``pr_creation_timeout``.
+
+            Enthaelt Branch-Namen, PR-Recovery-Befehl und (falls vorhanden)
+            das Worktree-Preset, damit das Watchdog die Lage bewerten und
+            ein Folgerun aufsetzen kann.
+            """
+            if not run_report:
+                return
+            note = note_text
+            if branch_name and branch_pushed_remote:
+                note = (
+                    f"{note_text}\n"
+                    + format_post_push_recovery_note(
+                        config["owner"],
+                        repo,
+                        branch_name,
+                        number,
+                        base_branch,
+                    )
+                )
+            write_resource_diagnostics_to_report(
+                run_report.path, run_resources, resource_diagnostics
+            )
+            write_run_report(
+                run_report,
+                status_value,
+                worker_result=worker_result_for_report,
+                note=note,
+                preserved_worktree_path=preserved_worktree,
+                base_branch=base_branch,
+                git_change_summary=git_change_summary,
+                vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                resource_diagnostics=resource_diagnostics,
+                opencode_session_metrics=opencode_session_metrics,
+                openrouter_usage_metrics=openrouter_usage_metrics,
+                repo_profile=repo_profile_dict,
+            )
+
+        # Post-Worker-Watchdog fuer die Validierungs-Phase. Die Phase
+        # selbst ist billig, aber sie ist der erste Schritt nach dem
+        # Worker-Heartbeat; ein expliziter Heartbeat + Deadline-Check
+        # schliesst die Luecke, die Issue #339/Issue #340 aufgedeckt haben.
+        try:
+            _check_post_worker_deadline(
+                post_worker_started_at,
+                post_worker_deadline_seconds,
+                "validating",
+            )
+        except PostWorkerTimeoutError as exc:
+            print_warn(f"Post-Worker-Timeout in 'validating': {exc}")
+            if run_report:
+                write_run_health(
+                    run_report,
+                    status="unhealthy",
+                    phase="validating",
+                )
+            return False
+        if run_report:
+            write_run_health(
+                run_report,
+                status="running",
+                phase="validating",
+            )
         validation = validate_worker_changes(repo_dir, git_status)
         if not validation.ok:
             print_warn("Worker-Validierung fehlgeschlagen; erstelle keinen Commit und keinen PR")
@@ -3369,7 +3625,60 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         print(f"      📤 Commit & Push ...", end=" ", flush=True)
         commit_msg = f"fix: Löse Issue #{number} — {title}\n\nAutomatisch gelöst mit AI Issue Solver (Modell: {model})\nIssue: https://github.com/{config['owner']}/{repo}/issues/{number}"
 
-        pushed = commit_and_push(repo_dir, branch_name, commit_msg, token, config["owner"], repo)
+        # Post-Worker-Watchdog (Issue #350): Commit + Push unter expliziter
+        # Deadline fuehren. Wenn das Budget ueberschritten wird, schreiben
+        # wir einen ``pushed_without_pr``-Report, weil der Branch moeglicherweise
+        # bereits remote ist (commit_and_push fuehrt git add/commit/push in
+        # einem Schritt aus).
+        try:
+            _check_post_worker_deadline(
+                post_worker_started_at,
+                post_worker_deadline_seconds,
+                "committing",
+            )
+        except PostWorkerTimeoutError as exc:
+            print_warn(f"Post-Worker-Timeout in 'committing': {exc}")
+            if run_report:
+                write_run_health(
+                    run_report,
+                    status="unhealthy",
+                    phase="committing",
+                )
+            _write_post_push_recovery_report(
+                "pushed_without_pr",
+                f"Timeout vor Commit/Push: {exc}",
+            )
+            return False
+
+        pushed = commit_and_push(
+            repo_dir,
+            branch_name,
+            commit_msg,
+            token,
+            config["owner"],
+            repo,
+            timeout_seconds=post_worker_deadline_seconds or DEFAULT_POST_WORKER_RUNTIME_SECONDS,
+        )
+
+        # Nach erfolgreichem Push die "pushing"-Phase markieren. Falls
+        # commit_and_push teilweise erfolgreich war (Commit ok, Push fehlt),
+        # behandeln wir das wie vorher als "push_failed" und erhalten den
+        # Branch-Wert ueber das Worktree-Preset.
+        if pushed:
+            branch_pushed_remote = True
+            if run_report:
+                write_run_health(
+                    run_report,
+                    status="running",
+                    phase="pushing",
+                )
+                # Heartbeat direkt nach erfolgreichem Push schreiben.
+                write_run_health(
+                    run_report,
+                    last_activity_at=datetime.now(),
+                    status="running",
+                    phase="creating_pr",
+                )
 
         if not pushed:
             print_warn("Push fehlgeschlagen oder keine Änderungen")
@@ -3779,6 +4088,12 @@ def main():
         default=None,
         help="Maximale Laufzeit in Sekunden fuer direkte API-Worker wie OpenRouter Direct",
     )
+    parser.add_argument(
+        "--max-post-worker-runtime-seconds",
+        type=float,
+        default=None,
+        help="Maximale Laufzeit in Sekunden fuer Validierung, Tests, Commit, Push und PR-Erstellung",
+    )
     args = parser.parse_args()
 
     if args.cleanup_preserved_worktrees:
@@ -4074,6 +4389,7 @@ def main():
                 max_run_output_tokens=args.max_run_output_tokens,
                 max_run_cache_read_tokens=args.max_run_cache_read_tokens,
                 max_run_runtime_seconds=args.max_run_runtime_seconds,
+                max_post_worker_runtime_seconds=args.max_post_worker_runtime_seconds,
                 ensemble=args.ensemble,
                 role_routing=_ROLE_ROUTING if _BUDGET_TRACKING_ACTIVE else None,
             )

@@ -133,29 +133,43 @@ def branch_has_changes_against_base(repo_dir: str, base_branch: str) -> bool:
 
 
 def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
-                    owner: str, repo: str) -> bool:
+                    owner: str, repo: str, timeout_seconds: float | None = None) -> bool:
+    timeout = timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
+
+    def run_git(args, **kwargs):
+        return subprocess.run(args, cwd=repo_dir, timeout=timeout, **kwargs)
+
     # Alle Änderungen stagen
-    subprocess.run(["git", "add", "-A"], cwd=repo_dir, capture_output=True)
+    try:
+        run_git(["git", "add", "-A"], capture_output=True)
+    except subprocess.TimeoutExpired:
+        print_warn("Git add Timeout")
+        return False
 
     # Prüfen ob es Änderungen gibt
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"],
-        cwd=repo_dir, capture_output=True
-    )
+    try:
+        result = run_git(["git", "diff", "--cached", "--quiet"], capture_output=True)
+    except subprocess.TimeoutExpired:
+        print_warn("Git diff Timeout")
+        return False
     if result.returncode == 0:
         print_warn("Keine Änderungen zu committen")
         return False
 
     # Commit
-    result = subprocess.run(
-        ["git", "commit", "-m", message],
-        cwd=repo_dir, capture_output=True, text=True,
-        env={**os.environ,
-             "GIT_AUTHOR_NAME": "AI Issue Solver",
-             "GIT_AUTHOR_EMAIL": "ai@github.com",
-             "GIT_COMMITTER_NAME": "AI Issue Solver",
-             "GIT_COMMITTER_EMAIL": "ai@github.com"}
-    )
+    try:
+        result = run_git(
+            ["git", "commit", "-m", message],
+            capture_output=True, text=True,
+            env={**os.environ,
+                 "GIT_AUTHOR_NAME": "AI Issue Solver",
+                 "GIT_AUTHOR_EMAIL": "ai@github.com",
+                 "GIT_COMMITTER_NAME": "AI Issue Solver",
+                 "GIT_COMMITTER_EMAIL": "ai@github.com"}
+        )
+    except subprocess.TimeoutExpired:
+        print_warn("Git commit Timeout")
+        return False
     if result.returncode != 0:
         print_warn("Commit fehlgeschlagen")
         if result.stderr.strip():
@@ -164,8 +178,9 @@ def commit_and_push(repo_dir: str, branch: str, message: str, token: str,
 
     # Push
     remote_url = f"https://{token}@github.com/{owner}/{repo}.git"
-    result = subprocess.run(
-        ["git", "push", remote_url, branch],
-        cwd=repo_dir, capture_output=True, text=True
-    )
+    try:
+        result = run_git(["git", "push", remote_url, branch], capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        print_warn("Git push Timeout")
+        return False
     return result.returncode == 0

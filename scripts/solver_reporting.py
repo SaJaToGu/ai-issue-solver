@@ -46,10 +46,40 @@ PRESERVE_WORKTREE_STATUSES = {
     "nonzero_without_changes",
     "pr_failed",
     "pr_failed_from_existing_branch",
+    "pr_creation_timeout",
     "push_failed",
+    "pushed_without_pr",
     "rate_limit_deferred",
     "validation_failed",
 }
+# Statuswerte, die in der Watchdog-Auswertung als terminal gelten.
+# ``pushed_without_pr`` und ``pr_creation_timeout`` markieren eine
+# Teil-Auslieferung: Der Branch ist bereits remote, der PR aber (noch) nicht
+# angelegt. Diese Status muessen explizit terminal sein, damit das Watchdog
+# sie nicht weiter als "haengend" meldet, waehrend ein Folgerun den PR
+# nachreichen kann.
+TERMINAL_STATUSES = frozenset({
+    "archived",
+    "cleanup_noop",
+    "cleanup_successful",
+    "clone_failed",
+    "failed",
+    "no_changes",
+    "nonzero_without_changes",
+    "pr_created",
+    "pr_created_from_existing_branch",
+    "pr_created_with_warning",
+    "pr_creation_timeout",
+    "pr_failed",
+    "pr_failed_from_existing_branch",
+    "pushed_without_pr",
+    "push_failed",
+    "rate_limit_deferred",
+    "skip_existing_pr",
+    "skip_merged_pr",
+    "validation_failed",
+    "worker_validation_failed",
+})
 
 WORKER_LIVE_OUTPUT_RE = re.compile(
     r"("
@@ -89,10 +119,19 @@ OPENCODE_WAL_FAILURE_RE = re.compile(
 OPENCODE_EDIT_FAILURE_RE = re.compile(r"\bEdit\s+(.+?)\s+failed\b", re.IGNORECASE)
 OPENCODE_EDIT_FAILURE_REPEAT_THRESHOLD = 3
 NO_CHANGE_STATUSES = {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr"}
+# Statuswerte, die einen hart abgebrochenen PR-Schritt markieren.
 PIPELINE_FAILURE_STATUSES = {
     "pr_failed",
     "pr_failed_from_existing_branch",
+    "pr_creation_timeout",
     "push_failed",
+}
+# Statuswerte, die nach erfolgtem Push ohne PR stehen geblieben sind.
+# Ein Folgerun oder Watchdog-Re-Run kann auf Basis des Branch-Namens den
+# PR nachreichen.
+POST_PUSH_INCOMPLETE_STATUSES = {
+    "pushed_without_pr",
+    "pr_creation_timeout",
 }
 
 
@@ -173,6 +212,8 @@ def build_run_outcome(status: str,
         delivery_status = "push_failed"
     elif status in {"pr_failed", "pr_failed_from_existing_branch"}:
         delivery_status = "pr_failed"
+    elif status in POST_PUSH_INCOMPLETE_STATUSES:
+        delivery_status = "pushed_without_pr"
     elif status in NO_CHANGE_STATUSES:
         delivery_status = "not_applicable"
     elif status == "pr_skipped":
@@ -190,6 +231,10 @@ def build_run_outcome(status: str,
         failure_class = "success"
     elif status == "pr_skipped":
         failure_class = "success" if has_changes else "noop"
+    elif status in POST_PUSH_INCOMPLETE_STATUSES:
+        # Branch ist remote, PR fehlt: kontrollierte Teilauslieferung mit
+        # klarem Recovery-Pfad.
+        failure_class = "pipeline_failure" if has_changes or preserved else "runtime_failure"
     elif status == "budget_exceeded":
         failure_class = "control_failure"
     elif status in PIPELINE_FAILURE_STATUSES and (has_changes or preserved):
@@ -207,6 +252,9 @@ def build_run_outcome(status: str,
 
     if preserved:
         recovery_status = "preserved_worktree"
+    elif status in POST_PUSH_INCOMPLETE_STATUSES and (has_changes or preserved):
+        # Branch ist remote, PR fehlt: Recovery = manueller/gh-Aufruf.
+        recovery_status = "manual_review"
     elif failure_class in {"model_failure", "runtime_failure", "interrupted"}:
         recovery_status = "retry_clean"
     elif failure_class == "control_failure":
@@ -499,6 +547,42 @@ def preserved_worktree_cleanup_command(retention_days: int = PRESERVED_WORKTREE_
         "python scripts/solve_issues.py --cleanup-preserved-worktrees "
         f"--retention-days {retention_days}"
     )
+
+
+def pr_recovery_command(
+    owner: str,
+    repo: str,
+    branch: str,
+    issue_number: int,
+    base_branch: str = "main",
+) -> str:
+    """Baut einen reproduzierbaren gh-Befehl fuer eine PR-Nachlieferung.
+
+    Wird verwendet, wenn der Branch bereits remote ist, der PR aber (noch)
+    nicht existiert (Status ``pushed_without_pr`` oder ``pr_creation_timeout``).
+    """
+    return (
+        "gh pr create "
+        f"--repo {owner}/{repo} "
+        f"--base {base_branch} "
+        f"--head {branch} "
+        f"--title \"[AI] Fix: Issue #{issue_number}\" "
+        "--body \"Automatisch gelöst durch AI Issue Solver; PR manuell angelegt.\""
+    )
+
+
+def format_post_push_recovery_note(
+    owner: str,
+    repo: str,
+    branch: str,
+    issue_number: int,
+    base_branch: str = "main",
+) -> str:
+    """Mehrzeilige Notiz fuer Run-Reports, wenn der Branch remote ist, aber kein PR existiert."""
+    return "\n".join([
+        "Recovery-Befehl (PR nachträglich anlegen):",
+        f"  {pr_recovery_command(owner, repo, branch, issue_number, base_branch)}",
+    ])
 
 
 def preserved_worktree_recovery_note(path: Path, branch: str, base_branch: str | None = None) -> str:
