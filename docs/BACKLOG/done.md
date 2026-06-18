@@ -140,3 +140,74 @@ Original labels: `kind/feature`, `theme/workflow`, `agent/supervisor`, `priority
 Touches: `scripts/solve_issues.py`, `scripts/solve_issues_batch.py`, `tests/`
 
 ---
+
+## Done — §5 Evaluate mobile-first Claude Code alternative to Codex (#191)
+
+Closed via #191. Evaluate mobile-first Claude Code alternative to Codex.
+
+Original labels: `kind/automation`, `theme/quality`, `theme/provider`, `theme/workflow`
+
+---
+## Done — §16 Use GitHub repository intelligence before local repo type detection (#213)
+
+Closed via #213. Use GitHub repository intelligence before local repo type detection.
+
+Original labels: `kind/automation`, `kind/analysis`, `theme/quality`, `theme/workflow`, `theme/github`
+
+---
+## Done — §17 Add workflow control for backlog and PR queue congestion (#216)
+
+Closed via #216. Add workflow control for backlog and PR queue congestion.
+
+Original labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `theme/quality`
+
+---
+## Done — §18 Harden Codex sandbox and escalated-command workflow handling (#217)
+
+Closed via #217. Harden Codex sandbox and escalated-command workflow handling.
+
+Original labels: `kind/automation`, `theme/workflow`, `theme/codex`, `theme/quality`
+
+---
+## Done — §19 Add structured rework workflow with sub-issues and separate PRs (#220)
+
+Closed via #220. Add structured rework workflow with sub-issues and separate PRs.
+
+Original labels: `kind/automation`, `theme/workflow`, `theme/quality`, `theme/github`
+
+---
+## Done — §21 Add solver process supervisor for monitoring and targeted cancellation (#223)
+
+Closed via #223. Add solver process supervisor for monitoring and targeted cancellation.
+
+Original labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `theme/quality`
+
+---
+## Done — §24 Trigger the solver automatically via GitHub Actions when an issue is labeled (#243)
+
+Closed via #243. Trigger the solver automatically via GitHub Actions when an issue is labeled.
+
+Original labels: `kind/automation`, `theme/workflow`, `theme/github`
+
+---
+## Done — §6 Support low-code and non-code repositories without Python assumptions (#188)
+
+Closed via #188. Support low-code and non-code repositories without Python assumptions.
+
+Original labels: `kind/automation`, `theme/quality`, `theme/workflow`, `kind/analysis`
+
+---
+## Done — §15 Add vertical process quality analysis and periodic workflow retrospective (#218)
+
+Closed via #218. Add vertical process quality analysis and periodic workflow retrospective.
+
+Original labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/dashboard`
+
+---
+## Done — §25 Decompose oversized issues into sub-issues automatically (#244)
+
+Closed via #244. Decompose oversized issues into sub-issues automatically.
+
+Original labels: `kind/automation`, `theme/workflow`, `theme/github`, `theme/quality`
+
+---
