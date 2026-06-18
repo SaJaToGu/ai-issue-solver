@@ -113,6 +113,7 @@ class OpenRouterDirectAdapter(WorkerAdapter):
             "max_run_output_tokens": kwargs.pop("max_run_output_tokens", None),
             "max_run_cache_read_tokens": kwargs.pop("max_run_cache_read_tokens", None),
             "max_run_runtime_seconds": kwargs.pop("max_run_runtime_seconds", None),
+            "use_structured_output": kwargs.pop("use_structured_output", False),
         }
 
     def _log_preflight_warnings(self, budget: dict) -> None:
@@ -243,10 +244,13 @@ class OpenRouterDirectAdapter(WorkerAdapter):
         if runtime_limit_f is None or runtime_limit_f <= 0:
             runtime_limit_f = float(DEFAULT_REQUEST_TIMEOUT_SECONDS)
 
+        use_structured = bool(budget_kwargs.get("use_structured_output", False))
+
         worker = OpenRouterWorker(
             api_key=effective_key,
             model=effective_model,
             request_timeout_seconds=runtime_limit_f,
+            use_structured_output=use_structured,
         )
         file_targets = kwargs.get("file_targets")
         if file_targets is None:

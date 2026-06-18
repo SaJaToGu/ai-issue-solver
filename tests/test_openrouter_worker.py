@@ -16,7 +16,9 @@ Abgedeckte Szenarien:
 - Fehlender OPENROUTER_API_KEY
 """
 
+import json
 import os
+import subprocess
 import textwrap
 import unittest
 from pathlib import Path
@@ -118,6 +120,12 @@ class TestOpenRouterWorkerFileContext(unittest.TestCase):
         full_path = Path(self.tmpdir) / rel_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
+
+    def _read_file(self, rel_path: str) -> str:
+        return (Path(self.tmpdir) / rel_path).read_text(encoding="utf-8")
+
+    def _read_file(self, rel_path: str) -> str:
+        return (Path(self.tmpdir) / rel_path).read_text(encoding="utf-8")
 
     def test_build_file_context_includes_repo_relative_target(self):
         self._write_file("docs/SETUP_AIDER.md", "# Setup\n\nOpenRouter\n")
@@ -272,6 +280,56 @@ class TestExtractPatches(unittest.TestCase):
         patches = self.worker.extract_patches(text)
         self.assertEqual(patches, [])
 
+    # ------------------------------------------------------------------
+    # Tests für strukturierten JSON-Output (response_format)
+    # ------------------------------------------------------------------
+
+    def test_extract_from_structured_json_valid(self):
+        """Strukturiertes JSON mit gültigen Patches wird erkannt."""
+        json_text = json.dumps({
+            "patches": [
+                {
+                    "file_path": "foo.py",
+                    "diff": "--- a/foo.py\n+++ b/foo.py\n@@ -1,1 +1,1 @@\n-x = 1\n+x = 2\n"
+                }
+            ]
+        })
+        patches = self.worker.extract_patches(json_text)
+        self.assertEqual(len(patches), 1)
+        self.assertIn("--- a/foo.py", patches[0])
+        self.assertIn("+++ b/foo.py", patches[0])
+
+    def test_extract_from_structured_json_empty_patches(self):
+        """Leeres patches-Array ergibt leere Liste (no-op)."""
+        json_text = json.dumps({"patches": []})
+        patches = self.worker.extract_patches(json_text)
+        self.assertEqual(patches, [])
+
+    def test_extract_from_structured_json_multiple_edits(self):
+        """Mehrere Einträge im patches-Array werden alle extrahiert."""
+        json_text = json.dumps({
+            "patches": [
+                {"file_path": "a.py", "diff": "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-a\n+b\n"},
+                {"file_path": "b.py", "diff": "--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-c\n+d\n"},
+            ]
+        })
+        patches = self.worker.extract_patches(json_text)
+        self.assertEqual(len(patches), 2)
+
+    def test_extract_structured_json_fallback_to_text(self):
+        """Plain text ohne JSON wird via textbasierte Extraktion verarbeitet."""
+        diff = _make_valid_diff()
+        text = f"```diff\n{diff}```\n"
+        patches = self.worker.extract_patches(text)
+        self.assertEqual(len(patches), 1)
+
+    def test_extract_structured_json_malformed_ignored(self):
+        """Ungültiges JSON wird ignoriert und fällt auf Textextraktion zurück."""
+        diff = _make_valid_diff()
+        text = f"Dies ist kein JSON\n\n```diff\n{diff}```\n"
+        patches = self.worker.extract_patches(text)
+        self.assertEqual(len(patches), 1)
+
 
 # ---------------------------------------------------------------------------
 # Klasse: apply_patches()-Tests
@@ -377,6 +435,61 @@ class TestApplyPatches(unittest.TestCase):
         results = self.worker.apply_patches([], self.tmpdir)
         self.assertEqual(results, [])
 
+    def test_patch_with_reject_artifacts_detected_and_cleaned(self):
+        """Reject-Artifakte (.rej, .orig) werden erkannt, bereinigt und als Fehler gemeldet."""
+        # Git-Repo initialisieren
+        subprocess.run(["git", "init"], cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"],
+                       cwd=self.tmpdir, capture_output=True)
+
+        # Datei mit abweichendem Inhalt erstellen
+        self._write_file("target.txt", "Zeile A\nZeile B\nZeile C\n")
+        subprocess.run(["git", "add", "."], cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"],
+                       cwd=self.tmpdir, capture_output=True)
+
+        # Patch der auf anderen Content zielt — git apply und patch -p1 schlagen fehl
+        diff = textwrap.dedent("""\
+            --- a/target.txt
+            +++ b/target.txt
+            @@ -1,3 +1,3 @@
+             Zeile X
+            -Zeile Y
+            +Zeile Z
+             Zeile W
+        """)
+
+        results = self.worker.apply_patches([diff], self.tmpdir)
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].success)
+        self.assertTrue(
+            len(results[0].reject_artifacts) > 0,
+            f"Erwartet reject_artifacts, erhalten: {results[0]}"
+        )
+        # Prüfen, dass keine .rej- oder .orig-Dateien mehr existieren
+        remaining = [p for p in Path(self.tmpdir).rglob("*") if p.suffix in (".rej", ".orig")]
+        self.assertEqual(
+            remaining, [],
+            f"Reject-Artifakte wurden nicht bereinigt: {remaining}"
+        )
+        # Prüfen, dass partielle Änderungen rückgängig gemacht wurden
+        content = self._read_file("target.txt")
+        self.assertEqual(content, "Zeile A\nZeile B\nZeile C\n",
+                         "Partielle Änderungen sollten rückgängig gemacht sein")
+
+    def test_snapshot_reject_files_finds_existing(self):
+        """_snapshot_reject_files erkennt bereits vorhandene .rej/.orig Dateien."""
+        Path(self.tmpdir, "existing.rej").write_text("reject", encoding="utf-8")
+        Path(self.tmpdir, "existing.orig").write_text("orig", encoding="utf-8")
+
+        snapshot = self.worker._snapshot_reject_files(self.tmpdir)
+
+        self.assertIn("existing.rej", snapshot)
+        self.assertIn("existing.orig", snapshot)
+
 
 # ---------------------------------------------------------------------------
 # Klasse: run_direct()-Tests
@@ -397,6 +510,9 @@ class TestRunDirect(unittest.TestCase):
         full_path = Path(self.tmpdir) / rel_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
+
+    def _read_file(self, rel_path: str) -> str:
+        return (Path(self.tmpdir) / rel_path).read_text(encoding="utf-8")
 
     @patch("requests.post")
     def test_run_direct_success(self, mock_post):
@@ -475,8 +591,9 @@ class TestRunDirect(unittest.TestCase):
 
         result = self.worker.run_direct("fix something", self.tmpdir)
 
-        # Patch wurde erkannt, aber Anwendung fehlgeschlagen
-        self.assertEqual(result.returncode, 1)
+        # Patch wurde erkannt, aber patch(1) erzeugt je nach Plattform nicht immer
+        # Reject-Artefakte für denselben ungültigen Patch.
+        self.assertIn(result.returncode, (1, 5))
         self.assertGreater(len(result.patch_results), 0)
         self.assertFalse(result.patch_results[0].success)
 
@@ -507,6 +624,136 @@ class TestRunDirect(unittest.TestCase):
         result = self.worker.run_direct("test", self.tmpdir)
 
         self.assertIn("mistralai/mistral-large", result.output)
+
+    @patch("requests.post")
+    def test_run_direct_structured_output_api_payload(self, mock_post):
+        """Mit use_structured_output=True wird response_format in den Payload aufgenommen."""
+        worker = OpenRouterWorker(
+            api_key="k",
+            model="mistralai/mistral-large",
+            use_structured_output=True,
+        )
+        self._write_file("bar.py", "y = 10\n")
+        diff = _make_valid_diff("bar.py", "y = 10", "y = 20")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": f"```diff\n{diff}```"}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        worker.run_direct("fix bar.py", self.tmpdir)
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertIn("response_format", payload)
+        self.assertEqual(payload["response_format"]["type"], "json_schema")
+        self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+        self.assertIn("provider", payload)
+        self.assertTrue(payload["provider"]["require_parameters"])
+
+    @patch("requests.post")
+    def test_run_direct_structured_output_prompt_adapted(self, mock_post):
+        """Mit use_structured_output=True wird ein JSON-orientierter Prompt gesendet."""
+        worker = OpenRouterWorker(
+            api_key="k",
+            model="mistralai/mistral-large",
+            use_structured_output=True,
+        )
+        self._write_file("bar.py", "y = 10\n")
+        diff = _make_valid_diff("bar.py", "y = 10", "y = 20")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": f"```diff\n{diff}```"}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        worker.run_direct("fix bar.py", self.tmpdir)
+
+        payload = mock_post.call_args.kwargs["json"]
+        sent_prompt = payload["messages"][0]["content"]
+        self.assertIn("Return a JSON object", sent_prompt)
+        self.assertIn("patches", sent_prompt)
+
+    @patch("requests.post")
+    def test_run_direct_returncode_5_for_reject_artifacts(self, mock_post):
+        """Reject-Artifakte in apply_patches führen zu returncode=5."""
+        subprocess.run(["git", "init"], cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"],
+                       cwd=self.tmpdir, capture_output=True)
+        self._write_file("target.txt", "Zeile A\nZeile B\nZeile C\n")
+        subprocess.run(["git", "add", "."], cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"],
+                       cwd=self.tmpdir, capture_output=True)
+
+        # Patch, der nicht passt — führt zu reject artifacts
+        bad_diff = textwrap.dedent("""\
+            --- a/target.txt
+            +++ b/target.txt
+            @@ -1,3 +1,3 @@
+             Zeile X
+            -Zeile Y
+            +Zeile Z
+             Zeile W
+        """)
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": f"```diff\n{bad_diff}```"}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = self.worker.run_direct("fix target.txt", self.tmpdir)
+
+        self.assertEqual(result.returncode, 5)
+        self.assertIn("VALIDATION-FAILED", result.output)
+        # Prüfe, dass keine .rej/.orig Dateien existieren
+        remaining = [p for p in Path(self.tmpdir).rglob("*") if p.suffix in (".rej", ".orig")]
+        self.assertEqual(remaining, [],
+                         "Reject-Artifakte wurden nicht bereinigt")
+        # Prüfe, dass der Originalinhalt wiederhergestellt wurde
+        self.assertEqual(
+            self._read_file("target.txt"),
+            "Zeile A\nZeile B\nZeile C\n",
+            "Partielle Änderungen sollten rückgängig gemacht sein",
+        )
+
+    @patch("requests.post")
+    def test_run_direct_structured_json_parsed_and_applied(self, mock_post):
+        """Strukturierte JSON-Antwort wird erkannt und Patch angewendet."""
+        self._write_file("target.py", "x = 1\n")
+        subprocess.run(["git", "init"], cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"],
+                       cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=self.tmpdir, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"],
+                       cwd=self.tmpdir, capture_output=True)
+
+        diff = _make_valid_diff("target.py", "x = 1", "x = 2")
+        json_response = json.dumps({
+            "patches": [{"file_path": "target.py", "diff": diff}]
+        })
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": json_response}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = self.worker.run_direct("fix target.py", self.tmpdir)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(len(result.patch_results), 1)
+        self.assertTrue(result.patch_results[0].success)
+        self.assertEqual(self._read_file("target.py"), "x = 2\n")
 
 
 # ---------------------------------------------------------------------------
