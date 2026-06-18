@@ -145,9 +145,20 @@ class OpenRouterDirectAdapter(WorkerAdapter):
             return WorkerRunResult(returncode=1, output=error_msg), diagnostics
 
         worker = OpenRouterWorker(api_key=effective_key, model=effective_model)
+        file_targets = kwargs.get("file_targets")
+        if file_targets is None:
+            try:
+                from solve_issues import infer_aider_targets
+                file_targets = infer_aider_targets(prompt, repo_path)
+            except ImportError:
+                file_targets = []
 
         try:
-            direct_result = worker.run_direct(prompt=prompt, repo_dir=repo_path)
+            direct_result = worker.run_direct(
+                prompt=prompt,
+                repo_dir=repo_path,
+                file_targets=file_targets,
+            )
         except Exception as exc:
             error_msg = f"[openrouter_direct] Unerwarteter Fehler: {exc}"
             print_err(error_msg)

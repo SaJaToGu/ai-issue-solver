@@ -166,6 +166,57 @@ class OpenRouterWorker:
             f"{prompt}"
         )
 
+    def build_file_context(
+        self,
+        repo_dir: str,
+        file_targets: List[str] | None,
+        max_chars: int = 24000,
+    ) -> str:
+        """Build bounded repo-file context for direct patch generation."""
+        if not file_targets:
+            return ""
+
+        repo_root = Path(repo_dir).resolve()
+        parts: List[str] = []
+        used_chars = 0
+
+        for target_text in file_targets:
+            target_path = (repo_root / target_text).resolve()
+            try:
+                target_path.relative_to(repo_root)
+            except ValueError:
+                continue
+
+            if not target_path.is_file():
+                continue
+
+            try:
+                content = target_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+
+            header = f"\n--- FILE: {target_text} ---\n"
+            footer = f"\n--- END FILE: {target_text} ---\n"
+            remaining = max_chars - used_chars - len(header) - len(footer)
+            if remaining <= 0:
+                break
+
+            if len(content) > remaining:
+                content = content[:remaining] + "\n[TRUNCATED]\n"
+
+            block = header + content + footer
+            parts.append(block)
+            used_chars += len(block)
+
+        if not parts:
+            return ""
+
+        return (
+            "\n\nRelevant repository file context follows. Use this exact current "
+            "content when creating hunks:\n"
+            + "".join(parts)
+        )
+
     def extract_patches(self, text: str) -> List[str]:
         """
         Extrahiert Unified-Diff-Patches aus dem Modell-Output.
@@ -297,6 +348,7 @@ class OpenRouterWorker:
         self,
         prompt: str,
         repo_dir: str,
+        file_targets: List[str] | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
     ) -> DirectRunResult:
@@ -316,6 +368,8 @@ class OpenRouterWorker:
         Args:
             prompt: Eingabe-Prompt für das Modell.
             repo_dir: Absoluter Pfad zum Ziel-Repository-Verzeichnis.
+            file_targets: Optionale repo-relative Dateien, deren aktueller Inhalt
+                als Kontext in den Prompt aufgenommen wird.
             temperature: Sampling-Temperatur.
             max_tokens: Maximale Token-Anzahl für die Antwort.
 
@@ -326,8 +380,9 @@ class OpenRouterWorker:
 
         # --- Schritt 1: API-Aufruf ---
         try:
+            context = self.build_file_context(repo_dir, file_targets)
             raw_response = self.generate(
-                self.build_patch_prompt(prompt),
+                self.build_patch_prompt(prompt + context),
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
