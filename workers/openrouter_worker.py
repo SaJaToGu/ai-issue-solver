@@ -25,6 +25,45 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 import requests
+import json
+
+
+# JSON-Schema für strukturierten Output (OpenRouter response_format).
+# Erzwingt eine JSON-Antwort mit einem Array von Patches, die jeweils
+# den Dateipfad und den Unified-Diff enthalten.
+_STRUCTURED_PATCH_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "file_edits",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "patches": {
+                    "type": "array",
+                    "description": "List of file edits to apply",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Repo-relative path of the file to edit"
+                            },
+                            "diff": {
+                                "type": "string",
+                                "description": "Unified diff patch to apply, starting with --- a/ and +++ b/ headers"
+                            }
+                        },
+                        "required": ["file_path", "diff"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["patches"],
+            "additionalProperties": False
+        }
+    }
+}
 
 
 # Regulärer Ausdruck zum Erkennen von Unified-Diff-Blöcken im Modelloutput.
@@ -52,6 +91,7 @@ class PatchResult:
     success: bool
     applied_file: Optional[str] = None
     error: Optional[str] = None
+    reject_artifacts: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -89,7 +129,7 @@ class DirectRunResult:
 
     Attributes:
         returncode: 0 bei Erfolg, 1 bei Fehlschlag (kein Patch, alle Patches fehlgeschlagen),
-                    2 bei Prosa-Ausgabe ohne auswertbare Edits.
+                    2 bei Prosa-Ausgabe ohne auswertbare Edits, 5 bei Reject-Artifacts.
         output: Kombinierter Ausgabe-Text (Modell-Antwort + Patch-Protokoll).
         patch_results: Liste der Einzel-Patch-Ergebnisse.
         raw_response: Rohe Modell-Antwort.
@@ -113,6 +153,7 @@ class OpenRouterWorker:
         referer: Optional[str] = None,
         x_title: Optional[str] = None,
         request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        use_structured_output: bool = False,
     ):
         """
         Args:
@@ -122,6 +163,8 @@ class OpenRouterWorker:
             referer: HTTP-Referer für OpenRouter.
             x_title: X-Title für OpenRouter.
             request_timeout_seconds: Timeout für den synchronen API-Aufruf.
+            use_structured_output: Wenn True, wird response_format json_schema
+                mit strict=true verwendet. Modelle ohne Support schlagen fehl.
         """
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
@@ -132,6 +175,7 @@ class OpenRouterWorker:
         self.referer = referer or os.getenv("OPENROUTER_REFERER", "https://github.com/anomalyco/opencode")
         self.x_title = x_title or os.getenv("OPENROUTER_X_TITLE", "OpenCode")
         self.request_timeout_seconds = request_timeout_seconds
+        self.use_structured_output = use_structured_output
 
     def build_headers(self) -> Dict[str, str]:
         """Erzeugt die HTTP-Header für OpenRouter API-Aufrufe."""
@@ -231,6 +275,13 @@ class OpenRouterWorker:
             "max_tokens": max_tokens,
         }
 
+        # Strukturierten Output hinzufügen, wenn konfiguriert
+        if self.use_structured_output:
+            payload["response_format"] = _STRUCTURED_PATCH_SCHEMA
+            # require_parameters=True stellt sicher, dass response_format nur
+            # an Endpunkte gesendet wird, die es unterstützen.
+            payload["provider"] = {"require_parameters": True}
+
         effective_timeout = timeout if timeout is not None else self.request_timeout_seconds
 
         usage = OpenRouterUsage()
@@ -290,14 +341,81 @@ class OpenRouterWorker:
             if isinstance(top_cost, (int, float)):
                 usage.cost_usd = float(top_cost)
 
-    def build_patch_prompt(self, prompt: str) -> str:
+    @staticmethod
+    def _parse_structured_response(text: str) -> Optional[List[str]]:
+        """Versucht, Patches aus einer strukturierten JSON-Antwort zu extrahieren.
+
+        Wenn der Text gültiges JSON gemäss _STRUCTURED_PATCH_SCHEMA ist,
+        werden die enthaltenen Unified-Diffs extrahiert. Sonst None.
+
+        Returns:
+            Liste von Patch-Strings oder None, wenn der Text kein
+            strukturiertes JSON ist.
+        """
+        if not text or not text.strip():
+            return None
+
+        # Nur parsen, wenn der Text wie JSON aussieht
+        stripped = text.strip()
+        if not stripped.startswith("{"):
+            return None
+
+        try:
+            data = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        patches_data = data.get("patches")
+        if not isinstance(patches_data, list) or not patches_data:
+            # Leeres Array ist gültig → no-op (wird später als returncode 2 behandelt)
+            if isinstance(patches_data, list):
+                return []
+            return None
+
+        result: List[str] = []
+        for entry in patches_data:
+            if not isinstance(entry, dict):
+                continue
+            diff = entry.get("diff")
+            if isinstance(diff, str) and diff.strip():
+                result.append(diff)
+
+        if not result:
+            return None
+
+        return result
+
+    def build_patch_prompt(self, prompt: str, structured: bool = False) -> str:
         """
         Wrap the Solver prompt so OpenRouter Direct returns machine-applicable patches.
 
         The direct worker cannot interpret prose. It extracts unified diffs and applies
         them with git/patch tooling, so the model must return a raw diff rather than a
         plan, summary, or Markdown explanation.
+
+        When structured=True, the prompt instructs the model to return JSON matching
+        the _STRUCTURED_PATCH_SCHEMA, enabling response_format enforcement.
         """
+        if structured:
+            return (
+                "You are running in a non-interactive patch application pipeline.\n"
+                "Return a JSON object matching the provided schema. "
+                "The JSON must contain a \"patches\" array where each entry has:\n"
+                "- \"file_path\": repo-relative path to the file being edited\n"
+                "- \"diff\": a unified diff patch starting with "
+                "`--- a/<path>` and `+++ b/<path>` headers\n\n"
+                "Hard requirements:\n"
+                "- Each patch must have valid `@@` hunks with enough context.\n"
+                "- Do not include explanations, summaries, plans, or prose outside JSON.\n"
+                "- If no change is needed, return {\"patches\": []}.\n"
+                "- The JSON must exactly match the response_format schema.\n\n"
+                "Original Solver prompt follows:\n\n"
+                f"{prompt}"
+            )
+
         return (
             "You are running in a non-interactive patch application pipeline.\n"
             "Return ONLY one or more unified diff patches that can be applied with "
@@ -368,8 +486,11 @@ class OpenRouterWorker:
         """
         Extrahiert Unified-Diff-Patches aus dem Modell-Output.
 
-        Sucht zunächst nach Markdown-Code-Fences (```diff ... ``` oder ``` ... ```),
-        danach nach nackten Unified-Diff-Blöcken.
+        Versucht zunächst, eine strukturierte JSON-Antwort zu parsen
+        (response_format json_schema). Falls das nicht gelingt, wird
+        auf die textbasierte Extraktion zurückgegriffen:
+        Markdown-Code-Fences (```diff ... ``` oder ``` ... ```),
+        danach nackte Unified-Diff-Blöcke.
 
         Args:
             text: Roher Modell-Output.
@@ -378,6 +499,11 @@ class OpenRouterWorker:
             Liste von Patch-Strings (jeder enthält mindestens --- / +++ / @@ Header).
         """
         patches: List[str] = []
+
+        # 0. Strukturierte JSON-Antwort versuchen
+        structured = self._parse_structured_response(text)
+        if structured is not None:
+            return structured
 
         # 1. Markdown-Code-Fences mit diff-Inhalt suchen
         for match in _DIFF_FENCE_RE.finditer(text):
@@ -394,6 +520,30 @@ class OpenRouterWorker:
 
         return patches
 
+    @staticmethod
+    def _snapshot_reject_files(repo_dir: str) -> set[str]:
+        """Sammelt alle .orig- und .rej-Dateien im Repository.
+
+        Args:
+            repo_dir: Absoluter Pfad zum Repository-Verzeichnis.
+
+        Returns:
+            Set von repo-relativen Pfaden zu .orig- und .rej-Dateien.
+        """
+        rejects: set[str] = set()
+        repo_path = Path(repo_dir).resolve()
+        if not repo_path.is_dir():
+            return rejects
+        for pattern in ("*.orig", "*.rej"):
+            for f in repo_path.rglob(pattern):
+                if f.is_file():
+                    try:
+                        rel = f.relative_to(repo_path)
+                        rejects.add(str(rel))
+                    except ValueError:
+                        pass
+        return rejects
+
     def apply_patches(
         self,
         patches: List[str],
@@ -405,8 +555,12 @@ class OpenRouterWorker:
         Jeder Patch wird in eine temporäre Datei geschrieben und zuerst via
         `git apply --recount` angewendet. Dadurch können leicht falsche Hunk-Zähler
         aus LLM-generierten Diffs repariert werden. Falls das fehlschlägt, folgt
-        ein Fallback auf `patch -p1`. Fehlgeschlagene Patches werden protokolliert,
-        brechen aber die verbleibenden Patches nicht ab.
+        ein Fallback auf `patch -p1 --no-backup-if-mismatch`. Fehlgeschlagene
+        Patches werden protokolliert, brechen aber die verbleibenden Patches nicht ab.
+
+        Nach jedem Patch-Durchlauf wird nach neu erstellten Reject-Artifakten
+        (.orig- und .rej-Dateien) gesucht. Falls solche gefunden werden, werden
+        sie bereinigt und der Patch als fehlgeschlagen markiert.
 
         Args:
             patches: Liste von Patch-Strings (Unified-Diff-Format).
@@ -416,6 +570,9 @@ class OpenRouterWorker:
             Liste von PatchResult-Instanzen mit Erfolgs- oder Fehlerstatus.
         """
         results: List[PatchResult] = []
+
+        # Snapshot der bereits existierenden Reject-Artifakte vor dem ersten Patch
+        reject_before = self._snapshot_reject_files(repo_dir)
 
         for index, patch_text in enumerate(patches, start=1):
             # Zieldatei aus dem +++ Header extrahieren (für Protokollierung)
@@ -427,6 +584,9 @@ class OpenRouterWorker:
                 applied_file = re.sub(r"^[ab]/", "", raw_path)
 
             # Patch in temporäre Datei schreiben
+            # Reject-Artifakt-Liste vor try/finally initialisieren
+            reject_artifact_list: List[str] = []
+
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 suffix=".patch",
@@ -446,8 +606,10 @@ class OpenRouterWorker:
                     text=True,
                 )
                 if proc.returncode != 0:
+                    # Fallback auf patch -p1 ohne Backup-Dateien
                     fallback = subprocess.run(
-                        ["patch", "-p1", "--forward", "--batch", "-i", tmp_path],
+                        ["patch", "-p1", "--forward", "--batch",
+                         "--no-backup-if-mismatch", "-i", tmp_path],
                         cwd=repo_dir,
                         capture_output=True,
                         text=True,
@@ -460,14 +622,52 @@ class OpenRouterWorker:
                             + "\n"
                             + (fallback.stderr or fallback.stdout or "").strip()
                         ).strip()
-                if proc.returncode == 0:
+
+                # Reject-Artifakte nach dem Patch erkennen
+                reject_after = self._snapshot_reject_files(repo_dir)
+                new_rejects = reject_after - reject_before
+
+                if new_rejects:
+                    # Artifakte bereinigen
+                    for rel_path in new_rejects:
+                        full_path = Path(repo_dir) / rel_path
+                        try:
+                            full_path.unlink()
+                            reject_artifact_list.append(str(rel_path))
+                        except OSError:
+                            pass
+                    # Snapshot aktualisieren: bereinigte Artifakte aus after entfernen
+                    reject_before = reject_after - new_rejects
+                else:
+                    reject_before = reject_after
+
+                # Ergebnis bestimmen
+                if reject_artifact_list:
+                    # Reject-Artifakte gelten als harter Fehler,
+                    # selbst wenn der Prozess-Code 0 war (Edge-Case).
+                    error_detail = (
+                        f"Reject-Artifakte erkannt und bereinigt: "
+                        f"{', '.join(reject_artifact_list)}"
+                    )
+                    if proc.returncode != 0:
+                        stderr_detail = (proc.stderr or proc.stdout or "").strip()
+                        if stderr_detail:
+                            error_detail += f"; stderr: {stderr_detail}"
+                    results.append(PatchResult(
+                        patch_index=index,
+                        success=False,
+                        applied_file=applied_file,
+                        error=error_detail,
+                        reject_artifacts=reject_artifact_list,
+                    ))
+                elif proc.returncode == 0:
                     results.append(PatchResult(
                         patch_index=index,
                         success=True,
                         applied_file=applied_file,
                     ))
                 else:
-                    # Patch fehlgeschlagen — Fehler aus stderr/stdout extrahieren
+                    # Patch fehlgeschlagen ohne Reject-Artifakte
                     error_detail = (proc.stderr or proc.stdout or "").strip()
                     results.append(PatchResult(
                         patch_index=index,
@@ -484,6 +684,25 @@ class OpenRouterWorker:
                     error="`git` oder `patch` binary nicht im PATH gefunden.",
                 ))
             finally:
+                # Partielle Änderungen durch patch -p1 rückgängig machen,
+                # wenn Reject-Artifakte aufgetreten sind
+                if reject_artifact_list and applied_file:
+                    try:
+                        subprocess.run(
+                            ["git", "checkout", "--", applied_file],
+                            cwd=repo_dir,
+                            capture_output=True,
+                            timeout=10,
+                        )
+                    except Exception:
+                        pass
+                    # Falls die Datei nicht im Git-Index ist (neu erstellt), lösche sie
+                    applied_path = Path(repo_dir) / applied_file
+                    if applied_path.exists():
+                        try:
+                            applied_path.unlink()
+                        except OSError:
+                            pass
                 try:
                     os.unlink(tmp_path)
                 except OSError:
@@ -515,6 +734,7 @@ class OpenRouterWorker:
                  oder API-Fehler.
             2  — Modell hat Prosa ohne auswertbare Diffs zurückgegeben.
             3  — Request-Timeout überschritten.
+            5  — Patch-Anwendung hat Reject-Artifakte (.orig/.rej) erzeugt.
 
         Args:
             prompt: Eingabe-Prompt für das Modell.
@@ -543,7 +763,10 @@ class OpenRouterWorker:
             start = time.monotonic()
             try:
                 raw_response, usage = self.generate_with_usage(
-                    self.build_patch_prompt(prompt + context),
+                    self.build_patch_prompt(
+                        prompt + context,
+                        structured=self.use_structured_output,
+                    ),
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=effective_timeout,
@@ -605,6 +828,7 @@ class OpenRouterWorker:
 
         successful = [r for r in patch_results if r.success]
         failed = [r for r in patch_results if not r.success]
+        has_rejects = any(r.reject_artifacts for r in patch_results)
 
         for pr in patch_results:
             if pr.success:
@@ -613,13 +837,23 @@ class OpenRouterWorker:
                     + (f": {pr.applied_file}" if pr.applied_file else "")
                 )
             else:
+                artifact_info = ""
+                if pr.reject_artifacts:
+                    artifact_info = f" [Reject-Artifakte: {', '.join(pr.reject_artifacts)}]"
                 log_lines.append(
                     f"[openrouter_direct] Patch {pr.patch_index} FEHLGESCHLAGEN"
                     + (f" ({pr.applied_file})" if pr.applied_file else "")
                     + (f": {pr.error}" if pr.error else "")
+                    + artifact_info
                 )
 
-        if successful:
+        if has_rejects:
+            returncode = 5
+            log_lines.append(
+                f"[openrouter_direct] VALIDATION-FAILED: Reject-Artifakte wurden erkannt "
+                f"und bereinigt. Der gesamte Lauf gilt als fehlgeschlagen."
+            )
+        elif successful:
             returncode = 0
             log_lines.append(
                 f"[openrouter_direct] {len(successful)}/{len(patch_results)} Patch(es) angewendet."
