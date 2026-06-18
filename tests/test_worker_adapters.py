@@ -761,11 +761,17 @@ class TestOpenRouterDirectAdapter(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("[openrouter_direct]", result.output)
-        worker_cls.assert_called_once_with(api_key="test-key", model="mistralai/mistral-large")
+        worker_cls.assert_called_once_with(
+            api_key="test-key",
+            model="mistralai/mistral-large",
+            request_timeout_seconds=180.0,
+        )
         worker_cls.return_value.run_direct.assert_called_once_with(
             prompt="Fix issue",
             repo_dir="/tmp/repo",
             file_targets=[],
+            max_tokens=8192,
+            request_timeout=180.0,
         )
 
     def test_run_passes_explicit_file_targets_to_openrouter_worker(self):
@@ -793,6 +799,8 @@ class TestOpenRouterDirectAdapter(unittest.TestCase):
             prompt="Fix docs/SETUP_AIDER.md",
             repo_dir="/tmp/repo",
             file_targets=["docs/SETUP_AIDER.md"],
+            max_tokens=8192,
+            request_timeout=180.0,
         )
 
     def test_run_returncode_2_for_prose_output(self):

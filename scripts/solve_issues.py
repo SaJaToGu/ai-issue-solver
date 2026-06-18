@@ -2710,6 +2710,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 max_run_input_tokens: int | None = None,
                 max_run_output_tokens: int | None = None,
                 max_run_cache_read_tokens: int | None = None,
+                max_run_runtime_seconds: float | None = None,
                 ensemble: int = 0,
                 role_routing: dict | None = None) -> bool:
     number = issue["number"]
@@ -3102,7 +3103,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         adapter_kwargs: dict = {}
         if model == "codex":
             adapter_kwargs["additional_dirs"] = additional_dirs
-        if model == "opencode":
+        if model in ("opencode", "openrouter_direct"):
             if max_run_cost_usd is not None:
                 adapter_kwargs["max_run_cost_usd"] = max_run_cost_usd
             if max_run_input_tokens is not None:
@@ -3111,6 +3112,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 adapter_kwargs["max_run_output_tokens"] = max_run_output_tokens
             if max_run_cache_read_tokens is not None:
                 adapter_kwargs["max_run_cache_read_tokens"] = max_run_cache_read_tokens
+            if max_run_runtime_seconds is not None:
+                adapter_kwargs["max_run_runtime_seconds"] = max_run_runtime_seconds
         if model == "codex" and defer_codex_rate_limit:
             from workers.codex_adapter import CodexAdapter
             adapter = CodexAdapter(defer_rate_limit=True)
@@ -3137,6 +3140,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             opencode_session_metrics = dict(adapter_diagnostics.opencode_session_totals)
             if adapter_diagnostics.opencode_budget_exceeded:
                 opencode_session_metrics["budget_exceeded"] = adapter_diagnostics.opencode_budget_exceeded
+        openrouter_usage_metrics = None
+        if adapter_diagnostics.openrouter_usage:
+            openrouter_usage_metrics = dict(adapter_diagnostics.openrouter_usage)
+            if adapter_diagnostics.openrouter_budget_exceeded:
+                openrouter_usage_metrics["budget_exceeded"] = adapter_diagnostics.openrouter_budget_exceeded
+            if adapter_diagnostics.openrouter_request_timed_out:
+                openrouter_usage_metrics["timed_out"] = True
 
         # Monthly spending erfassen (solver role)
         if role_routing is not None:
@@ -3227,6 +3237,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                 )
             return False
@@ -3262,6 +3273,50 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
+                    repo_profile=repo_profile_dict,
+                )
+            return False
+
+        if adapter_diagnostics.openrouter_budget_exceeded:
+            print_warn(
+                "OpenRouter-Direct Budget-/Kontrolllimit überschritten; "
+                "erstelle keinen Commit und keinen PR"
+            )
+            print(f"      {adapter_diagnostics.openrouter_budget_exceeded}")
+            status = "budget_exceeded"
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
+            if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    note=adapter_diagnostics.openrouter_budget_exceeded,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
+                    opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                 )
             return False
@@ -3303,6 +3358,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                 )
             return False
@@ -3348,6 +3404,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                 )
             return False
@@ -3433,6 +3490,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     resource_diagnostics=resource_diagnostics,
                     model_selection_metadata=model_selection_metadata,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                     test_command=test_command,
                     test_result=post_solve_test.status,
@@ -3454,6 +3512,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 resource_diagnostics=resource_diagnostics,
                 model_selection_metadata=model_selection_metadata,
                 opencode_session_metrics=opencode_session_metrics,
+                openrouter_usage_metrics=openrouter_usage_metrics,
+                repo_profile=repo_profile_dict,
                 test_command=test_command,
                 test_result=post_solve_test.status,
             )
@@ -3712,6 +3772,12 @@ def main():
         type=int,
         default=None,
         help="Maximale Cache-Read-Tokens fuer einen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-runtime-seconds",
+        type=float,
+        default=None,
+        help="Maximale Laufzeit in Sekunden fuer direkte API-Worker wie OpenRouter Direct",
     )
     args = parser.parse_args()
 
@@ -4007,6 +4073,7 @@ def main():
                 max_run_input_tokens=args.max_run_input_tokens,
                 max_run_output_tokens=args.max_run_output_tokens,
                 max_run_cache_read_tokens=args.max_run_cache_read_tokens,
+                max_run_runtime_seconds=args.max_run_runtime_seconds,
                 ensemble=args.ensemble,
                 role_routing=_ROLE_ROUTING if _BUDGET_TRACKING_ACTIVE else None,
             )
