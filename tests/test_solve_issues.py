@@ -34,6 +34,7 @@ from solve_issues import (  # noqa: E402
     build_worker_env,
     check_opencode_auth,
     clone_repo,
+    collect_pre_solver_hygiene_findings,
     cleanup_preserved_worktrees,
     create_ensemble_branches,
     create_run_report,
@@ -51,6 +52,7 @@ from solve_issues import (  # noqa: E402
     infer_aider_targets,
     is_secret_worker_path,
     parse_codex_reset_datetime,
+    _parse_gone_branches,
     plan_branch_recovery,
     print_branch_recovery_plan,
     relativize_repo_absolute_paths,
@@ -119,6 +121,47 @@ class BranchListSession:
                 ],
             )
         return FakeResponse(404, {"message": "Not found"})
+
+
+class PreSolverHygieneTests(unittest.TestCase):
+    def test_parse_gone_branches_detects_deleted_upstreams(self):
+        output = "\n".join([
+            "* develop 1234567 [origin/develop] ok",
+            "  ai/old 89abcde [origin/ai/old: gone] stale branch",
+            "  main 456789a [origin/main] ok",
+        ])
+
+        self.assertEqual(_parse_gone_branches(output), ["ai/old"])
+
+    def test_collect_pre_solver_hygiene_findings_reports_operator_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact_dir = root / "reports" / "tmp"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "validation-issue-999.md").write_text("body\n", encoding="utf-8")
+
+            findings = collect_pre_solver_hygiene_findings(root)
+
+        self.assertIn(
+            "operator artifact remains: reports/tmp/validation-issue-999.md",
+            findings,
+        )
+
+    def test_collect_pre_solver_hygiene_findings_reports_dirty_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+            path = root / "tracked.txt"
+            path.write_text("one\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            path.write_text("two\n", encoding="utf-8")
+
+            findings = collect_pre_solver_hygiene_findings(root)
+
+        self.assertIn("working tree has uncommitted changes", findings)
 
 
 class GitHubClientBranchTests(unittest.TestCase):

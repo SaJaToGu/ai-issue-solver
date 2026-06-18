@@ -725,6 +725,89 @@ def preflight_checks(config: dict, repo: str, issue_number: int | None = None) -
     return token, user
 
 
+def _run_local_git(args: list[str], *, project_root: Path = PROJECT_ROOT) -> subprocess.CompletedProcess:
+    """Run a local git command for pre-solver hygiene checks."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _parse_gone_branches(branch_vv_output: str) -> list[str]:
+    """Extract local branches whose upstream is gone from `git branch -vv` output."""
+    gone_branches: list[str] = []
+    for line in branch_vv_output.splitlines():
+        stripped = line.strip()
+        if not stripped or ": gone]" not in stripped:
+            continue
+        if stripped.startswith("* "):
+            stripped = stripped[2:].strip()
+        branch_name = stripped.split(maxsplit=1)[0]
+        if branch_name:
+            gone_branches.append(branch_name)
+    return gone_branches
+
+
+def collect_pre_solver_hygiene_findings(project_root: Path = PROJECT_ROOT) -> list[str]:
+    """
+    Collect non-destructive local hygiene findings before a real Solver run.
+
+    The check focuses on operator-side leftovers that can distort measurement
+    runs. It never deletes files or branches.
+    """
+    findings: list[str] = []
+
+    if (project_root / ".git").exists():
+        status = _run_local_git(["status", "--porcelain"], project_root=project_root)
+        if status.returncode == 0 and status.stdout.strip():
+            findings.append("working tree has uncommitted changes")
+        elif status.returncode != 0:
+            details = (status.stderr or status.stdout).strip()
+            findings.append(f"git status failed: {details}")
+
+        branches = _run_local_git(
+            ["branch", "-vv", "--sort=-committerdate"],
+            project_root=project_root,
+        )
+        if branches.returncode == 0:
+            for branch_name in _parse_gone_branches(branches.stdout):
+                findings.append(f"local branch '{branch_name}' tracks a gone upstream")
+        else:
+            details = (branches.stderr or branches.stdout).strip()
+            findings.append(f"git branch -vv failed: {details}")
+
+    operator_artifacts = sorted((project_root / "reports" / "tmp").glob("validation-issue-*.md"))
+    for artifact in operator_artifacts:
+        findings.append(f"operator artifact remains: {artifact.relative_to(project_root)}")
+
+    return findings
+
+
+def run_pre_solver_hygiene_check(*, dry_run: bool = False, project_root: Path = PROJECT_ROOT) -> bool:
+    """Print and evaluate the pre-solver hygiene gate."""
+    print_step(0, "Pre-Solver Hygiene")
+    findings = collect_pre_solver_hygiene_findings(project_root)
+    if not findings:
+        print("   ✅ Lokale Solver-Hygiene sauber")
+        return True
+
+    for finding in findings:
+        print_warn(finding)
+
+    if dry_run:
+        print_warn("Dry-run: Hygiene-Funde werden gemeldet, blockieren aber nicht.")
+        return True
+
+    print_err(
+        "Solverlauf blockiert: lokale Hygiene-Funde zuerst bereinigen "
+        "oder --skip-hygiene-check bewusst setzen."
+    )
+    return False
+
+
 # ─────────────────────────────────────────────────────────────
 # Aider Integration
 # ─────────────────────────────────────────────────────────────
@@ -3585,6 +3668,11 @@ def main():
         help="Workflow-Congestion-Check vor dem Start ueberspringen",
     )
     parser.add_argument(
+        "--skip-hygiene-check",
+        action="store_true",
+        help="Lokalen Pre-Solver-Hygiene-Check bewusst ueberspringen",
+    )
+    parser.add_argument(
         "--pr-threshold",
         type=int,
         default=3,
@@ -3680,6 +3768,10 @@ def main():
         print("   ✅ OpenRouter model slugs verified")
 
     _BUDGET_TRACKING_ACTIVE = bool(_ROLE_ROUTING and not args.skip_budget_check)
+
+    if not args.skip_hygiene_check:
+        if not run_pre_solver_hygiene_check(dry_run=args.dry_run):
+            sys.exit(1)
 
     # Preflight-Checks durchfuehren
     if args.repo:
