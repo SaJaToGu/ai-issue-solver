@@ -274,15 +274,16 @@ class OpenRouterDirectAdapter(WorkerAdapter):
 
         # Usage in Diagnostics übernehmen
         usage_dict: dict | None = None
-        if direct_result.usage is not None:
-            usage_dict = direct_result.usage.to_dict()
+        direct_usage = getattr(direct_result, "usage", None)
+        if direct_usage is not None:
+            usage_dict = direct_usage.to_dict()
             diagnostics.openrouter_usage = usage_dict
 
             usage_log = self._format_usage_log_line(usage_dict)
             if usage_log:
                 diagnostics.all_outputs.append(usage_log)
 
-            if direct_result.usage.timed_out:
+            if direct_usage.timed_out:
                 diagnostics.openrouter_request_timed_out = True
 
         # Post-Response Budget-Enforcement
@@ -293,7 +294,7 @@ class OpenRouterDirectAdapter(WorkerAdapter):
             max_cache_read_tokens=budget_kwargs.get("max_run_cache_read_tokens"),
         )
         if has_openrouter_any_limit(limits):
-            check = check_openrouter_budget_limits(direct_result.usage, limits)
+            check = check_openrouter_budget_limits(direct_usage, limits)
             if check.exceeded_reason:
                 diagnostics.openrouter_budget_exceeded = check.exceeded_reason
                 # Bei Budget-/Control-Failure wird der Returncode auf 4 gesetzt,

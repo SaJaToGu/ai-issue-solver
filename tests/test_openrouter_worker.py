@@ -176,6 +176,7 @@ class TestOpenRouterWorkerGenerate(unittest.TestCase):
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },
+            timeout=180,
         )
 
     @patch("requests.post")
