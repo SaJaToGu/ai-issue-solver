@@ -63,13 +63,32 @@ pip install -r requirements-aider.txt
 
 ### OpenRouter
 1. API-Key holen: [OpenRouter Keys](https://openrouter.ai/keys)
-2. In `.env` eintragen:
+2. In `.env` eintragen (für beide Pfade wird derselbe Key benötigt):
    ```
    OPENROUTER_API_KEY=sk-or-...
    ```
-3. Starten:
+
+OpenRouter kann über zwei verschiedene Pfade angesprochen werden. Die Wahl
+des Pfads beeinflusst, wie das Modell Änderungen am Code zurückgibt:
+
+- **`--model openrouter`** (Aider-basiert, Legacy-Pfad): Übergibt Aufgaben
+  an `aider`, das intern mit OpenRouter spricht. Aider steuert den
+  Edit-Workflow (Dateien lesen, Patches anwenden, Tests laufen lassen).
+- **`--model openrouter_direct`** (direkter OpenRouter-API-Pfad): Ruft die
+  OpenRouter-API direkt auf und erwartet, dass das Modell unified-diff
+  Patches (im `patch -p1`-Format) zurückgibt. Vorteil: schlanker, keine
+  Aider-Abhängigkeit zur Laufzeit für das Edit-Protokoll.
+
+3. Starten – Aider-basierter Pfad (empfohlen für komplexere Issues):
    ```bash
-   python scripts/solve_issues.py --model openrouter --repo <repo-name> --model-name openrouter/openai/gpt-4o-mini
+   python scripts/solve_issues.py --model openrouter --repo <repo-name> \
+       --model-name openrouter/openai/gpt-4o-mini
+   ```
+
+4. Starten – direkter OpenRouter-Pfad (erwartet unified-diff Patches):
+   ```bash
+   python scripts/solve_issues.py --model openrouter_direct --repo <repo-name> \
+       --model-name openrouter/openai/gpt-4o-mini
    ```
 
 **Empfohlene Modelle:**
