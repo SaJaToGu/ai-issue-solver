@@ -13,7 +13,7 @@ und Dashboard-Parsing nicht ändern.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import json
 import os
@@ -42,6 +42,7 @@ GIT_SUMMARY_STAT_GRAPH_WIDTH = 30
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
 PRESERVE_WORKTREE_STATUSES = {
+    "budget_exceeded",
     "nonzero_without_changes",
     "pr_failed",
     "pr_failed_from_existing_branch",
@@ -176,6 +177,8 @@ def build_run_outcome(status: str,
         delivery_status = "not_applicable"
     elif status == "pr_skipped":
         delivery_status = "pushed_without_pr" if has_changes else "not_applicable"
+    elif status == "budget_exceeded":
+        delivery_status = "incomplete"
     elif status == "started":
         delivery_status = "incomplete"
     else:
@@ -187,6 +190,8 @@ def build_run_outcome(status: str,
         failure_class = "success"
     elif status == "pr_skipped":
         failure_class = "success" if has_changes else "noop"
+    elif status == "budget_exceeded":
+        failure_class = "control_failure"
     elif status in PIPELINE_FAILURE_STATUSES and (has_changes or preserved):
         failure_class = "pipeline_failure"
     elif worker_result is not None and worker_result.returncode != 0 and not has_changes:
@@ -204,6 +209,8 @@ def build_run_outcome(status: str,
         recovery_status = "preserved_worktree"
     elif failure_class in {"model_failure", "runtime_failure", "interrupted"}:
         recovery_status = "retry_clean"
+    elif failure_class == "control_failure":
+        recovery_status = "manual_review"
     elif failure_class == "validation_failure":
         recovery_status = "manual_review"
     else:
@@ -676,6 +683,7 @@ def write_run_report(report: RunReport, status: str,
                       supersedes_pr: int | None = None,
                       follow_up_issue: int | None = None,
                       opencode_session_metrics: dict | None = None,
+                      openrouter_usage_metrics: dict | None = None,
                       repo_profile: dict | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
@@ -713,8 +721,19 @@ def write_run_report(report: RunReport, status: str,
         scorecard = create_provider_scorecard(
             report, status, worker_result, pr_url, model_selection_metadata, test_command, test_result
         )
+        if openrouter_usage_metrics:
+            openrouter_cost = openrouter_usage_metrics.get("cost_usd")
+            if openrouter_cost is not None:
+                scorecard = replace(
+                    scorecard,
+                    estimated_cost=openrouter_cost,
+                    cost_currency="USD",
+                    cost_confidence="high",
+                    cost_source="provider_api",
+                )
 
         opencode_session = (opencode_session_metrics or {}) if opencode_session_metrics else {}
+        openrouter_usage = (openrouter_usage_metrics or {}) if openrouter_usage_metrics else {}
         metadata = {
             "status": status,
             "selected_repo": report.repo,
@@ -751,6 +770,7 @@ def write_run_report(report: RunReport, status: str,
                 "follow_up_issue": follow_up_issue,
             },
             "opencode_session": opencode_session,
+            "openrouter_usage": openrouter_usage,
             "provider_scorecard": {
                 "requested_model": scorecard.requested_model,
                 "actual_model": scorecard.actual_model,
@@ -895,6 +915,21 @@ def write_run_report(report: RunReport, status: str,
                 f"  total_tokens_cache_write: {opencode_session.get('total_tokens_cache_write', '')}",
             ])
             budget_exceeded = opencode_session.get("budget_exceeded")
+            if budget_exceeded:
+                summary_lines.append(f"  budget_exceeded: {budget_exceeded}")
+        if openrouter_usage:
+            summary_lines.extend([
+                "",
+                "openrouter_usage:",
+                f"  prompt_tokens: {openrouter_usage.get('prompt_tokens', '')}",
+                f"  completion_tokens: {openrouter_usage.get('completion_tokens', '')}",
+                f"  total_tokens: {openrouter_usage.get('total_tokens', '')}",
+                f"  cost_usd: {openrouter_usage.get('cost_usd', '')}",
+                f"  model: {openrouter_usage.get('model', '')}",
+                f"  request_seconds: {openrouter_usage.get('request_seconds', '')}",
+                f"  timed_out: {openrouter_usage.get('timed_out', False)}",
+            ])
+            budget_exceeded = openrouter_usage.get("budget_exceeded")
             if budget_exceeded:
                 summary_lines.append(f"  budget_exceeded: {budget_exceeded}")
         if output_tail:

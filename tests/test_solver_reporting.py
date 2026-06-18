@@ -95,6 +95,70 @@ class TestRunOutcomeSkipPr(unittest.TestCase):
         self.assertEqual(outcome["delivery_status"], "not_applicable")
         self.assertEqual(outcome["failure_class"], "noop")
 
+    def test_build_run_outcome_budget_exceeded_is_control_failure(self):
+        """Budget/control aborts are distinct from model and pipeline failures."""
+        worker = Mock()
+        worker.returncode = 4
+
+        outcome = build_run_outcome(
+            "budget_exceeded",
+            worker_result=worker,
+            git_change_summary=["Git-Aenderungsuebersicht:", "  worker.py | 1 +"],
+        )
+
+        self.assertEqual(outcome["worker_status"], "failed")
+        self.assertEqual(outcome["delivery_status"], "incomplete")
+        self.assertEqual(outcome["failure_class"], "control_failure")
+        self.assertEqual(outcome["recovery_status"], "manual_review")
+
+    def test_write_run_report_includes_openrouter_usage_and_cost_scorecard(self):
+        """OpenRouter Direct usage is persisted and exposed through scorecards."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report = RunReport(
+                path=Path(temp_dir) / "test-run-openrouter",
+                repo="test-repo",
+                issue_number=46,
+                issue_title="OpenRouter Budget",
+                branch="test-branch",
+                model="openrouter_direct",
+            )
+            report.path.mkdir(parents=True, exist_ok=True)
+
+            worker = Mock()
+            worker.returncode = 4
+            worker.output = "budget exceeded"
+            worker.last_activity_at = datetime.now()
+            worker.duration_seconds = None
+
+            write_run_report(
+                report=report,
+                status="budget_exceeded",
+                worker_result=worker,
+                git_change_summary=["Git-Aenderungsuebersicht:", "  worker.py | 1 +"],
+                openrouter_usage_metrics={
+                    "prompt_tokens": 101,
+                    "completion_tokens": 20,
+                    "total_tokens": 121,
+                    "cost_usd": 0.0123,
+                    "model": "minimax/minimax-m3",
+                    "request_seconds": 1.5,
+                    "timed_out": False,
+                    "budget_exceeded": "input_tokens 101 exceeds 100",
+                },
+            )
+
+            metadata = json.loads((report.path / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["openrouter_usage"]["prompt_tokens"], 101)
+            self.assertEqual(metadata["openrouter_usage"]["budget_exceeded"], "input_tokens 101 exceeds 100")
+            self.assertEqual(metadata["provider_scorecard"]["estimated_cost"], 0.0123)
+            self.assertEqual(metadata["provider_scorecard"]["cost_source"], "provider_api")
+            self.assertEqual(metadata["run_outcome"]["failure_class"], "control_failure")
+
+            summary = (report.path / "summary.txt").read_text(encoding="utf-8")
+            self.assertIn("openrouter_usage:", summary)
+            self.assertIn("budget_exceeded: input_tokens 101 exceeds 100", summary)
+            self.assertIn("provider_scorecard_estimated_cost: 0.0123", summary)
+
     def test_write_run_report_skip_pr_with_changes(self):
         """Run report for pr_skipped with changes yields pushed_without_pr outcome."""
         with tempfile.TemporaryDirectory() as temp_dir:
