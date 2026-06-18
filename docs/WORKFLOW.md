@@ -51,6 +51,21 @@ Dieser Guide erklärt den detaillierten Workflow des AI Issue Solvers, die Batch
 - `solve_issues.py` nutzt standardmäßig den GitHub-Default-Branch des Ziel-Repositories.
 - Für `develop`-Modelle: `--base-branch develop` setzen.
 
+### Default-Branch-Preflight für Solver-Läufe
+
+Bevor ein Validierungs- oder Night-Mode-Lauf gestartet wird, sollte der
+Default-Branch des Ziel-Repos verifiziert werden. Zeigt GitHub auf den
+falschen Branch, klont der Solver unter Umständen eine Branch-Version
+ohne die beabsichtigten Änderungen. Es genügt, einen der folgenden
+Operator-Checks auszuführen:
+
+- `git remote show origin` (lokaler Clone) – prüft `HEAD branch`.
+- `gh repo view <repo> --json defaultBranchRef --jq .defaultBranchRef.name` (GitHub CLI).
+
+Alternativ `--base-branch` explizit an `run_overnight.py`, `solve_issues.py`
+oder `solve_issues_batch.py` übergeben, damit der Solver unabhängig vom
+Remote-Default arbeitet.
+
 ---
 
 ## Scripts im Detail
