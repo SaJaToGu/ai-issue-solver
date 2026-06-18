@@ -90,6 +90,18 @@ class TestOpenRouterWorkerInit(unittest.TestCase):
         worker = OpenRouterWorker(api_key="k", model="openai/gpt-4o")
         self.assertEqual(worker.model, "openai/gpt-4o")
 
+    def test_build_patch_prompt_requires_unified_diff_only(self):
+        """OpenRouter Direct wraps prompts with strict patch-only instructions."""
+        worker = OpenRouterWorker(api_key="k")
+
+        prompt = worker.build_patch_prompt("Fix docs/SETUP_AIDER.md")
+
+        self.assertIn("Return ONLY one or more unified diff patches", prompt)
+        self.assertIn("patch -p1", prompt)
+        self.assertIn("--- a/<repo-relative-path>", prompt)
+        self.assertIn("Do not include explanations", prompt)
+        self.assertIn("Fix docs/SETUP_AIDER.md", prompt)
+
 
 # ---------------------------------------------------------------------------
 # Klasse: generate()-Tests
@@ -263,6 +275,26 @@ class TestApplyPatches(unittest.TestCase):
 
         self.assertEqual(results[0].applied_file, "foo.py")
 
+    def test_patch_with_wrong_hunk_counts_is_recounted(self):
+        """git apply --recount repairs common LLM-generated hunk count mistakes."""
+        self._write_file("foo.txt", "Intro\nOld\nTail\n")
+        diff = textwrap.dedent("""\
+            --- a/foo.txt
+            +++ b/foo.txt
+            @@ -1,3 +1,4 @@
+             Intro
+            -Old
+            +New
+            +Extra
+             Tail
+        """)
+
+        results = self.worker.apply_patches([diff], self.tmpdir)
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].success, f"Patch fehlgeschlagen: {results[0].error}")
+        self.assertEqual(self._read_file("foo.txt"), "Intro\nNew\nExtra\nTail\n")
+
     def test_malformed_patch_returns_failure(self):
         """Ungültiger Patch-Content führt zu einem fehlgeschlagenen PatchResult."""
         bad_patch = "--- a/nonexistent.py\n+++ b/nonexistent.py\n@@ -1,1 +1,1 @@\n-old\n+new\n"
@@ -346,6 +378,26 @@ class TestRunDirect(unittest.TestCase):
         # Datei wurde tatsächlich geändert
         content = (Path(self.tmpdir) / "bar.py").read_text(encoding="utf-8")
         self.assertEqual(content, "y = 20\n")
+
+    @patch("requests.post")
+    def test_run_direct_sends_patch_prompt_to_model(self, mock_post):
+        """run_direct() must ask the model for raw unified diffs, not prose."""
+        self._write_file("bar.py", "y = 10\n")
+        diff = _make_valid_diff("bar.py", "y = 10", "y = 20")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": f"```diff\n{diff}```"}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        self.worker.run_direct("fix bar.py", self.tmpdir)
+
+        payload = mock_post.call_args.kwargs["json"]
+        sent_prompt = payload["messages"][0]["content"]
+        self.assertIn("Return ONLY one or more unified diff patches", sent_prompt)
+        self.assertIn("fix bar.py", sent_prompt)
 
     @patch("requests.post")
     def test_run_direct_no_op_prose(self, mock_post):
