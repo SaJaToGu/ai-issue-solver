@@ -143,6 +143,29 @@ class OpenRouterWorker:
 
         return result["choices"][0]["message"]["content"]
 
+    def build_patch_prompt(self, prompt: str) -> str:
+        """
+        Wrap the Solver prompt so OpenRouter Direct returns machine-applicable patches.
+
+        The direct worker cannot interpret prose. It extracts unified diffs and applies
+        them with git/patch tooling, so the model must return a raw diff rather than a
+        plan, summary, or Markdown explanation.
+        """
+        return (
+            "You are running in a non-interactive patch application pipeline.\n"
+            "Return ONLY one or more unified diff patches that can be applied with "
+            "`patch -p1` from the repository root.\n\n"
+            "Hard requirements:\n"
+            "- Start each file patch with `--- a/<repo-relative-path>` and "
+            "`+++ b/<repo-relative-path>`.\n"
+            "- Include valid `@@` hunks with enough context to apply cleanly.\n"
+            "- Do not wrap the diff in Markdown fences.\n"
+            "- Do not include explanations, summaries, plans, headings, or prose.\n"
+            "- If no change is needed, return an empty response.\n\n"
+            "Original Solver prompt follows:\n\n"
+            f"{prompt}"
+        )
+
     def extract_patches(self, text: str) -> List[str]:
         """
         Extrahiert Unified-Diff-Patches aus dem Modell-Output.
@@ -181,9 +204,11 @@ class OpenRouterWorker:
         """
         Wendet eine Liste von Unified-Diff-Patches auf das Repository-Verzeichnis an.
 
-        Jeder Patch wird in eine temporäre Datei geschrieben und via `patch -p1`
-        angewendet. Fehlgeschlagene Patches werden protokolliert, brechen aber
-        die verbleibenden Patches nicht ab.
+        Jeder Patch wird in eine temporäre Datei geschrieben und zuerst via
+        `git apply --recount` angewendet. Dadurch können leicht falsche Hunk-Zähler
+        aus LLM-generierten Diffs repariert werden. Falls das fehlschlägt, folgt
+        ein Fallback auf `patch -p1`. Fehlgeschlagene Patches werden protokolliert,
+        brechen aber die verbleibenden Patches nicht ab.
 
         Args:
             patches: Liste von Patch-Strings (Unified-Diff-Format).
@@ -214,12 +239,29 @@ class OpenRouterWorker:
                 tmp_path = tmp.name
 
             try:
+                # git apply --recount tolerates wrong hunk line counts, a common
+                # LLM diff defect observed in OpenRouter Direct measurements.
                 proc = subprocess.run(
-                    ["patch", "-p1", "--forward", "--batch", "-i", tmp_path],
+                    ["git", "apply", "--recount", "--whitespace=nowarn", tmp_path],
                     cwd=repo_dir,
                     capture_output=True,
                     text=True,
                 )
+                if proc.returncode != 0:
+                    fallback = subprocess.run(
+                        ["patch", "-p1", "--forward", "--batch", "-i", tmp_path],
+                        cwd=repo_dir,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if fallback.returncode == 0:
+                        proc = fallback
+                    else:
+                        proc.stderr = (
+                            (proc.stderr or proc.stdout or "").strip()
+                            + "\n"
+                            + (fallback.stderr or fallback.stdout or "").strip()
+                        ).strip()
                 if proc.returncode == 0:
                     results.append(PatchResult(
                         patch_index=index,
@@ -236,12 +278,12 @@ class OpenRouterWorker:
                         error=error_detail or f"patch exited with code {proc.returncode}",
                     ))
             except FileNotFoundError:
-                # `patch`-Kommando nicht im PATH verfügbar
+                # `git`/`patch`-Kommando nicht im PATH verfügbar
                 results.append(PatchResult(
                     patch_index=index,
                     success=False,
                     applied_file=applied_file,
-                    error="`patch` binary nicht im PATH gefunden.",
+                    error="`git` oder `patch` binary nicht im PATH gefunden.",
                 ))
             finally:
                 try:
@@ -284,7 +326,11 @@ class OpenRouterWorker:
 
         # --- Schritt 1: API-Aufruf ---
         try:
-            raw_response = self.generate(prompt, temperature=temperature, max_tokens=max_tokens)
+            raw_response = self.generate(
+                self.build_patch_prompt(prompt),
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         except Exception as exc:
             error_msg = f"[openrouter_direct] API-Fehler: {exc}"
             log_lines.append(error_msg)
