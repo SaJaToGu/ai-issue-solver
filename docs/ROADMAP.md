@@ -38,6 +38,12 @@ project. It is intentionally lean and strategic; concrete tasks live in
   Four pieces: Backlog Cleanup (Pre-Work), Cost-Limit-Forwarding
   Fix, Reviewer Runtime, Validation Metrics & Run. Hard Definition
   of Solved: PR merged + CI green.
+- **1.0.0** target — Runnable workflow app for AI-assisted repository
+  work. The app coordinates transparent, reviewable steps around one
+  repository: triage, planning, model selection, solver execution,
+  observation, review, rework, recovery, merge preparation, and
+  reporting. Product vision:
+  [`PRODUCT_VISION_1.0.md`](PRODUCT_VISION_1.0.md).
 
 ## Strategic Items (not yet in Backlog)
 
