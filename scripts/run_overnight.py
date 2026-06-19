@@ -25,7 +25,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from solve_issues import MODEL_CONFIGS  # noqa: E402
+from solve_issues import (  # noqa: E402
+    MODEL_CONFIGS,
+    check_opencode_state_guard,
+    find_opencode_executable,
+)
 from solve_issues_batch import DEFAULT_WORKERS, positive_int  # noqa: E402
 from utils import print_banner, print_err, print_ok, print_step, print_warn  # noqa: E402
 
@@ -155,6 +159,8 @@ def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[st
         command.append("--skip-congestion-check")
     if args.verbosity:
         command.extend(["--verbosity", args.verbosity])
+    if args.model == "opencode" and getattr(args, "allow_opencode_state_conflict", False):
+        command.append("--allow-opencode-state-conflict")
     # OpenCode Budget-Limits an solve_issues_batch.py weiterreichen
     if getattr(args, "max_run_cost_usd", None) is not None:
         command.extend(["--max-run-cost-usd", str(args.max_run_cost_usd)])
@@ -663,6 +669,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["quiet", "normal", "verbose"],
         help="An Batch-Solver weiterreichen: Worker-Ausgabe",
     )
+    parser.add_argument(
+        "--allow-opencode-state-conflict",
+        action="store_true",
+        help=(
+            "OpenCode trotz laufendem Versions-/State-Mix starten und an Batch weiterreichen. "
+            "Nur bewusst verwenden; Standard ist blockieren."
+        ),
+    )
     parser.add_argument("--skip-pull", action="store_true", help="Git-Pull des Basis-Branches ueberspringen")
     parser.add_argument("--skip-tests", action="store_true", help="Testlauf vor dem Batch ueberspringen")
     parser.add_argument(
@@ -731,6 +745,20 @@ def main(argv: list[str] | None = None) -> int:
     steps: list[StepResult] = []
 
     print_step(1, f"Log-Verzeichnis: {session_dir}")
+
+    if args.model == "opencode" and not args.dry_run:
+        print_step(2, "OpenCode-State-Preflight")
+        opencode_exe = find_opencode_executable()
+        if not opencode_exe:
+            print_err("OpenCode CLI wurde nicht gefunden!")
+            print("   → Installieren: https://opencode.ai/docs/installation")
+            print("   → Danach `opencode` im PATH verfügbar machen")
+            return 1
+        if not check_opencode_state_guard(
+            opencode_exe,
+            allow_conflict=args.allow_opencode_state_conflict,
+        ):
+            return 1
 
     with keep_awake(args.caffeinate, session_dir / "caffeinate.log"):
         if args.skip_pull:

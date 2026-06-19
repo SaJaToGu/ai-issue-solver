@@ -28,7 +28,9 @@ from solve_issues import (  # noqa: E402
     GitHubClient,
     MODEL_CONFIGS,
     RUN_REPORTS_ROOT,
+    check_opencode_state_guard,
     detect_codex_rate_limit,
+    find_opencode_executable,
     format_worker_output_tail,
     requests,
     safe_run_repo_name,
@@ -220,6 +222,8 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
         cmd.extend(["--run-report-dir", str(run_report_dir)])
     verbosity = getattr(args, "verbosity", "quiet")
     cmd.extend(["--verbosity", verbosity])
+    if selected_model == "opencode" and getattr(args, "allow_opencode_state_conflict", False):
+        cmd.append("--allow-opencode-state-conflict")
 
     # OpenCode Budget-Limits an solve_issues.py weiterreichen
     if getattr(args, "max_run_cost_usd", None) is not None:
@@ -1038,6 +1042,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Worker-Ausgabe: quiet=keine Live-Ausgabe (Standard), normal=gefiltert, verbose=alles",
     )
     parser.add_argument(
+        "--allow-opencode-state-conflict",
+        action="store_true",
+        help=(
+            "OpenCode trotz laufendem Versions-/State-Mix starten und an Worker weiterreichen. "
+            "Nur bewusst verwenden; Standard ist blockieren."
+        ),
+    )
+    parser.add_argument(
         "--heartbeat-interval",
         type=int,
         default=None,
@@ -1088,6 +1100,19 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_env()
     token = require_config_value(cfg, "GITHUB_TOKEN", "GitHub Token")
     user = require_config_value(cfg, "GITHUB_USER", "GitHub User")
+
+    if args.model == "opencode" and not args.dry_run:
+        opencode_exe = find_opencode_executable()
+        if not opencode_exe:
+            print_err("OpenCode CLI wurde nicht gefunden!")
+            print("   → Installieren: https://opencode.ai/docs/installation")
+            print("   → Danach `opencode` im PATH verfügbar machen")
+            return 1
+        if not check_opencode_state_guard(
+            opencode_exe,
+            allow_conflict=args.allow_opencode_state_conflict,
+        ):
+            return 1
 
     model_config = MODEL_CONFIGS[args.model]
     env_key = model_config.get("env_key")

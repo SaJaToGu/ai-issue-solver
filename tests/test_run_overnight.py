@@ -51,6 +51,7 @@ class OvernightRunnerTests(unittest.TestCase):
             "runs_dir": Path("reports/runs"),
             "dashboard_output": Path("reports/status-dashboard.html"),
             "owner": None,
+            "allow_opencode_state_conflict": False,
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -109,6 +110,16 @@ class OvernightRunnerTests(unittest.TestCase):
         self.assertIn("2", command)
         self.assertIn("--verbosity", command)
         self.assertIn("normal", command)
+
+    def test_build_batch_command_forwards_opencode_state_override(self):
+        args = self.make_args(
+            model="opencode",
+            allow_opencode_state_conflict=True,
+        )
+
+        command = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+
+        self.assertIn("--allow-opencode-state-conflict", command)
 
     def test_build_dashboard_command_uses_configured_paths_and_owner(self):
         args = self.make_args(

@@ -1000,6 +1000,27 @@ class OpenCodeServeProcess:
     version: str | None = None
 
 
+@dataclass
+class OpenCodeStatePreflight:
+    opencode_exe: str
+    cli_version: str | None
+    db_path: Path | None
+    wal_files: list[Path]
+    serve_processes: list[OpenCodeServeProcess]
+
+    @property
+    def mismatched_serve_processes(self) -> list[OpenCodeServeProcess]:
+        return [
+            proc for proc in self.serve_processes
+            if (proc.version and self.cli_version and proc.version != self.cli_version)
+            or (proc.executable and Path(proc.executable) != Path(self.opencode_exe))
+        ]
+
+    @property
+    def has_blocking_state_conflict(self) -> bool:
+        return bool(self.mismatched_serve_processes)
+
+
 def _extract_opencode_serve_executable(command: str) -> str | None:
     """Best-effort extraction of the executable path from an `opencode serve` line."""
     marker = " serve"
@@ -1007,6 +1028,12 @@ def _extract_opencode_serve_executable(command: str) -> str | None:
         return None
     executable = command.split(marker, 1)[0].strip()
     return executable or None
+
+
+def _looks_like_opencode_executable(executable: str | None) -> bool:
+    if not executable:
+        return False
+    return Path(executable).name in {"opencode", "opencode.exe"}
 
 
 def _opencode_version_for_executable(executable: str) -> str | None:
@@ -1048,6 +1075,8 @@ def _find_opencode_serve_processes() -> list[OpenCodeServeProcess]:
         pid = columns[1]
         command = columns[7]
         executable = _extract_opencode_serve_executable(command)
+        if not _looks_like_opencode_executable(executable):
+            continue
         version = _opencode_version_for_executable(executable) if executable else None
         processes.append(
             OpenCodeServeProcess(
@@ -1069,49 +1098,118 @@ def _opencode_wal_files_for_db(db_path: Path | None) -> list[Path]:
     ]
 
 
-def _print_opencode_state_preflight(opencode_exe: str, cli_version: str | None) -> None:
-    """Print global OpenCode state hints that often explain WAL/SQLite failures."""
+def _find_opencode_db_path() -> Path | None:
     try:
         from workers.opencode_session_reader import find_opencode_db_path
     except ImportError:
-        find_opencode_db_path = None
+        return None
+    return find_opencode_db_path()
 
+
+def _read_opencode_cli_version(opencode_exe: str) -> str | None:
+    try:
+        version_result = subprocess.run(
+            [opencode_exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if version_result.returncode != 0:
+        return None
+    return (version_result.stdout or version_result.stderr).strip() or None
+
+
+def _collect_opencode_state_preflight(
+    opencode_exe: str,
+    cli_version: str | None,
+) -> OpenCodeStatePreflight:
+    db_path = _find_opencode_db_path()
+    return OpenCodeStatePreflight(
+        opencode_exe=opencode_exe,
+        cli_version=cli_version,
+        db_path=db_path,
+        wal_files=_opencode_wal_files_for_db(db_path),
+        serve_processes=_find_opencode_serve_processes(),
+    )
+
+
+def _print_opencode_state_preflight_result(preflight: OpenCodeStatePreflight) -> None:
+    """Print global OpenCode state hints that often explain WAL/SQLite failures."""
     print()
     print("  State/SQLite:")
-    db_path = find_opencode_db_path() if find_opencode_db_path else None
-    if db_path is None:
+    if preflight.db_path is None:
         print("    opencode.db: nicht gefunden")
     else:
-        print(f"    opencode.db: {db_path}")
-        wal_files = _opencode_wal_files_for_db(db_path)
-        if wal_files:
+        print(f"    opencode.db: {preflight.db_path}")
+        if preflight.wal_files:
             print_warn("OpenCode WAL-Dateien sind vorhanden")
-            for path in wal_files:
+            for path in preflight.wal_files:
                 print(f"    WAL: {path}")
             print("    Recovery-Hinweis: OpenCode-Prozesse beenden, dann nur opencode.db-wal/opencode.db-shm entfernen.")
             print("    Nicht löschen: auth.json, account.json oder opencode.db.")
 
-    serve_processes = _find_opencode_serve_processes()
-    if not serve_processes:
+    if not preflight.serve_processes:
         print("    opencode serve: kein laufender Prozess gefunden")
         return
 
     print_warn("Laufende opencode-serve-Prozesse gefunden")
-    for proc in serve_processes:
+    for proc in preflight.serve_processes:
         version_suffix = f", version={proc.version}" if proc.version else ""
         executable_suffix = f", exe={proc.executable}" if proc.executable else ""
         print(f"    pid={proc.pid}{version_suffix}{executable_suffix}")
 
-    mismatched = [
-        proc for proc in serve_processes
-        if (proc.version and cli_version and proc.version != cli_version)
-        or (proc.executable and Path(proc.executable) != Path(opencode_exe))
-    ]
-    if mismatched:
+    if preflight.mismatched_serve_processes:
         print_warn(
             "OpenCode Versions-/State-Mix möglich: CLI und laufender Server "
             "nutzen nicht denselben Prozessstand."
         )
+
+
+def _print_opencode_state_preflight(opencode_exe: str, cli_version: str | None) -> None:
+    _print_opencode_state_preflight_result(
+        _collect_opencode_state_preflight(opencode_exe, cli_version)
+    )
+
+
+def _print_opencode_state_conflict_recovery() -> None:
+    print("   Recovery:")
+    print("   1. Laufende OpenCode/MiniMax-Code-Prozesse beenden.")
+    print("   2. Danach erneut ausführen: python scripts/solve_issues.py --model opencode --diagnostic")
+    print("   3. Nur wenn kein OpenCode-Prozess mehr läuft: opencode.db-wal und opencode.db-shm entfernen.")
+    print("   4. Nicht löschen: auth.json, account.json oder opencode.db.")
+    print("   Override nur bewusst: --allow-opencode-state-conflict")
+
+
+def check_opencode_state_guard(
+    opencode_exe: str,
+    *,
+    allow_conflict: bool = False,
+    print_state: bool = True,
+) -> bool:
+    """Return False when OpenCode global state is unsafe for a real worker run."""
+    cli_version = _read_opencode_cli_version(opencode_exe)
+    preflight = _collect_opencode_state_preflight(opencode_exe, cli_version)
+    if print_state:
+        _print_opencode_state_preflight_result(preflight)
+
+    if not preflight.has_blocking_state_conflict:
+        return True
+
+    if allow_conflict:
+        print_warn(
+            "OpenCode State-Konflikt erkannt, aber per "
+            "--allow-opencode-state-conflict ueberstimmt."
+        )
+        return True
+
+    print_err(
+        "OpenCode Worker-Start blockiert: laufender opencode-serve-Prozess "
+        "passt nicht zur aktuellen CLI-Version oder zum aktuellen Executable."
+    )
+    _print_opencode_state_conflict_recovery()
+    return False
 
 
 def run_opencode_diagnostic() -> int:
@@ -4088,6 +4186,14 @@ def main():
         action="store_true",
         help="OpenCode-Diagnose: Version, Auth-Status und Modellbeispiele anzeigen",
     )
+    parser.add_argument(
+        "--allow-opencode-state-conflict",
+        action="store_true",
+        help=(
+            "OpenCode trotz laufendem Versions-/State-Mix starten. "
+            "Nur bewusst verwenden; Standard ist blockieren."
+        ),
+    )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
@@ -4301,6 +4407,11 @@ def main():
             print_err("OpenCode CLI wurde nicht gefunden!")
             print("   → Installieren: https://opencode.ai/docs/installation")
             print("   → Danach `opencode` im PATH verfügbar machen")
+            sys.exit(1)
+        if not check_opencode_state_guard(
+            opencode_exe,
+            allow_conflict=args.allow_opencode_state_conflict,
+        ):
             sys.exit(1)
         check_opencode_auth(opencode_exe)
         print_solver_directories()

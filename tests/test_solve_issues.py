@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from solve_issues import (  # noqa: E402
     GitHubClient,
     POST_SOLVE_TEST_COMMAND,
+    OpenCodeStatePreflight,
     PostSolveTestResult,
     PullRequestState,
     WorkerAssessment,
@@ -32,6 +33,7 @@ from solve_issues import (  # noqa: E402
     build_vibe_command,
     build_worker_command,
     build_worker_env,
+    check_opencode_state_guard,
     check_opencode_auth,
     clone_repo,
     collect_pre_solver_hygiene_findings,
@@ -53,6 +55,7 @@ from solve_issues import (  # noqa: E402
     is_secret_worker_path,
     parse_codex_reset_datetime,
     _parse_gone_branches,
+    _looks_like_opencode_executable,
     plan_branch_recovery,
     print_branch_recovery_plan,
     relativize_repo_absolute_paths,
@@ -2521,6 +2524,69 @@ class OpenCodePreflightTests(unittest.TestCase):
         self.assertIn("opencode.db-wal", output)
         self.assertIn("pid=123", output)
         self.assertIn("Versions-/State-Mix", output)
+
+    def test_opencode_process_filter_ignores_shell_commands_that_mention_serve(self):
+        self.assertFalse(_looks_like_opencode_executable("/bin/zsh -c gh issue create"))
+        self.assertTrue(_looks_like_opencode_executable("/Users/Guido/.opencode/bin/opencode"))
+
+    def test_opencode_state_guard_blocks_version_mix_by_default(self):
+        process = SimpleNamespace(
+            pid="123",
+            executable="/Applications/MiniMax Code.app/opencode",
+            version="1.14.28",
+        )
+        preflight = OpenCodeStatePreflight(
+            opencode_exe="/Users/Guido/.opencode/bin/opencode",
+            cli_version="1.15.13",
+            db_path=None,
+            wal_files=[],
+            serve_processes=[process],
+        )
+
+        with patch("solve_issues._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "solve_issues._collect_opencode_state_preflight",
+            return_value=preflight,
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                allowed = check_opencode_state_guard(
+                    "/Users/Guido/.opencode/bin/opencode",
+                    print_state=False,
+                )
+
+        self.assertFalse(allowed)
+        output = printed.getvalue()
+        self.assertIn("Worker-Start blockiert", output)
+        self.assertIn("Recovery", output)
+
+    def test_opencode_state_guard_allows_explicit_override(self):
+        process = SimpleNamespace(
+            pid="123",
+            executable="/Applications/MiniMax Code.app/opencode",
+            version="1.14.28",
+        )
+        preflight = OpenCodeStatePreflight(
+            opencode_exe="/Users/Guido/.opencode/bin/opencode",
+            cli_version="1.15.13",
+            db_path=None,
+            wal_files=[],
+            serve_processes=[process],
+        )
+
+        with patch("solve_issues._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "solve_issues._collect_opencode_state_preflight",
+            return_value=preflight,
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                allowed = check_opencode_state_guard(
+                    "/Users/Guido/.opencode/bin/opencode",
+                    allow_conflict=True,
+                    print_state=False,
+                )
+
+        self.assertTrue(allowed)
+        self.assertIn("ueberstimmt", printed.getvalue())
 
 
 class TestOpenRouterDirectWorkerPath(unittest.TestCase):
