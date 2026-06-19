@@ -58,6 +58,7 @@ from solve_issues import (  # noqa: E402
     relativize_repo_absolute_paths,
     preserve_worker_worktree,
     retry_branch_name,
+    _print_opencode_state_preflight,
     run_openrouter_direct_worker,
     run_opencode_diagnostic,
     run_post_solve_tests,
@@ -2480,7 +2481,7 @@ class OpenCodePreflightTests(unittest.TestCase):
 
             with unittest.mock.patch(
                 "subprocess.run", side_effect=[version_mock, auth_mock]
-            ):
+            ), unittest.mock.patch("solve_issues._print_opencode_state_preflight"):
                 printed = io.StringIO()
                 with contextlib.redirect_stdout(printed):
                     exit_code = run_opencode_diagnostic()
@@ -2490,6 +2491,36 @@ class OpenCodePreflightTests(unittest.TestCase):
         self.assertIn("OpenCode Diagnostic", output)
         self.assertIn("0.1.0", output)
         self.assertIn("Authentifiziert", output)
+
+    def test_opencode_state_preflight_reports_wal_and_version_mix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "opencode.db"
+            db_path.write_text("", encoding="utf-8")
+            Path(f"{db_path}-wal").write_text("", encoding="utf-8")
+            Path(f"{db_path}-shm").write_text("", encoding="utf-8")
+
+            process = SimpleNamespace(
+                pid="123",
+                executable="/Applications/MiniMax Code.app/opencode",
+                version="1.14.28",
+            )
+
+            with patch(
+                "workers.opencode_session_reader.find_opencode_db_path",
+                return_value=db_path,
+            ), patch(
+                "solve_issues._find_opencode_serve_processes",
+                return_value=[process],
+            ):
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    _print_opencode_state_preflight("/Users/Guido/.opencode/bin/opencode", "1.15.13")
+
+        output = printed.getvalue()
+        self.assertIn("OpenCode WAL-Dateien", output)
+        self.assertIn("opencode.db-wal", output)
+        self.assertIn("pid=123", output)
+        self.assertIn("Versions-/State-Mix", output)
 
 
 class TestOpenRouterDirectWorkerPath(unittest.TestCase):
