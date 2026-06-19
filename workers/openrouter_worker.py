@@ -230,10 +230,11 @@ class OpenRouterWorker:
         response.raise_for_status()
 
         result = response.json()
-        if "choices" not in result or not result["choices"]:
-            raise ValueError("Ungültige Antwort von OpenRouter API.")
+        error_message = self._extract_api_error_message(result)
+        if error_message:
+            raise ValueError(f"OpenRouter API-Fehler: {error_message}")
 
-        return result["choices"][0]["message"]["content"]
+        return self._extract_message_content(result)
 
     def generate_with_usage(
         self,
@@ -304,11 +305,70 @@ class OpenRouterWorker:
 
         self._populate_usage_from_response(result, usage)
 
-        if "choices" not in result or not result["choices"]:
-            raise ValueError("Ungültige Antwort von OpenRouter API.")
+        error_message = self._extract_api_error_message(result)
+        if error_message:
+            raise ValueError(f"OpenRouter API-Fehler: {error_message}")
 
-        content = result["choices"][0]["message"]["content"]
+        content = self._extract_message_content(result)
         return content, usage
+
+    @staticmethod
+    def _extract_api_error_message(result: Dict[str, Any]) -> Optional[str]:
+        """Extrahiert OpenRouter-Fehler aus JSON-Antworten mit `error`-Block."""
+        if not isinstance(result, dict):
+            return None
+        error = result.get("error")
+        if not error:
+            return None
+        if isinstance(error, str):
+            return error
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("code") or error.get("type")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+            try:
+                return json.dumps(error, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                return str(error)
+        return str(error)
+
+    @staticmethod
+    def _extract_message_content(result: Dict[str, Any]) -> str:
+        """Liest `choices[0].message.content` robust und normalisiert None zu leerem Text."""
+        if not isinstance(result, dict):
+            raise ValueError("Ungültige Antwort von OpenRouter API: JSON ist kein Objekt.")
+
+        choices = result.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("Ungültige Antwort von OpenRouter API: keine choices.")
+
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            raise ValueError("Ungültige Antwort von OpenRouter API: choice ist kein Objekt.")
+
+        if "message" not in first_choice:
+            raise ValueError("Ungültige Antwort von OpenRouter API: message fehlt.")
+
+        message = first_choice.get("message")
+        if not isinstance(message, dict):
+            raise ValueError("Ungültige Antwort von OpenRouter API: message ist kein Objekt.")
+
+        content = message.get("content")
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    text_parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        text_parts.append(text)
+            return "".join(text_parts)
+        return str(content)
 
     @staticmethod
     def _populate_usage_from_response(result: Dict[str, Any], usage: OpenRouterUsage) -> None:
@@ -811,8 +871,15 @@ class OpenRouterWorker:
         if usage.request_seconds is None:
             usage.request_seconds = request_seconds
 
+        raw_response = raw_response or ""
+
         log_lines.append(f"[openrouter_direct] Modell: {self.model}")
         log_lines.append(f"[openrouter_direct] Antwort erhalten ({len(raw_response)} Zeichen)")
+        if not raw_response.strip():
+            log_lines.append(
+                "[openrouter_direct] WARNUNG: Modellantwort war leer oder enthielt "
+                "nur null/Whitespace-Content."
+            )
 
         # --- Schritt 2: Patches extrahieren ---
         patches = self.extract_patches(raw_response)

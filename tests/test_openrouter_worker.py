@@ -220,6 +220,66 @@ class TestOpenRouterWorkerGenerate(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.worker.generate(self.prompt)
 
+    @patch("requests.post")
+    def test_generate_api_error_object(self, mock_post):
+        """OpenRouter error-Objekte werden als lesbare ValueError gemeldet."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "error": {"message": "No endpoints found for model"}
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        with self.assertRaises(ValueError) as ctx:
+            self.worker.generate(self.prompt)
+
+        self.assertIn("OpenRouter API-Fehler", str(ctx.exception))
+        self.assertIn("No endpoints found", str(ctx.exception))
+
+    @patch("requests.post")
+    def test_generate_null_content_returns_empty_string(self, mock_post):
+        """message.content=null wird stabil als leerer Text normalisiert."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": None}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        self.assertEqual(self.worker.generate(self.prompt), "")
+
+    @patch("requests.post")
+    def test_generate_missing_message_is_invalid(self, mock_post):
+        """Eine Choice ohne message ist eine klare ungültige Antwort."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"choices": [{"finish_reason": "stop"}]}
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        with self.assertRaises(ValueError) as ctx:
+            self.worker.generate(self.prompt)
+
+        self.assertIn("message", str(ctx.exception))
+
+    @patch("requests.post")
+    def test_generate_list_content_concatenates_text_parts(self, mock_post):
+        """OpenAI-kompatible Content-Listen werden auf Textteile reduziert."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Hallo "},
+                        {"type": "text", "text": "Welt"},
+                    ]
+                }
+            }]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        self.assertEqual(self.worker.generate(self.prompt), "Hallo Welt")
+
 
 # ---------------------------------------------------------------------------
 # Klasse: extract_patches()-Tests
@@ -608,6 +668,42 @@ class TestRunDirect(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("API-Fehler", result.output)
+        self.assertEqual(result.raw_response, "")
+
+    @patch("requests.post")
+    def test_run_direct_null_content_no_crash(self, mock_post):
+        """Null-Content aus OpenRouter erzeugt no-op statt NoneType-Crash."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": None}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 0},
+            "model": "minimax/minimax-m3",
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = self.worker.run_direct("fix something", self.tmpdir)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("null/Whitespace", result.output)
+        self.assertEqual(result.raw_response, "")
+        self.assertIsNotNone(result.usage)
+        self.assertEqual(result.usage.total_tokens, 10)
+
+    @patch("requests.post")
+    def test_run_direct_api_error_object_no_crash(self, mock_post):
+        """OpenRouter error-JSON wird als API-Fehler klassifiziert."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "error": {"message": "Provider returned empty response"}
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = self.worker.run_direct("fix something", self.tmpdir)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Provider returned empty response", result.output)
         self.assertEqual(result.raw_response, "")
 
     @patch("requests.post")
