@@ -37,6 +37,10 @@ from solve_issues import (  # noqa: E402
 from solver_reporting import (  # noqa: E402
     format_heartbeat,
 )
+from solver_commands import (  # noqa: E402
+    add_budget_flags,
+    add_solver_core_flags,
+)
 from utils import (  # noqa: E402
     is_placeholder_value,
     load_env,
@@ -193,42 +197,20 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
                          model_name: str | None = None) -> list[str]:
     selected_model = model or args.model
     selected_model_name = args.model_name if model_name is None else model_name
-    cmd = [
-        sys.executable,
-        str(solve_script),
-        "--model",
-        selected_model,
-        "--repo",
-        job.repo,
-        "--issue",
-        str(job.issue_number),
-        "--label",
-        args.label,
-    ]
+    cmd = [sys.executable, str(solve_script)]
+    add_solver_core_flags(
+        cmd, args,
+        model=selected_model,
+        model_name=selected_model_name,
+        verbosity=getattr(args, "verbosity", "quiet"),
+    )
+    cmd.extend(["--repo", job.repo, "--issue", str(job.issue_number)])
 
-    if selected_model_name:
-        cmd.extend(["--model-name", selected_model_name])
-    if args.base_branch:
-        cmd.extend(["--base-branch", args.base_branch])
-    if args.dry_run:
-        cmd.append("--dry-run")
-    if args.close_issues:
-        cmd.append("--close-issues")
     if selected_model == "codex":
         cmd.append("--defer-codex-rate-limit")
     if run_report_dir:
         cmd.extend(["--run-report-dir", str(run_report_dir)])
-    verbosity = getattr(args, "verbosity", "quiet")
-    cmd.extend(["--verbosity", verbosity])
-
-    # OpenCode Budget-Limits an solve_issues.py weiterreichen
-    if getattr(args, "max_run_cost_usd", None) is not None:
-        cmd.extend(["--max-run-cost-usd", str(args.max_run_cost_usd)])
-    if getattr(args, "max_run_input_tokens", None) is not None:
-        cmd.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
-    if getattr(args, "max_run_output_tokens", None) is not None:
-        cmd.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
-
+    add_budget_flags(cmd, args)
     return cmd
 
 
