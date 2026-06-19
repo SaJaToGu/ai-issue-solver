@@ -59,6 +59,14 @@ A human can open the app and answer these questions without reading raw logs:
 - Exhaustive live benchmarking of every available model.
 - Replacing GitHub as the source of truth for issues and pull requests.
 
+## First Production Target
+
+After Release 1.0 reaches a runnable app state, the first repository to process
+productively should be `laundry-assistant`.
+
+This target matters because 1.0 should prove the app on a real user-owned
+repository, not only on `ai-issue-solver` itself.
+
 ## Architecture Direction
 
 The system should converge toward these layers:
