@@ -17,6 +17,9 @@ project. It is intentionally lean and strategic; concrete tasks live in
 - **Cost & process control** over model benchmarking. See #16, #37, #38, #39.
 - **Provider abstraction** — GitHub-first, OpenRouter, native APIs as fallback.
   See [`REPO_PROFILE_PROVIDER.md`](REPO_PROFILE_PROVIDER.md).
+- **Model override policy** — model choice is explicit and overridable per run,
+  with defaults kept in role/provider configuration. See
+  [`MODEL_OVERRIDE_POLICY.md`](MODEL_OVERRIDE_POLICY.md).
 - **Knowledge lifecycle** — every piece of information either gets
   `kept` / `promoted` / `archived` / `deleted`. Nothing lingers.
 

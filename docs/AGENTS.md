@@ -15,6 +15,9 @@ lives in `config/role_routing.yaml` (planned for 0.7.0).
 For the current release focus and open questions, see
 [`CURRENT_CONTEXT.md`](CURRENT_CONTEXT.md).
 
+For model default and per-run override policy across AI-backed process steps,
+see [`MODEL_OVERRIDE_POLICY.md`](MODEL_OVERRIDE_POLICY.md).
+
 For the process we run after each release to revisit this document, see
 [`RELEASE_REVIEW_AGENDA.md`](RELEASE_REVIEW_AGENDA.md).
 
