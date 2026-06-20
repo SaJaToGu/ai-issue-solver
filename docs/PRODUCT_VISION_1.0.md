@@ -18,8 +18,9 @@ AI Issue Solver controls AI-backed repository workflows. A repository is always
 the backbone: issues, branches, pull requests, tests, run reports, costs, and
 human decisions all attach to that repository.
 
-AI tools such as Codex, OpenCode / MiniMax Code, OpenRouter, aider, and future
-workers are interchangeable adapters behind open CLI/API boundaries.
+AI tools such as Codex, OpenCode, MiniMax-backed OpenCode models, OpenRouter,
+aider, and future workers are interchangeable adapters behind open CLI/API
+boundaries.
 
 ## 1.0 Success Criteria
 
@@ -48,8 +49,8 @@ A human can open the app and answer these questions without reading raw logs:
 - Standard review gate: deterministic checks first, optional AI reviewer second,
   human triage last.
 - Rework and recovery paths for failed, partial, interrupted, or risky runs.
-- Open CLI surfaces for AI tools so Codex, OpenCode / MiniMax Code, OpenRouter,
-  aider, and future tools can be swapped or combined.
+- Open CLI surfaces for AI tools so Codex, OpenCode, MiniMax-backed OpenCode
+  models, OpenRouter, aider, and future tools can be swapped or combined.
 
 ## Out of Scope for 1.0
 
@@ -76,8 +77,8 @@ The system should converge toward these layers:
 2. Workflow Orchestration
    - triage, planning, solver runs, reviewer runs, rework, recovery, cleanup.
 3. AI Worker Adapters
-   - Codex, OpenCode / MiniMax Code, OpenRouter, aider, Mistral Vibe, future
-     tools.
+   - Codex, OpenCode, MiniMax-backed OpenCode models, OpenRouter, aider,
+     Mistral Vibe, future tools.
 4. Human UI
    - status, recommendations, costs, risks, actions, and approvals.
 5. Reporting and Audit Trail
