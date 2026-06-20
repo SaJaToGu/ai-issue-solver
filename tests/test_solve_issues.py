@@ -15,11 +15,11 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT))
 
 from solve_issues import (  # noqa: E402
     GitHubClient,
     POST_SOLVE_TEST_COMMAND,
-    OpenCodeStatePreflight,
     PostSolveTestResult,
     PullRequestState,
     WorkerAssessment,
@@ -33,8 +33,6 @@ from solve_issues import (  # noqa: E402
     build_vibe_command,
     build_worker_command,
     build_worker_env,
-    check_opencode_state_guard,
-    check_opencode_auth,
     clone_repo,
     collect_pre_solver_hygiene_findings,
     cleanup_preserved_worktrees,
@@ -48,20 +46,17 @@ from solve_issues import (  # noqa: E402
     format_git_change_summary,
     format_post_solve_test_command,
     format_worker_output_tail,
-    find_opencode_executable,
     get_worker_display_name,
     git_status_porcelain,
     infer_aider_targets,
     is_secret_worker_path,
     parse_codex_reset_datetime,
     _parse_gone_branches,
-    _looks_like_opencode_executable,
     plan_branch_recovery,
     print_branch_recovery_plan,
     relativize_repo_absolute_paths,
     preserve_worker_worktree,
     retry_branch_name,
-    _print_opencode_state_preflight,
     run_openrouter_direct_worker,
     run_opencode_diagnostic,
     run_post_solve_tests,
@@ -75,6 +70,14 @@ from solve_issues import (  # noqa: E402
     write_run_report,
     write_run_health,
     write_worker_diagnostics,
+)
+from workers.opencode_diagnostics import (  # noqa: E402
+    OpenCodeStatePreflight,
+    check_opencode_auth,
+    check_opencode_state_guard,
+    find_opencode_executable,
+    _looks_like_opencode_executable,
+    _print_opencode_state_preflight,
 )
 
 
@@ -992,7 +995,7 @@ class AiderCommandTests(unittest.TestCase):
             opencode.chmod(0o755)
             inactive_python = str(Path(tmpdir) / "bin" / "python")
 
-            with patch("solve_issues.sys.executable", inactive_python):
+            with patch("workers.opencode_diagnostics.sys.executable", inactive_python):
                 found = find_opencode_executable(tmpdir)
 
         self.assertEqual(found, str(opencode))
@@ -1004,8 +1007,8 @@ class AiderCommandTests(unittest.TestCase):
             home_opencode.write_text("#!/bin/sh\n", encoding="utf-8")
             home_opencode.chmod(0o755)
 
-            with patch("solve_issues.Path.home", return_value=Path(tmpdir)):
-                with patch("solve_issues.shutil.which", return_value=None):
+            with patch("workers.opencode_diagnostics.Path.home", return_value=Path(tmpdir)):
+                with patch("workers.opencode_diagnostics.shutil.which", return_value=None):
                     found = find_opencode_executable("/missing/repo")
 
         self.assertEqual(found, str(home_opencode))
@@ -2512,7 +2515,7 @@ class OpenCodePreflightTests(unittest.TestCase):
                 "workers.opencode_session_reader.find_opencode_db_path",
                 return_value=db_path,
             ), patch(
-                "solve_issues._find_opencode_serve_processes",
+                "workers.opencode_diagnostics._find_opencode_serve_processes",
                 return_value=[process],
             ):
                 printed = io.StringIO()
@@ -2543,8 +2546,8 @@ class OpenCodePreflightTests(unittest.TestCase):
             serve_processes=[process],
         )
 
-        with patch("solve_issues._read_opencode_cli_version", return_value="1.15.13"), patch(
-            "solve_issues._collect_opencode_state_preflight",
+        with patch("workers.opencode_diagnostics._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "workers.opencode_diagnostics._collect_opencode_state_preflight",
             return_value=preflight,
         ):
             printed = io.StringIO()
@@ -2568,8 +2571,8 @@ class OpenCodePreflightTests(unittest.TestCase):
             serve_processes=[],
         )
 
-        with patch("solve_issues._read_opencode_cli_version", return_value="1.15.13"), patch(
-            "solve_issues._collect_opencode_state_preflight",
+        with patch("workers.opencode_diagnostics._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "workers.opencode_diagnostics._collect_opencode_state_preflight",
             return_value=preflight,
         ):
             printed = io.StringIO()
@@ -2596,8 +2599,8 @@ class OpenCodePreflightTests(unittest.TestCase):
             serve_processes=[process],
         )
 
-        with patch("solve_issues._read_opencode_cli_version", return_value="1.15.13"), patch(
-            "solve_issues._collect_opencode_state_preflight",
+        with patch("workers.opencode_diagnostics._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "workers.opencode_diagnostics._collect_opencode_state_preflight",
             return_value=preflight,
         ):
             printed = io.StringIO()

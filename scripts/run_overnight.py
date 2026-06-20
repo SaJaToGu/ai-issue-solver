@@ -27,8 +27,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from solve_issues import (  # noqa: E402
     MODEL_CONFIGS,
-    check_opencode_state_guard,
-    find_opencode_executable,
 )
 from solve_issues_batch import DEFAULT_WORKERS, positive_int  # noqa: E402
 from solver_commands import (  # noqa: E402
@@ -36,6 +34,10 @@ from solver_commands import (  # noqa: E402
     add_fallback_flags,
     add_health_flags,
     add_solver_core_flags,
+)
+from workers.opencode_diagnostics import (  # noqa: E402
+    check_opencode_state_guard,
+    find_opencode_executable,
 )
 from utils import print_banner, print_err, print_ok, print_step, print_warn  # noqa: E402
 
