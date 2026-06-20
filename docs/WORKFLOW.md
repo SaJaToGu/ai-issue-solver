@@ -70,9 +70,10 @@ Remote-Default arbeitet.
 
 ## Scripts im Detail
 
-Model choice follows the shared policy in
-[MODEL_OVERRIDE_POLICY.md](MODEL_OVERRIDE_POLICY.md): command-line overrides are
-per-run only, while defaults remain in role/provider configuration.
+Die Modellauswahl folgt der gemeinsamen, englischsprachigen Policy in
+[MODEL_OVERRIDE_POLICY.md](MODEL_OVERRIDE_POLICY.md): Kommandozeilen-Overrides
+gelten nur fuer den einzelnen Lauf; Defaults bleiben in Rollen- oder
+Provider-Konfiguration.
 
 ### `solve_issues.py`
 Löst offene Issues automatisch mit KI + Codex, Mistral Vibe, OpenCode oder aider.

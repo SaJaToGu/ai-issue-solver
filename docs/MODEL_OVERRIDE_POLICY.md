@@ -39,8 +39,9 @@ or configured model so later scoring can compare model choice against outcome.
 
 ## Current Surfaces
 
-Verified against the `argparse` definitions in the listed scripts on
-2026-06-20.
+The implemented rows below reflect existing `argparse` surfaces in the listed
+scripts. Rows marked "not yet wired" are future surfaces and must not be read as
+implemented behavior.
 
 | Process step | Entry point | Current override surface | Notes |
 | --- | --- | --- | --- |
@@ -58,7 +59,9 @@ Verified against the `argparse` definitions in the listed scripts on
 - Use `--model` and `--model-name` for solver-style worker execution where
   provider and provider-specific model are separate concepts.
 - Use `--model-override` for role-based OpenRouter calls where the role already
-  has a configured default model.
+  has a configured default model. Current reviewer roles are
+  `reviewer_code`, `reviewer_architecture`, and `reviewer_documentation` in
+  `config/role_routing.yaml`.
 - Avoid introducing new flag names for the same concept unless the workflow has
   a materially different model-selection shape.
 

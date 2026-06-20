@@ -142,6 +142,7 @@ python scripts/solve_issues.py --model openrouter --repo <dein-repo> --issue <is
 
 - **[Provider Setup](docs/SETUP_AIDER.md):** Einrichtung von KI-Modellen (Claude, OpenAI, Ollama, etc.)
 - **[Workflow & Batch](docs/WORKFLOW.md):** Detaillierter Workflow, Batch-Verarbeitung, Dashboard, Night Mode
+- **[Model Override Policy](docs/MODEL_OVERRIDE_POLICY.md):** Regeln fuer Modell-Defaults und per-run Overrides
 - **[Repository Profile Provider](docs/REPO_PROFILE_PROVIDER.md):** GitHub-first Repo-Profil mit lokalem Fallback (Issue #213)
 
 ---
