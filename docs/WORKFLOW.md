@@ -272,6 +272,33 @@ python scripts/run_overnight.py --model opencode --model-name mistral/mistral-la
 python scripts/solve_issues.py --model opencode --model-name mistral/mistral-large-latest --repo <repo-name> --issue <issue-number> --dry-run
 ```
 
+### OpenCode WAL/SQLite-State
+
+Vor echten OpenCode-Worker-Läufen prüft der Solver den globalen OpenCode-State.
+Wenn ein laufender `opencode serve`-Prozess nicht zur aktuellen CLI-Version oder
+zum aktuellen Executable passt, bricht `solve_issues.py` ab. `solve_issues_batch.py`
+und `run_overnight.py` prüfen denselben Zustand früh, bevor Jobs gestartet werden.
+
+Diagnose:
+
+```bash
+python scripts/solve_issues.py --model opencode --diagnostic
+```
+
+Recovery bei blockiertem Versions-/State-Mix:
+
+1. Laufende OpenCode- oder MiniMax-Code-Prozesse beenden.
+2. Die Diagnose erneut ausführen.
+3. Nur wenn kein OpenCode-Prozess mehr läuft, verbliebene `opencode.db-wal`
+   und `opencode.db-shm` entfernen.
+4. Nicht löschen: `auth.json`, `account.json` oder `opencode.db`.
+
+Ein bewusstes Überstimmen ist möglich, aber nicht empfohlen:
+
+```bash
+python scripts/solve_issues.py --model opencode --allow-opencode-state-conflict
+```
+
 > ⚠️ **Hinweise:**
 > - Night-Mode-Läufe sollten immer auf den `develop`-Branch zielen, um Stabilität in `main` zu gewährleisten.
 > - Vermeide breite `--open-issue`-Sweeps während der Kalibrierung. Nutze stattdessen explizite `--issue`-Flags.

@@ -53,6 +53,7 @@ class BatchRunnerTests(unittest.TestCase):
             "close_issues": False,
             "fallback_model": None,
             "fallback_model_name": None,
+            "allow_opencode_state_conflict": False,
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -134,6 +135,17 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertIn("--model-name", cmd)
         self.assertIn("mistral/mistral-small-2603", cmd)
         self.assertNotIn("--defer-codex-rate-limit", cmd)
+
+    def test_build_worker_command_forwards_opencode_state_override(self):
+        args = self.make_args(
+            model="opencode",
+            model_name="mistral/mistral-small-2603",
+            allow_opencode_state_conflict=True,
+        )
+
+        cmd = build_worker_command(args, IssueJob("demo", 7), Path("scripts/solve_issues.py"))
+
+        self.assertIn("--allow-opencode-state-conflict", cmd)
 
     def test_build_worker_command_forwards_mistral_vibe(self):
         args = self.make_args(model="mistral-vibe")

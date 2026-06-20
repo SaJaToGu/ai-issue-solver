@@ -25,7 +25,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from solve_issues import MODEL_CONFIGS  # noqa: E402
+from solve_issues import (  # noqa: E402
+    MODEL_CONFIGS,
+    check_opencode_state_guard,
+    find_opencode_executable,
+)
 from solve_issues_batch import DEFAULT_WORKERS, positive_int  # noqa: E402
 from solver_commands import (  # noqa: E402
     add_budget_flags,
@@ -136,6 +140,8 @@ def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[st
     add_health_flags(command, args)
     if getattr(args, "skip_congestion_check", False):
         command.append("--skip-congestion-check")
+    if args.model == "opencode" and getattr(args, "allow_opencode_state_conflict", False):
+        command.append("--allow-opencode-state-conflict")
     add_budget_flags(command, args)
     return command
 
@@ -638,6 +644,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["quiet", "normal", "verbose"],
         help="An Batch-Solver weiterreichen: Worker-Ausgabe",
     )
+    parser.add_argument(
+        "--allow-opencode-state-conflict",
+        action="store_true",
+        help=(
+            "OpenCode trotz laufendem Versions-/State-Mix starten und an Batch weiterreichen. "
+            "Nur bewusst verwenden; Standard ist blockieren."
+        ),
+    )
     parser.add_argument("--skip-pull", action="store_true", help="Git-Pull des Basis-Branches ueberspringen")
     parser.add_argument("--skip-tests", action="store_true", help="Testlauf vor dem Batch ueberspringen")
     parser.add_argument(
@@ -706,13 +720,30 @@ def main(argv: list[str] | None = None) -> int:
     steps: list[StepResult] = []
 
     print_step(1, f"Log-Verzeichnis: {session_dir}")
+    next_step = 2
+
+    if args.model == "opencode" and not args.dry_run:
+        print_step(next_step, "OpenCode-State-Preflight")
+        next_step += 1
+        opencode_exe = find_opencode_executable()
+        if not opencode_exe:
+            print_err("OpenCode CLI wurde nicht gefunden!")
+            print("   → Installieren: https://opencode.ai/docs/installation")
+            print("   → Danach `opencode` im PATH verfügbar machen")
+            return 1
+        if not check_opencode_state_guard(
+            opencode_exe,
+            allow_conflict=args.allow_opencode_state_conflict,
+        ):
+            return 1
 
     with keep_awake(args.caffeinate, session_dir / "caffeinate.log"):
         if args.skip_pull:
             print_warn("Git-Pull uebersprungen")
             steps.append(skipped_step("pull", session_dir / "pull.log", "--skip-pull"))
         else:
-            print_step(2, f"Pull von origin/{args.base_branch}")
+            print_step(next_step, f"Pull von origin/{args.base_branch}")
+            next_step += 1
             pull_result = run_logged_command(
                 "pull",
                 build_pull_command(args.base_branch),
@@ -729,7 +760,8 @@ def main(argv: list[str] | None = None) -> int:
             print_warn("Tests uebersprungen")
             steps.append(skipped_step("tests", session_dir / "tests.log", "--skip-tests"))
         elif can_continue:
-            print_step(3, f"Tests: {command_to_text(args.test_command)}")
+            print_step(next_step, f"Tests: {command_to_text(args.test_command)}")
+            next_step += 1
             test_result = run_logged_command(
                 "tests",
                 args.test_command,
@@ -753,7 +785,8 @@ def main(argv: list[str] | None = None) -> int:
                 "--skip-congestion-check",
             ))
         elif can_continue:
-            print_step(4, "Workflow-Congestion-Check")
+            print_step(next_step, "Workflow-Congestion-Check")
+            next_step += 1
             congestion_command = [
                 sys.executable,
                 str(Path("scripts") / "solve_issues.py"),
@@ -792,7 +825,8 @@ def main(argv: list[str] | None = None) -> int:
         can_continue = all(step.ok for step in steps)
 
         if can_continue:
-            print_step(4, f"Batch-Solver mit {args.workers} Worker(n)")
+            print_step(next_step, f"Batch-Solver mit {args.workers} Worker(n)")
+            next_step += 1
             batch_result = run_logged_command(
                 "batch",
                 build_batch_command(args, Path("scripts") / "solve_issues_batch.py"),
@@ -803,7 +837,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             steps.append(skipped_step("batch", session_dir / "batch.log", "Preflight fehlgeschlagen"))
 
-        print_step(5, "Dashboard regenerieren")
+        print_step(next_step, "Dashboard regenerieren")
+        next_step += 1
         dashboard_result = run_logged_command(
             "dashboard",
             build_dashboard_command(args, Path("scripts") / "status_dashboard.py"),
@@ -817,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
     write_final_summary(summary_path, session_dir, args, steps, started_at, finished_at, args.runs_dir)
 
     failed_steps = [step for step in steps if not step.ok]
-    print_step(6, "Finale Summary")
+    print_step(next_step, "Finale Summary")
     if failed_steps:
         print_err("Overnight-Lauf mit Fehlern beendet")
         print(f"   Summary: {summary_path}")
