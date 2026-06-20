@@ -720,9 +720,11 @@ def main(argv: list[str] | None = None) -> int:
     steps: list[StepResult] = []
 
     print_step(1, f"Log-Verzeichnis: {session_dir}")
+    next_step = 2
 
     if args.model == "opencode" and not args.dry_run:
-        print_step(2, "OpenCode-State-Preflight")
+        print_step(next_step, "OpenCode-State-Preflight")
+        next_step += 1
         opencode_exe = find_opencode_executable()
         if not opencode_exe:
             print_err("OpenCode CLI wurde nicht gefunden!")
@@ -740,7 +742,8 @@ def main(argv: list[str] | None = None) -> int:
             print_warn("Git-Pull uebersprungen")
             steps.append(skipped_step("pull", session_dir / "pull.log", "--skip-pull"))
         else:
-            print_step(2, f"Pull von origin/{args.base_branch}")
+            print_step(next_step, f"Pull von origin/{args.base_branch}")
+            next_step += 1
             pull_result = run_logged_command(
                 "pull",
                 build_pull_command(args.base_branch),
@@ -757,7 +760,8 @@ def main(argv: list[str] | None = None) -> int:
             print_warn("Tests uebersprungen")
             steps.append(skipped_step("tests", session_dir / "tests.log", "--skip-tests"))
         elif can_continue:
-            print_step(3, f"Tests: {command_to_text(args.test_command)}")
+            print_step(next_step, f"Tests: {command_to_text(args.test_command)}")
+            next_step += 1
             test_result = run_logged_command(
                 "tests",
                 args.test_command,
@@ -781,7 +785,8 @@ def main(argv: list[str] | None = None) -> int:
                 "--skip-congestion-check",
             ))
         elif can_continue:
-            print_step(4, "Workflow-Congestion-Check")
+            print_step(next_step, "Workflow-Congestion-Check")
+            next_step += 1
             congestion_command = [
                 sys.executable,
                 str(Path("scripts") / "solve_issues.py"),
@@ -820,7 +825,8 @@ def main(argv: list[str] | None = None) -> int:
         can_continue = all(step.ok for step in steps)
 
         if can_continue:
-            print_step(4, f"Batch-Solver mit {args.workers} Worker(n)")
+            print_step(next_step, f"Batch-Solver mit {args.workers} Worker(n)")
+            next_step += 1
             batch_result = run_logged_command(
                 "batch",
                 build_batch_command(args, Path("scripts") / "solve_issues_batch.py"),
@@ -831,7 +837,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             steps.append(skipped_step("batch", session_dir / "batch.log", "Preflight fehlgeschlagen"))
 
-        print_step(5, "Dashboard regenerieren")
+        print_step(next_step, "Dashboard regenerieren")
+        next_step += 1
         dashboard_result = run_logged_command(
             "dashboard",
             build_dashboard_command(args, Path("scripts") / "status_dashboard.py"),
@@ -845,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
     write_final_summary(summary_path, session_dir, args, steps, started_at, finished_at, args.runs_dir)
 
     failed_steps = [step for step in steps if not step.ok]
-    print_step(6, "Finale Summary")
+    print_step(next_step, "Finale Summary")
     if failed_steps:
         print_err("Overnight-Lauf mit Fehlern beendet")
         print(f"   Summary: {summary_path}")

@@ -2559,6 +2559,29 @@ class OpenCodePreflightTests(unittest.TestCase):
         self.assertIn("Worker-Start blockiert", output)
         self.assertIn("Recovery", output)
 
+    def test_opencode_state_guard_allows_clean_state(self):
+        preflight = OpenCodeStatePreflight(
+            opencode_exe="/Users/Guido/.opencode/bin/opencode",
+            cli_version="1.15.13",
+            db_path=None,
+            wal_files=[],
+            serve_processes=[],
+        )
+
+        with patch("solve_issues._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "solve_issues._collect_opencode_state_preflight",
+            return_value=preflight,
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                allowed = check_opencode_state_guard(
+                    "/Users/Guido/.opencode/bin/opencode",
+                    print_state=False,
+                )
+
+        self.assertTrue(allowed)
+        self.assertNotIn("Worker-Start blockiert", printed.getvalue())
+
     def test_opencode_state_guard_allows_explicit_override(self):
         process = SimpleNamespace(
             pid="123",
