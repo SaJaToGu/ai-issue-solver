@@ -39,6 +39,9 @@ or configured model so later scoring can compare model choice against outcome.
 
 ## Current Surfaces
 
+Verified against the `argparse` definitions in the listed scripts on
+2026-06-20.
+
 | Process step | Entry point | Current override surface | Notes |
 | --- | --- | --- | --- |
 | Single solver run | `scripts/solve_issues.py` | `--model`, `--model-name`, `--auto-model`, `--max-cost` | Provider choice and provider-specific model are explicit. Auto-selection uses `scripts/model_selection.py`. |
