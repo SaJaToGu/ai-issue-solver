@@ -159,6 +159,28 @@ class TestRunOutcomeSkipPr(unittest.TestCase):
             self.assertIn("budget_exceeded: input_tokens 101 exceeds 100", summary)
             self.assertIn("provider_scorecard_estimated_cost: 0.0123", summary)
 
+    def test_write_run_report_uses_report_rework_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = create_run_report(
+                "demo",
+                7,
+                "ai/fix-issue-7",
+                "opencode",
+                issue_title="Fix rework",
+                run_dir=tmpdir,
+                rework_of=12,
+                rework_reason="existing_open_pr",
+            )
+
+            result_path = write_run_report(report, "started")
+            metadata = json.loads((Path(tmpdir) / "metadata.json").read_text(encoding="utf-8"))
+            summary = (Path(tmpdir) / "summary.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(result_path, Path(tmpdir))
+        self.assertEqual(metadata["rework"]["rework_of"], 12)
+        self.assertEqual(metadata["rework"]["rework_reason"], "existing_open_pr")
+        self.assertIn("rework_of: 12", summary)
+
     def test_write_run_report_skip_pr_with_changes(self):
         """Run report for pr_skipped with changes yields pushed_without_pr outcome."""
         with tempfile.TemporaryDirectory() as temp_dir:

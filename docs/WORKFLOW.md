@@ -277,6 +277,19 @@ python scripts/run_overnight.py --model opencode --model-name mistral/mistral-la
 python scripts/solve_issues.py --model opencode --model-name mistral/mistral-large-latest --repo <repo-name> --issue <issue-number> --dry-run
 ```
 
+### Rework offener Solver-PRs
+
+Standardmäßig überspringt der Solver Issues, deren Issue-Branch bereits einen
+offenen PR hat. Für gezielte Nacharbeit an genau diesem offenen PR kann der Run
+bewusst auf demselben Branch fortgesetzt werden:
+
+```bash
+python scripts/solve_issues.py --model opencode --repo <repo-name> --issue <issue-number> --rework
+```
+
+Der Modus wird verweigert, wenn mehrere offene PR-Branches gefunden werden oder
+der PR-Head/Base-Branch nicht eindeutig zum geplanten Issue-Branch passt.
+
 ### OpenCode WAL/SQLite-State
 
 Vor echten OpenCode-Worker-Läufen prüft der Solver den globalen OpenCode-State.

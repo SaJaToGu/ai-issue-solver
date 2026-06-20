@@ -432,6 +432,8 @@ class PullRequestState:
     html_url: str
     state: str
     merged: bool
+    head_ref: str | None = None
+    base_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -592,6 +594,8 @@ class GitHubClient:
                     html_url=pr.get("html_url", ""),
                     state=pr.get("state", ""),
                     merged=bool(pr.get("merged_at")),
+                    head_ref=(pr.get("head") or {}).get("ref"),
+                    base_ref=(pr.get("base") or {}).get("ref"),
                 )
             )
         return pull_requests
@@ -2491,7 +2495,9 @@ def plan_branch_recovery(client: GitHubClient, repo: str, issue_number: int,
                          issue_branch: str,
                          prompt_fn=input,
                          stdin_isatty_fn=sys.stdin.isatty,
-                         now_fn=datetime.now) -> BranchRecoveryPlan:
+                         now_fn=datetime.now,
+                         rework: bool = False,
+                         base_branch: str | None = None) -> BranchRecoveryPlan:
     """Prueft vorhandene Remote-Artefakte und waehlt einen sicheren Branch."""
     discovered_branches = client.get_issue_branches(repo, issue_number)
     default_exists = client.branch_exists(repo, issue_branch)
@@ -2521,16 +2527,44 @@ def plan_branch_recovery(client: GitHubClient, repo: str, issue_number: int,
             found_pull_requests=found_pull_requests,
         )
 
-    for branch in branches_to_check:
-        pr = next((candidate for candidate in pull_requests_by_branch[branch]
-                   if candidate.state == "open"), None)
-        if pr:
+    open_pr_matches = tuple(
+        (branch, pr)
+        for branch in branches_to_check
+        for pr in pull_requests_by_branch[branch]
+        if pr.state == "open"
+    )
+    if open_pr_matches:
+        if rework and len(open_pr_matches) == 1:
+            branch, pr = open_pr_matches[0]
+            head_matches = not pr.head_ref or pr.head_ref == branch
+            base_matches = not base_branch or not pr.base_ref or pr.base_ref == base_branch
+            if head_matches and base_matches:
+                return recovery_plan(
+                    "rework_existing_pr",
+                    branch,
+                    f"Rework-Modus: vorhandenen offenen {describe_pull_request(pr)} auf Branch '{branch}' weiterbearbeiten.",
+                    pr,
+                )
+
+        if rework:
+            branch, pr = open_pr_matches[0]
             return recovery_plan(
-                "skip_existing_pr",
+                "skip_rework_ineligible",
                 branch,
-                f"Vorhandener Branch '{branch}' hat bereits einen offenen {describe_pull_request(pr)}.",
+                (
+                    "Rework-Modus verweigert: offener PR ist nicht eindeutig "
+                    "dem erwarteten Issue-Branch/Base-Branch zuordenbar."
+                ),
                 pr,
             )
+
+        branch, pr = open_pr_matches[0]
+        return recovery_plan(
+            "skip_existing_pr",
+            branch,
+            f"Vorhandener Branch '{branch}' hat bereits einen offenen {describe_pull_request(pr)}.",
+            pr,
+        )
 
     for branch in branches_to_check:
         pr = next((candidate for candidate in pull_requests_by_branch[branch]
@@ -2833,7 +2867,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 max_run_runtime_seconds: float | None = None,
                 max_post_worker_runtime_seconds: float | None = None,
                 ensemble: int = 0,
-                role_routing: dict | None = None) -> bool:
+                role_routing: dict | None = None,
+                rework: bool = False) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -2967,12 +3002,21 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             number,
             default_branch_name,
             stdin_isatty_fn=lambda: False,
+            rework=rework,
+            base_branch=base_branch,
         )
         print_branch_recovery_plan(recovery_plan)
         print(f"      [DRY-RUN] Geplanter Issue-Branch: {recovery_plan.branch}")
         return True
 
-    recovery_plan = plan_branch_recovery(client, repo, number, default_branch_name)
+    recovery_plan = plan_branch_recovery(
+        client,
+        repo,
+        number,
+        default_branch_name,
+        rework=rework,
+        base_branch=base_branch,
+    )
     print_branch_recovery_plan(recovery_plan)
     run_report = create_run_report(
         repo,
@@ -2981,6 +3025,12 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         model,
         issue_title=title,
         run_dir=run_report_dir,
+        rework_of=(
+            recovery_plan.pull_request.number
+            if recovery_plan.action == "rework_existing_pr" and recovery_plan.pull_request
+            else None
+        ),
+        rework_reason="existing_open_pr" if recovery_plan.action == "rework_existing_pr" else None,
     )
     if run_report:
         write_run_report(run_report, "started")
@@ -3131,7 +3181,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         # Branch anlegen
         branch_name = recovery_plan.branch
-        if recovery_plan.action == "reuse_branch":
+        if recovery_plan.action in {"reuse_branch", "rework_existing_pr"}:
             if not checkout_existing_remote_branch(repo_dir, branch_name):
                 print_err(f"Vorhandener Branch konnte nicht ausgecheckt werden: {branch_name}")
                 if run_report:
@@ -3142,6 +3192,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 if continue_:
                     print(
                         "      [CONTINUE] Vorhandene Änderungen gefunden; "
+                        "setze Arbeit auf bestehendem Branch fort..."
+                    )
+                elif recovery_plan.action == "rework_existing_pr":
+                    print(
+                        "      [REWORK] Vorhandene PR-Änderungen gefunden; "
                         "setze Arbeit auf bestehendem Branch fort..."
                     )
                 else:
@@ -3947,6 +4002,14 @@ def main():
         dest="continue_",
         help="Vorhandenen Branch mit Änderungen weiterbearbeiten statt PR zu erstellen",
     )
+    parser.add_argument(
+        "--rework",
+        action="store_true",
+        help=(
+            "Vorhandenen offenen Issue-PR-Branch bewusst weiterbearbeiten. "
+            "Standard bleibt: offene PRs überspringen."
+        ),
+    )
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
     parser.add_argument(
         "--base-branch",
@@ -4296,8 +4359,8 @@ def main():
             issue_number = issue.get("number", 0)
 
             # Workflow-Congestion-Check: Issues mit offenen PRs ueberspringen
-            # (ausser --retry oder --compare-models ist gesetzt)
-            if not args.retry and not args.compare_models and issue_number:
+            # (ausser --retry, --compare-models oder --rework ist gesetzt)
+            if not args.retry and not args.compare_models and not args.rework and issue_number:
                 try:
                     open_prs_for_issue = client.get_pull_requests_for_branch(
                         repo_name,
@@ -4355,6 +4418,7 @@ def main():
                 max_post_worker_runtime_seconds=args.max_post_worker_runtime_seconds,
                 ensemble=args.ensemble,
                 role_routing=_ROLE_ROUTING if _BUDGET_TRACKING_ACTIVE else None,
+                rework=args.rework,
             )
             if ok:
                 solved += 1

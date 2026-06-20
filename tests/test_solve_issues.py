@@ -327,6 +327,134 @@ class BranchRecoveryTests(unittest.TestCase):
         self.assertEqual(plan.action, "skip_existing_pr")
         self.assertEqual(plan.pull_request, pr)
 
+    def test_rework_reuses_single_matching_open_pr(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7",
+            base_ref="develop",
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "rework_existing_pr")
+        self.assertEqual(plan.branch, "ai/fix-issue-7")
+        self.assertEqual(plan.pull_request, pr)
+
+    def test_rework_refuses_base_branch_mismatch(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7",
+            base_ref="main",
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "skip_rework_ineligible")
+        self.assertIn("Rework-Modus verweigert", plan.message)
+
+    def test_rework_refuses_head_branch_mismatch(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-8",
+            base_ref="develop",
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "skip_rework_ineligible")
+        self.assertIn("Rework-Modus verweigert", plan.message)
+
+    def test_rework_refuses_multiple_open_pr_matches(self):
+        default_pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7",
+            base_ref="develop",
+        )
+        retry_pr = PullRequestState(
+            number=13,
+            html_url="https://github.com/test-owner/demo/pull/13",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7-20260521-090807",
+            base_ref="develop",
+        )
+        client = self.make_client(
+            branch_exists=True,
+            branches=["ai/fix-issue-7", "ai/fix-issue-7-20260521-090807"],
+            pull_requests={
+                "ai/fix-issue-7": [default_pr],
+                "ai/fix-issue-7-20260521-090807": [retry_pr],
+            },
+        )
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "skip_rework_ineligible")
+        self.assertEqual(len(plan.found_pull_requests), 2)
+
+    def test_rework_without_open_pr_falls_back_to_normal_reuse(self):
+        client = self.make_client(branch_exists=True, pull_requests=[])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "reuse_branch")
+        self.assertEqual(plan.branch, "ai/fix-issue-7")
+
     def test_closed_unmerged_pr_uses_new_branch_without_tty(self):
         pr = PullRequestState(
             number=12,
@@ -621,6 +749,73 @@ class BranchRecoveryTests(unittest.TestCase):
             summary_calls[0][1]["git_change_summary"],
             ["Git-Änderungsübersicht:", "  README.md | 1 +"],
         )
+
+    @patch("solve_issues.create_issue_pull_request")
+    @patch("solve_issues.format_git_change_summary", return_value=[])
+    @patch("solve_issues.git_status_porcelain", return_value="")
+    @patch("solve_issues.assess_worker_result",
+           return_value=WorkerAssessment(should_continue=False, has_changes=False, reason="noop"))
+    @patch("solve_issues.get_worker_adapter")
+    @patch("solve_issues.branch_has_changes_against_base", return_value=True)
+    @patch("solve_issues.checkout_existing_remote_branch", return_value=True)
+    @patch("solve_issues.clone_repo", return_value=True)
+    def test_rework_existing_pr_branch_runs_worker_despite_existing_changes(
+        self, mock_clone, mock_checkout, mock_branch_has_changes,
+        mock_get_adapter, mock_assess, mock_git_status,
+        mock_format_summary, mock_create_pr,
+    ):
+        adapter = unittest.mock.MagicMock()
+        adapter.get_display_name.return_value = "Fake Codex"
+        adapter.build_env.return_value = {}
+        adapter.run.return_value = (
+            WorkerRunResult(0, ""),
+            SimpleNamespace(
+                all_outputs=[],
+                rate_limit_note=None,
+                opencode_session_totals=None,
+                opencode_budget_exceeded=None,
+                openrouter_usage=None,
+                openrouter_budget_exceeded=None,
+                openrouter_request_timed_out=False,
+                vibe_log_snippet="",
+            ),
+        )
+        mock_get_adapter.return_value = adapter
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7",
+            base_ref="main",
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+        issue = {"number": 7, "title": "Fix recovery", "body": ""}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = solve_issue(
+                    client=client,
+                    issue=issue,
+                    repo="demo",
+                    model="codex",
+                    model_name="",
+                    config={"owner": "test-owner", "config": {}},
+                    token="token",
+                    dry_run=False,
+                    base_branch="main",
+                    close_issues=False,
+                    run_report_dir=tmpdir,
+                    rework=True,
+                )
+
+            metadata = json.loads((Path(tmpdir) / "metadata.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(result)
+        adapter.run.assert_called_once()
+        mock_create_pr.assert_not_called()
+        self.assertEqual(metadata["rework"]["rework_of"], 12)
+        self.assertEqual(metadata["rework"]["rework_reason"], "existing_open_pr")
 
 
 class WorkerAssessmentTests(unittest.TestCase):
