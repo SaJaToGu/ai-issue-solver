@@ -33,6 +33,7 @@ except ModuleNotFoundError:
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
+from solver_reporting import classify_run_status, read_normalized_run_outcome  # noqa: E402
 from workflow_congestion import (  # noqa: E402
     BacklogEntry,
     WorkflowCongestionFinding,
@@ -556,31 +557,7 @@ def classify_status(status: str, worker_exit_code: str = "") -> str:
         Die Dashboard-Kategorie: queued, running, unhealthy, failed, recovered,
         superseded, successful, noop, archived, oder unknown
     """
-    if not status:
-        return "unknown"
-
-    # Direkte Zuordnung für spezifische Zustände
-    if status == "queued":
-        return "queued"
-    if status == "started":
-        return "running"
-
-    # Zuordnung über Status-Gruppen
-    if status in ARCHIVED_STATUSES:
-        return "archived"
-    if status in SUCCESS_STATUSES:
-        return "successful"
-    if status in NOOP_STATUSES:
-        return "noop"
-    if status in FAILED_STATUSES or status.endswith("_failed"):
-        return "failed"
-
-    # Fallback: Nicht-Null Exit-Code = failed
-    if worker_exit_code and worker_exit_code != "0":
-        return "failed"
-
-    # Default für unbekannte erfolgreiche Zustände
-    return "noop"
+    return classify_run_status(status, worker_exit_code)
 
 
 # =============================================================================
@@ -698,9 +675,10 @@ def read_runs(runs_dir: Path,
 
     for run_dir in sorted((path for path in runs_dir.iterdir() if path.is_dir()), reverse=True):
         fields = parse_summary(run_dir / "summary.txt")
+        normalized = read_normalized_run_outcome(run_dir)
         health = read_health_file(run_dir)
-        status = fields.get("status", "")
-        exit_code = fields.get("worker_exit_code", "")
+        status = normalized.status
+        exit_code = normalized.worker_exit_code
         output_tail = health.get("output_tail") or fields.get("output_tail", "")
         summary_mtime = file_mtime(run_dir / "summary.txt")
         health_mtime = file_mtime(run_dir / "health.json")
@@ -720,7 +698,7 @@ def read_runs(runs_dir: Path,
             last_report_update_at = latest_datetime(health_mtime, summary_mtime)
 
         # Klassifiziere den Status
-        category = classify_status(status, exit_code)
+        category = normalized.category
 
         # Führe Gesundheitsprüfung durch
         last_progress_at = latest_datetime(last_activity_at, last_report_update_at)
@@ -743,12 +721,12 @@ def read_runs(runs_dir: Path,
         cost_confidence = fields.get("cost_confidence", "unavailable")
         priority = int(fields.get("priority", 0)) if fields.get("priority") else None
         provider = fields.get("provider", "")
-        run_outcome_worker_status = fields.get("run_outcome_worker_status", "")
-        run_outcome_has_changes = fields.get("run_outcome_has_changes", "").lower() in ("true", "1", "yes")
-        run_outcome_test_status = fields.get("run_outcome_test_status", "")
-        run_outcome_delivery_status = fields.get("run_outcome_delivery_status", "")
-        run_outcome_failure_class = fields.get("run_outcome_failure_class", "")
-        run_outcome_recovery_status = fields.get("run_outcome_recovery_status", "")
+        run_outcome_worker_status = str(normalized.run_outcome.get("worker_status", ""))
+        run_outcome_has_changes = bool(normalized.run_outcome.get("has_changes", False))
+        run_outcome_test_status = str(normalized.run_outcome.get("test_status", ""))
+        run_outcome_delivery_status = str(normalized.run_outcome.get("delivery_status", ""))
+        run_outcome_failure_class = str(normalized.run_outcome.get("failure_class", ""))
+        run_outcome_recovery_status = str(normalized.run_outcome.get("recovery_status", ""))
         
         # Provider-Scorecard Felder
         provider_scorecard_requested_model = fields.get("provider_scorecard_requested_model", "")
@@ -770,10 +748,10 @@ def read_runs(runs_dir: Path,
                 created_at=parse_created_at(run_dir.name),
                 status=status,
                 category=category,
-                repo=fields.get("repo") or fields.get("selected_repo", ""),
-                issue_number=fields.get("issue_number") or fields.get("issue", ""),
-                issue_title=fields.get("issue_title", ""),
-                branch=fields.get("branch", ""),
+                repo=normalized.repo,
+                issue_number=normalized.issue_number,
+                issue_title=normalized.issue_title,
+                branch=normalized.branch,
                 base_branch=fields.get("base_branch", ""),
                 model=model,
                 worker_exit_code=exit_code,
@@ -782,8 +760,8 @@ def read_runs(runs_dir: Path,
                 health_status=health_status,
                 health_reason=health_reason,
                 recovery_hint=recovery_hint,
-                pr_url=fields.get("pr_url", ""),
-                preserved_worktree=fields.get("preserved_worktree", ""),
+                pr_url=normalized.pr_url,
+                preserved_worktree=normalized.preserved_worktree,
                 note=fields.get("note") or fields.get("cleanup_note", ""),
                 git_diff_stat=fields.get("git_diff_stat", ""),
                 output_tail=output_tail,

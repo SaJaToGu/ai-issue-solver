@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.solver_reporting import RUN_REPORTS_ROOT  # noqa: E402
-from scripts.status_dashboard import parse_summary, parse_created_at, parse_datetime_value  # noqa: E402
+from scripts.solver_reporting import RUN_REPORTS_ROOT, read_normalized_run_outcome  # noqa: E402
+from scripts.status_dashboard import parse_summary  # noqa: E402
 
 # ── Default paths & thresholds ──────────────────────────────────────────────
 
@@ -130,8 +130,9 @@ def _active_runs(runs_dir: Path) -> list[WatchdogRun]:
         summary = parse_summary(run_dir / "summary.txt")
         metadata = _read_json(run_dir / "metadata.json")
         health = _read_json(run_dir / "health.json")
+        normalized = read_normalized_run_outcome(run_dir)
 
-        status = _string_value(metadata, "status") or summary.get("status", "")
+        status = normalized.status
         if not status:
             continue
 
@@ -143,32 +144,20 @@ def _active_runs(runs_dir: Path) -> list[WatchdogRun]:
             continue
 
         phase = _string_value(health, "phase")
-
-        last_activity = parse_datetime_value(
-            _string_value(health, "last_activity_at")
-            or _string_value(metadata, "last_activity_at")
-            or summary.get("last_activity_at", "")
-        )
-        last_report = parse_datetime_value(
-            _string_value(health, "last_report_update_at")
-            or _string_value(metadata, "last_report_update_at")
-            or summary.get("last_report_update_at", "")
-        )
+        last_activity = normalized.last_activity_at
+        last_report = normalized.last_report_update_at
 
         results.append(WatchdogRun(
             run_id=run_dir.name,
             run_dir=run_dir,
-            repo=_string_value(metadata, "repo") or summary.get("repo", ""),
-            issue=_string_value(metadata, "issue_number")
-            or _string_value(metadata, "issue")
-            or summary.get("issue", ""),
+            repo=normalized.repo,
+            issue=normalized.issue_number,
             phase=phase,
             status=status,
             last_activity_at=last_activity,
             last_report_update_at=last_report,
-            model=_string_value(metadata, "model") or summary.get("model", ""),
-            worker_exit_code=_string_value(metadata, "worker_exit_code")
-            or summary.get("worker_exit_code", ""),
+            model=normalized.model,
+            worker_exit_code=normalized.worker_exit_code,
         ))
     return results
 

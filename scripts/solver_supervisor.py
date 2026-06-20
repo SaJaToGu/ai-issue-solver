@@ -29,8 +29,13 @@ from pathlib import Path
 from typing import Iterable
 
 sys.path.insert(0, str(Path(__file__).parent))
-from solver_reporting import RUN_REPORTS_ROOT, preserve_worker_worktree  # noqa: E402
-from status_dashboard import parse_created_at, parse_datetime_value, parse_summary  # noqa: E402
+from solver_reporting import (  # noqa: E402
+    RUN_REPORTS_ROOT,
+    classify_worker_health,
+    preserve_worker_worktree,
+    read_normalized_run_outcome,
+)
+from status_dashboard import parse_datetime_value, parse_summary  # noqa: E402
 from utils import print_banner, print_ok, print_step, print_warn  # noqa: E402
 
 
@@ -117,11 +122,6 @@ def _string_value(data: dict, key: str) -> str:
     return "" if value is None else str(value)
 
 
-def _latest_datetime(*values: datetime | None) -> datetime | None:
-    parsed = [value for value in values if value is not None]
-    return max(parsed) if parsed else None
-
-
 def classify_run_health(
     status: str,
     phase: str,
@@ -129,17 +129,7 @@ def classify_run_health(
     now: datetime,
     stale_seconds: int,
 ) -> tuple[str, str]:
-    if status in TERMINAL_STATUSES:
-        return "finished", "terminal status"
-    if last_seen is None:
-        return "unknown", "no health timestamp"
-
-    age_seconds = int((now - last_seen).total_seconds())
-    if age_seconds > stale_seconds:
-        return "stale", f"no update for {age_seconds}s"
-    if phase:
-        return "healthy", f"phase {phase}"
-    return "healthy", "recent update"
+    return classify_worker_health(status, phase, last_seen, now=now, stale_seconds=stale_seconds)
 
 
 def read_supervisor_runs(
@@ -153,28 +143,14 @@ def read_supervisor_runs(
 
     runs: list[SupervisorRun] = []
     for run_dir in sorted((path for path in runs_dir.iterdir() if path.is_dir()), reverse=True):
-        summary = _summary_fields(run_dir)
-        metadata = _read_json(run_dir / "metadata.json")
         health = _read_json(run_dir / "health.json")
+        normalized = read_normalized_run_outcome(run_dir, now=now, stale_seconds=stale_seconds)
 
-        status = _string_value(metadata, "status") or summary.get("status", "")
+        status = normalized.status
         phase = _string_value(health, "phase")
-        health_status = _string_value(health, "status")
-        if health_status and health_status not in RUNNING_STATUSES and not status:
-            status = health_status
-
-        last_activity = parse_datetime_value(
-            _string_value(health, "last_activity_at")
-            or _string_value(metadata, "last_activity_at")
-            or summary.get("last_activity_at", "")
-        )
-        last_report_update = parse_datetime_value(
-            _string_value(health, "last_report_update_at")
-            or _string_value(metadata, "last_report_update_at")
-            or summary.get("last_report_update_at", "")
-        )
-        last_seen = _latest_datetime(last_activity, last_report_update, parse_created_at(run_dir.name))
-        run_health, reason = classify_run_health(status, phase, last_seen, now, stale_seconds)
+        last_activity = normalized.last_activity_at
+        last_report_update = normalized.last_report_update_at
+        run_health, reason = normalized.worker_health_state, normalized.worker_health_reason
 
         cancelled_at, cancellation_reason, cancellation_signal = read_cancellation_info(run_dir)
 
@@ -182,12 +158,10 @@ def read_supervisor_runs(
             SupervisorRun(
                 run_id=run_dir.name,
                 run_dir=run_dir,
-                repo=_string_value(metadata, "repo") or summary.get("repo", ""),
-                issue=_string_value(metadata, "issue_number")
-                or _string_value(metadata, "issue")
-                or summary.get("issue", ""),
-                branch=_string_value(metadata, "branch") or summary.get("branch", ""),
-                model=_string_value(metadata, "model") or summary.get("model", ""),
+                repo=normalized.repo,
+                issue=normalized.issue_number,
+                branch=normalized.branch,
+                model=normalized.model,
                 status=status,
                 phase=phase,
                 runner_pid=_string_value(
