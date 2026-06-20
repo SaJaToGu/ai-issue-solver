@@ -28,9 +28,7 @@ from solve_issues import (  # noqa: E402
     GitHubClient,
     MODEL_CONFIGS,
     RUN_REPORTS_ROOT,
-    check_opencode_state_guard,
     detect_codex_rate_limit,
-    find_opencode_executable,
     format_worker_output_tail,
     requests,
     safe_run_repo_name,
@@ -42,6 +40,10 @@ from solver_reporting import (  # noqa: E402
 from solver_commands import (  # noqa: E402
     add_budget_flags,
     add_solver_core_flags,
+)
+from workers.opencode_diagnostics import (  # noqa: E402
+    check_opencode_state_guard,
+    find_opencode_executable,
 )
 from utils import (  # noqa: E402
     is_placeholder_value,

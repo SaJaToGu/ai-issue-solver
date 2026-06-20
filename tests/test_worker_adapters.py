@@ -303,7 +303,7 @@ class TestOpenCodeAdapter(unittest.TestCase):
         self.assertIn("nicht gefunden", result.output)
 
     def test_find_opencode_executable_uses_repo_venv(self):
-        from workers.opencode_adapter import find_opencode_executable
+        from workers.opencode_diagnostics import find_opencode_executable
         with tempfile.TemporaryDirectory() as tmpdir:
             opencode = Path(tmpdir) / ".venv" / "bin" / "opencode"
             opencode.parent.mkdir(parents=True)
@@ -311,21 +311,21 @@ class TestOpenCodeAdapter(unittest.TestCase):
             opencode.chmod(0o755)
             inactive_python = str(Path(tmpdir) / "bin" / "python")
 
-            with patch("workers.opencode_adapter.sys.executable", inactive_python):
+            with patch("workers.opencode_diagnostics.sys.executable", inactive_python):
                 found = find_opencode_executable(tmpdir)
 
         self.assertEqual(found, str(opencode))
 
     def test_find_opencode_executable_uses_home_opencode_install(self):
-        from workers.opencode_adapter import find_opencode_executable
+        from workers.opencode_diagnostics import find_opencode_executable
         with tempfile.TemporaryDirectory() as tmpdir:
             home_opencode = Path(tmpdir) / ".opencode" / "bin" / "opencode"
             home_opencode.parent.mkdir(parents=True)
             home_opencode.write_text("#!/bin/sh\n", encoding="utf-8")
             home_opencode.chmod(0o755)
 
-            with patch("workers.opencode_adapter.Path.home", return_value=Path(tmpdir)), \
-                 patch("workers.opencode_adapter.shutil.which", return_value=None):
+            with patch("workers.opencode_diagnostics.Path.home", return_value=Path(tmpdir)), \
+                 patch("workers.opencode_diagnostics.shutil.which", return_value=None):
                 found = find_opencode_executable("/missing/repo")
 
         self.assertEqual(found, str(home_opencode))

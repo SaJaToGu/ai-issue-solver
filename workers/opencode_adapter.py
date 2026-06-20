@@ -16,8 +16,6 @@ Besonderheiten:
 from __future__ import annotations
 
 import os
-import shutil
-import sys
 import tempfile
 import threading
 from datetime import datetime
@@ -26,45 +24,7 @@ from typing import Any
 
 from workers.base import WorkerAdapter, WorkerRunResult, AdapterDiagnostics
 from workers.codex_adapter import _run_subprocess
-
-
-# ─────────────────────────────────────────────────────────────
-# Hilfsfunktionen
-# ─────────────────────────────────────────────────────────────
-
-def find_opencode_executable(repo_path: str | None = None) -> str | None:
-    """
-    Sucht das OpenCode CLI-Executable in üblichen Installationspfaden oder PATH.
-
-    Suchreihenfolge:
-        1. Gleicher Bin-Pfad wie aktuelles Python-Executable.
-        2. <repo>/.venv/bin/opencode und <repo>/venv/bin/opencode.
-        3. ~/.local/bin/opencode
-        4. ~/.local/share/opencode/opencode
-        5. ~/.opencode/bin/opencode
-        6. shutil.which("opencode")
-    """
-    candidates = []
-
-    if sys.executable:
-        candidates.append(Path(sys.executable).with_name("opencode"))
-
-    if repo_path:
-        repo_root = Path(repo_path)
-        candidates.extend([
-            repo_root / ".venv" / "bin" / "opencode",
-            repo_root / "venv" / "bin" / "opencode",
-        ])
-
-    candidates.append(Path.home() / ".local" / "bin" / "opencode")
-    candidates.append(Path.home() / ".local" / "share" / "opencode" / "opencode")
-    candidates.append(Path.home() / ".opencode" / "bin" / "opencode")
-
-    for candidate in candidates:
-        if candidate.exists() and os.access(candidate, os.X_OK):
-            return str(candidate)
-
-    return shutil.which("opencode")
+from workers.opencode_diagnostics import find_opencode_executable
 
 
 def ensure_solver_directories() -> tuple[Path, Path]:
