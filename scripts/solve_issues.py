@@ -150,6 +150,11 @@ from repo_profile import (  # noqa: F401 (re-exports used by tests)
     build_repo_profile,
     serialize_repo_profile,
 )
+from model_catalog import (  # noqa: E402
+    OPENCODE_DEFAULT_MODEL,
+    OPENCODE_FREE_MODELS,
+    OPENROUTER_DIRECT_DEFAULT_MODEL,
+)
 from workflow_congestion import (  # noqa: F401
     WorkflowPullRequest,
     WorkflowIssue,
@@ -283,13 +288,8 @@ MODEL_CONFIGS = {
         "display_name": "OpenCode CLI",
         "env_key": None,
         "env_var": None,
-        "default_model_name": "opencode/deepseek-v4-flash-free",
-        "free_models": [
-            "opencode/deepseek-v4-flash-free",
-            "opencode/mimo-v2.5-free",
-            "opencode/minimax-m3-free",
-            "opencode/nemotron-3-ultra-free",
-        ],
+        "default_model_name": OPENCODE_DEFAULT_MODEL,
+        "free_models": list(OPENCODE_FREE_MODELS),
     },
     "openrouter": {
         "display_name": "OpenRouter (aider, legacy)",
@@ -304,7 +304,7 @@ MODEL_CONFIGS = {
         "display_name": "OpenRouter (Direct)",
         "env_key": "OPENROUTER_API_KEY",
         "env_var": "OPENROUTER_API_KEY",
-        "default_model_name": "mistralai/mistral-large",
+        "default_model_name": OPENROUTER_DIRECT_DEFAULT_MODEL,
     },
 }
 

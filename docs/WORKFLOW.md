@@ -318,7 +318,7 @@ python scripts/solve_issues.py --model opencode --allow-opencode-state-conflict
 ### Aktuelle Funktionsweise
 
 - Der Benchmark ruft `scripts/solve_issues.py` mit `--model opencode`, `--model-name <modell>`, `--skip-pr` und einem eindeutigen `--branch-suffix` auf.
-- Ohne `--models` werden die freien OpenCode-Modelle aus `FREE_OPencode_MODELS` verwendet.
+- Ohne `--models` werden die freien OpenCode-Modelle aus `FREE_OPENCODE_MODELS` verwendet.
 - Jeder Modelllauf bekommt einen eigenen Branch-Suffix wie `bench/<timestamp>/<model-slug>`, damit parallele oder wiederholte Läufe nicht kollidieren.
 - Wenn ein Run-Report gefunden wird, übernimmt die Benchmark-Ausgabe das strukturierte `run_outcome` aus `metadata.json`.
 

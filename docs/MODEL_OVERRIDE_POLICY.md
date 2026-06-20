@@ -39,6 +39,16 @@ or configured model so later scoring can compare model choice against outcome.
 
 ## Current Surfaces
 
+The shared provider/model inventory lives in `scripts/model_catalog.py`.
+Inspect it without a live provider call:
+
+```bash
+python scripts/model_catalog.py
+```
+
+Use `--verify-openrouter` when the current OpenRouter `/models` catalogue should
+mark configured slugs as verified or missing.
+
 The implemented rows below reflect existing `argparse` surfaces in the listed
 scripts. Rows marked "not yet wired" are future surfaces and must not be read as
 implemented behavior.
@@ -77,8 +87,6 @@ For each AI-backed entry point:
 
 ## Open Gaps
 
-- `benchmark_issues.py` has explicit `--models`, but its default model list
-  still belongs to the model catalog/discovery workstream (#364).
 - `plan_issue_batches.py` emits `--model`, but does not yet display a
   model-source line because it does not call a model itself.
 - Future architecture/watchdog LLM surfaces need implementation before their

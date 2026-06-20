@@ -190,17 +190,13 @@ def list_configured_slugs(
     Returns:
         Dict mapping role name -> model slug.
     """
-    from role_routing_loader import get_all_roles, load_role_config
+    from model_catalog import configured_openrouter_slug_map
+    from role_routing_loader import load_role_config
 
     if config is None:
         config = load_role_config()
 
-    result: dict[str, str] = {}
-    roles = get_all_roles(config)
-    for name, role in roles.items():
-        if role.get("provider") == "openrouter" and role.get("model"):
-            result[name] = role["model"]
-    return result
+    return configured_openrouter_slug_map(config)
 
 
 # ── CLI ─────────────────────────────────────────────────────
