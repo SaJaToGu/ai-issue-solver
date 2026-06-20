@@ -1,13 +1,18 @@
-#!/usr/bin/env python3
 """solver_commands.py — Shared command/spec layer for solver invocations.
 
 Centralises CLI-flag forwarding that was previously duplicated across
-solve_issues_batch.py, run_overnight.py, and benchmark_issues.py.
+solve_issues_batch.py and run_overnight.py.
 """
 
 from __future__ import annotations
 
 import argparse
+
+
+def _require_non_empty(value: str | None, *, name: str = "model") -> str:
+    if not value:
+        raise ValueError(f"{name} must be set; got {value!r}")
+    return value
 
 
 def add_solver_core_flags(
@@ -32,7 +37,9 @@ def add_solver_core_flags(
         verbosity: Override for verbosity (falls back to args.verbosity,
                    then skipped if still None).
     """
-    selected_model = model or getattr(args, "model", "")
+    selected_model = _require_non_empty(
+        model or getattr(args, "model", None), name="model"
+    )
     cmd.extend(["--model", selected_model])
 
     selected_model_name = (

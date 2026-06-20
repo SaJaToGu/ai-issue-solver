@@ -16,12 +16,12 @@ from datetime import datetime
 import heapq
 import json
 import os
+from pathlib import Path
 import queue
 import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from solve_issues import (  # noqa: E402

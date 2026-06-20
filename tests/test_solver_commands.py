@@ -81,6 +81,40 @@ class SolverCoreFlagsGoldenTable(unittest.TestCase):
         add_solver_core_flags(cmd, make_args(model="codex"), model="ollama")
         self.assertTrue(has_pair(cmd, "--model", "ollama"))
 
+
+class SolverCoreFlagsMissingModelTests(unittest.TestCase):
+    """No silent --model '' — must raise when model is missing/empty."""
+
+    def test_empty_string_raises(self):
+        cmd: list[str] = []
+        with self.assertRaises(ValueError):
+            add_solver_core_flags(cmd, make_args(model=""))
+
+    def test_none_raises(self):
+        cmd: list[str] = []
+        with self.assertRaises(ValueError):
+            add_solver_core_flags(cmd, make_args(model=None))
+
+    def test_missing_attr_raises(self):
+        cmd: list[str] = []
+        args = argparse.Namespace(label="x", verbosity=None)
+        with self.assertRaises(ValueError):
+            add_solver_core_flags(cmd, args)
+
+    def test_override_none_falls_back_to_args(self):
+        cmd: list[str] = []
+        add_solver_core_flags(
+            cmd, make_args(model="codex"), model=None
+        )
+        self.assertTrue(has_pair(cmd, "--model", "codex"))
+
+    def test_override_empty_string_falls_back_to_args(self):
+        cmd: list[str] = []
+        add_solver_core_flags(
+            cmd, make_args(model="codex"), model=""
+        )
+        self.assertTrue(has_pair(cmd, "--model", "codex"))
+
     # -- model-name ------------------------------------------------------
 
     def test_model_name_from_args(self):
@@ -304,6 +338,76 @@ class HealthFlagsGoldenTable(unittest.TestCase):
         cmd: list[str] = []
         add_health_flags(cmd, make_args(unhealthy_action=""))
         self.assertNotIn("--unhealthy-action", cmd)
+
+
+# ── command structure integration ─────────────────────────────────────────
+
+
+class CommandStructureIntegrationTest(unittest.TestCase):
+    """Verifies that compound commands contain both shared (solver_commands)
+    and script-specific flags in the expected structure.
+    Narrow integration — not a full workflow test."""
+
+    def test_build_worker_command_has_shared_and_specific_flags(self):
+        from solve_issues_batch import IssueJob, build_worker_command
+
+        args = argparse.Namespace(**{
+            "model": "opencode",
+            "model_name": "claude-sonnet-4-20250514",
+            "label": "ai-generated",
+            "base_branch": "develop",
+            "dry_run": True,
+            "close_issues": True,
+            "verbosity": "quiet",
+        })
+        cmd = build_worker_command(
+            args,
+            IssueJob("owner/repo", 42),
+            Path("scripts/solve_issues.py"),
+            run_report_dir=Path("reports/runs/queued-job"),
+        )
+
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertIn("scripts/solve_issues.py", cmd[1])
+        for flag in ("--model", "--model-name", "--base-branch",
+                     "--dry-run", "--close-issues"):
+            self.assertIn(flag, cmd)
+        for flag in ("--repo", "--issue", "--run-report-dir"):
+            self.assertIn(flag, cmd)
+
+    def test_build_batch_command_has_shared_and_specific_flags(self):
+        from run_overnight import build_batch_command
+
+        args = argparse.Namespace(**{
+            "model": "opencode",
+            "model_name": "",
+            "repo": "owner/repo",
+            "issue": [7, 42],
+            "label": "ai-generated",
+            "base_branch": "develop",
+            "workers": 3,
+            "dry_run": False,
+            "close_issues": False,
+            "fallback_model": None,
+            "fallback_model_name": None,
+            "worker_health_timeout_minutes": 30,
+            "unhealthy_action": "warn",
+            "unhealthy_retries": None,
+            "verbosity": None,
+            "skip_congestion_check": False,
+            "max_run_cost_usd": None,
+            "max_run_input_tokens": None,
+            "max_run_output_tokens": None,
+        })
+        cmd = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertIn("scripts/solve_issues_batch.py", cmd[1])
+        for flag in ("--model", "--base-branch"):
+            self.assertIn(flag, cmd)
+        for flag in ("--workers", "--repo", "--worker-health-timeout-minutes"):
+            self.assertIn(flag, cmd)
+        self.assertEqual(cmd.count("--issue"), 2)
 
 
 if __name__ == "__main__":
