@@ -9,6 +9,8 @@ It is intentionally NOT a test of the Solver itself — that is the role of
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -453,6 +455,26 @@ class RunReviewTests(unittest.TestCase):
         self.assertEqual(captured["model"], expected_model)
         self.assertNotEqual(captured["model"], "hardcoded-model")
 
+    def test_model_override_replaces_role_model_for_call_and_verdict(self):
+        captured = {}
+
+        def capturing_call(**kwargs):
+            captured["model"] = kwargs["model"]
+            return "## Code Review\n\n**Verdict**: approve\n"
+
+        verdict = run_review(
+            pr_number=1,
+            role_arg="code",
+            openrouter_token="or_key",
+            config=_real_config(),
+            model_override="openai/gpt-4.1-mini",
+            openrouter_call=capturing_call,
+            diff_fetcher=self._stub_diff_fetcher(),
+        )
+
+        self.assertEqual(captured["model"], "openai/gpt-4.1-mini")
+        self.assertEqual(verdict.model, "openai/gpt-4.1-mini")
+
 
 # ── CLI surface ───────────────────────────────────────────────────
 
@@ -467,10 +489,20 @@ class ParseArgsTests(unittest.TestCase):
         self.assertEqual(args.repo, "ai-issue-solver")
         self.assertFalse(args.dry_run)
         self.assertIsNone(args.config)
+        self.assertIsNone(args.model_override)
 
     def test_dry_run_flag(self):
         args = parse_args(["--pr", "1", "--role", "code", "--dry-run"])
         self.assertTrue(args.dry_run)
+
+    def test_model_override_flag(self):
+        args = parse_args([
+            "--pr", "1",
+            "--role", "code",
+            "--model-override", "openai/gpt-4.1-mini",
+        ])
+
+        self.assertEqual(args.model_override, "openai/gpt-4.1-mini")
 
     def test_invalid_role_rejected(self):
         with self.assertRaises(SystemExit):
@@ -479,6 +511,29 @@ class ParseArgsTests(unittest.TestCase):
     def test_missing_pr_rejected(self):
         with self.assertRaises(SystemExit):
             parse_args(["--role", "code"])
+
+
+# ── CLI runner ────────────────────────────────────────────────────
+
+class MainCliTests(unittest.TestCase):
+    def test_dry_run_reports_model_override_without_llm_call(self):
+        with patch(
+            "review_pr.fetch_pull_request_diff",
+            return_value="diff --git a/x b/x\n+hi\n",
+        ), patch("review_pr.call_openrouter") as call_mock:
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                exit_code = review_pr.main([
+                    "--pr", "358",
+                    "--role", "code",
+                    "--dry-run",
+                    "--model-override", "openai/gpt-4.1-mini",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("model:        openai/gpt-4.1-mini", printed.getvalue())
+        self.assertIn("model_source: override", printed.getvalue())
+        call_mock.assert_not_called()
 
 
 # ── Output data class ─────────────────────────────────────────────

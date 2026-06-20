@@ -191,6 +191,29 @@ und den nächsten Slice explizit machen.
 
 ---
 
+### `review_pr.py`
+Führt eine AI-gestützte PR-Prüfung mit einer der Reviewer-Rollen aus:
+`code`, `architecture` oder `documentation`.
+
+**Flags:**
+- `--pr`: Pull-Request-Nummer
+- `--role`: Reviewer-Rolle (`code`, `architecture`, `documentation`)
+- `--dry-run`: Prompt, Modell und Diff laden, aber kein Modell aufrufen
+- `--model-override`: Modell nur für diesen Review-Lauf überschreiben, ohne
+  `config/role_routing.yaml` zu ändern
+
+**Beispiele:**
+```bash
+python scripts/review_pr.py --pr 368 --role code --dry-run
+python scripts/review_pr.py --pr 368 --role code --model-override minimax/minimax-m3
+```
+
+`--model-override` ist für kostenbewusste Standard-Reviews gedacht: Die
+Rollen-Konfiguration bleibt stabil, aber ein einzelner Lauf kann ein günstigeres
+oder frisch getestetes OpenRouter-Modell verwenden.
+
+---
+
 ### `post_merge_cleanup.py`
 Räumt nach gemergten AI-Pull-Requests auf.
 

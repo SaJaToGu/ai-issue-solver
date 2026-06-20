@@ -31,6 +31,12 @@ from solve_issues import (  # noqa: E402
     find_opencode_executable,
 )
 from solve_issues_batch import DEFAULT_WORKERS, positive_int  # noqa: E402
+from solver_commands import (  # noqa: E402
+    add_budget_flags,
+    add_fallback_flags,
+    add_health_flags,
+    add_solver_core_flags,
+)
 from utils import print_banner, print_err, print_ok, print_step, print_warn  # noqa: E402
 
 
@@ -123,51 +129,20 @@ def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[st
     command = [
         sys.executable,
         str(batch_script),
-        "--model",
-        args.model,
-        "--workers",
-        str(args.workers),
-        "--label",
-        args.label,
     ]
-    if args.model_name:
-        command.extend(["--model-name", args.model_name])
-    if args.fallback_model:
-        command.extend(["--fallback-model", args.fallback_model])
-    if args.fallback_model_name:
-        command.extend(["--fallback-model-name", args.fallback_model_name])
+    add_solver_core_flags(command, args)
+    command.extend(["--workers", str(args.workers)])
+    add_fallback_flags(command, args)
     if args.repo:
         command.extend(["--repo", args.repo])
     for issue_number in args.issue or []:
         command.extend(["--issue", str(issue_number)])
-    if args.base_branch:
-        command.extend(["--base-branch", args.base_branch])
-    if args.dry_run:
-        command.append("--dry-run")
-    if args.close_issues:
-        command.append("--close-issues")
-    if args.worker_health_timeout_minutes is not None:
-        command.extend([
-            "--worker-health-timeout-minutes",
-            str(args.worker_health_timeout_minutes),
-        ])
-    if args.unhealthy_action:
-        command.extend(["--unhealthy-action", args.unhealthy_action])
-    if args.unhealthy_retries is not None:
-        command.extend(["--unhealthy-retries", str(args.unhealthy_retries)])
+    add_health_flags(command, args)
     if getattr(args, "skip_congestion_check", False):
         command.append("--skip-congestion-check")
-    if args.verbosity:
-        command.extend(["--verbosity", args.verbosity])
     if args.model == "opencode" and getattr(args, "allow_opencode_state_conflict", False):
         command.append("--allow-opencode-state-conflict")
-    # OpenCode Budget-Limits an solve_issues_batch.py weiterreichen
-    if getattr(args, "max_run_cost_usd", None) is not None:
-        command.extend(["--max-run-cost-usd", str(args.max_run_cost_usd)])
-    if getattr(args, "max_run_input_tokens", None) is not None:
-        command.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
-    if getattr(args, "max_run_output_tokens", None) is not None:
-        command.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
+    add_budget_flags(command, args)
     return command
 
 

@@ -322,6 +322,7 @@ def run_review(
     github_token: str | None = None,
     openrouter_token: str | None = None,
     config: dict[str, Any] | None = None,
+    model_override: str | None = None,
     openrouter_call: Callable[..., str] = call_openrouter,
     diff_fetcher: Callable[..., str] = fetch_pull_request_diff,
     project_root: Path = PROJECT_ROOT,
@@ -334,6 +335,7 @@ def run_review(
     role = resolve_role(role_arg, config)
     system_prompt = load_prompt(role, project_root)
     pr_diff = diff_fetcher(owner, repo, pr_number, token=github_token)
+    model = model_override or role["model"]
     user_prompt = (
         f"PR #{pr_number} in {owner}/{repo}\n\n"
         f"{pr_diff}\n"
@@ -341,14 +343,14 @@ def run_review(
     response_text = openrouter_call(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        model=role["model"],
+        model=model,
         token=openrouter_token,
     )
     return ReviewerVerdict(
         raw_text=response_text,
         verdict=parse_verdict(response_text),
         role_name=role["_name"],
-        model=role["model"],
+        model=model,
         pr_number=pr_number,
         pr_repo=f"{owner}/{repo}",
     )
@@ -390,6 +392,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config", default=None,
         help="Path to role_routing.yaml (default: config/role_routing.yaml)",
+    )
+    parser.add_argument(
+        "--model-override",
+        default=None,
+        help=(
+            "Temporarily use this OpenRouter model for the review instead "
+            "of the role_routing.yaml model. Useful for cheaper standard reviews."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -435,9 +445,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. Either dry-run report or actual LLM call
     if args.dry_run:
+        model = args.model_override or role["model"]
         print("=== DRY RUN ===")
         print(f"role:         {role['_name']}")
-        print(f"model:        {role['model']}")
+        print(f"model:        {model}")
+        if args.model_override:
+            print(f"model_source: override (configured: {role['model']})")
+        else:
+            print("model_source: role_routing.yaml")
         print(f"prompt_file:  {role['prompt_file']}")
         print(f"prompt_chars: {len(system_prompt)}")
         print(f"pr:           {args.owner}/{args.repo}#{args.pr}")
@@ -450,10 +465,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        model = args.model_override or role["model"]
         response_text = call_openrouter(
             system_prompt=system_prompt,
             user_prompt=f"PR #{args.pr} in {args.owner}/{args.repo}\n\n{pr_diff}\n",
-            model=role["model"],
+            model=model,
             token=openrouter_token,
         )
     except requests.HTTPError as exc:
