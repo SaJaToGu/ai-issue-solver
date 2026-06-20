@@ -60,7 +60,7 @@ implemented behavior.
 | Overnight wrapper | `scripts/run_overnight.py` | `--model`, `--model-name`, fallback flags | Shared command helpers forward model flags to the batch solver. |
 | PR reviewer runtime | `scripts/review_pr.py` | `--model-override` | Overrides the role model from `config/role_routing.yaml` for one review run. Dry-run prints the model source. |
 | Benchmark/model comparison | `scripts/benchmark_issues.py` | `--models`, `--ensemble` | Explicit model list for OpenCode benchmark runs. |
-| Batch planning command emission | `scripts/plan_issue_batches.py` | `--model` | Determines the model emitted into generated batch commands. |
+| Batch planning command emission | `scripts/plan_issue_batches.py` | `--model` | Determines the model emitted into generated batch commands. `--emit-commands` prints default, effective model, and source. |
 | Future architecture/outside-in agent | not yet wired | role config expected | Should use `config/role_routing.yaml` plus a per-run override. |
 | Future watchdog LLM escalation | not yet wired | role config expected | Deterministic watchdog remains `provider: none`; optional LLM escalation should be explicit. |
 
@@ -87,7 +87,5 @@ For each AI-backed entry point:
 
 ## Open Gaps
 
-- `plan_issue_batches.py` emits `--model`, but does not yet display a
-  model-source line because it does not call a model itself.
 - Future architecture/watchdog LLM surfaces need implementation before their
   override behavior can be tested.
