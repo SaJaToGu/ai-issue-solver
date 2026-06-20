@@ -165,6 +165,8 @@ class RunReport:
     issue_title: str
     branch: str
     model: str
+    rework_of: int | None = None
+    rework_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -423,7 +425,9 @@ def safe_run_repo_name(repo: str) -> str:
 def create_run_report(repo: str, issue_number: int, branch: str, model: str,
                       now_fn=datetime.now,
                       issue_title: str = "",
-                      run_dir: Path | str | None = None) -> RunReport | None:
+                      run_dir: Path | str | None = None,
+                      rework_of: int | None = None,
+                      rework_reason: str | None = None) -> RunReport | None:
     if run_dir is None:
         timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
         run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
@@ -436,7 +440,16 @@ def create_run_report(repo: str, issue_number: int, branch: str, model: str,
     except OSError as exc:
         print_warn(f"Run-Report konnte nicht angelegt werden: {exc}")
         return None
-    return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
+    return RunReport(
+        run_dir,
+        repo,
+        issue_number,
+        issue_title,
+        branch,
+        model,
+        rework_of=rework_of,
+        rework_reason=rework_reason,
+    )
 
 
 def _sanitize_repo_profile_for_report(repo_profile: dict | None) -> dict:
@@ -779,6 +792,8 @@ def write_run_report(report: RunReport, status: str,
     preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
     cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
     vibe_snippet = vibe_log_snippet or ""
+    effective_rework_of = rework_of if rework_of is not None else report.rework_of
+    effective_rework_reason = rework_reason if rework_reason is not None else report.rework_reason
 
     # Secret-Pfade (z. B. .env, auth.json, secrets/*) nie in den Run-Report
     # schreiben — weder in metadata.json noch in summary.txt.
@@ -847,8 +862,8 @@ def write_run_report(report: RunReport, status: str,
             "run_outcome": run_outcome,
             "model_selection": model_selection_metadata or {},
             "rework": {
-                "rework_of": rework_of,
-                "rework_reason": rework_reason,
+                "rework_of": effective_rework_of,
+                "rework_reason": effective_rework_reason,
                 "subtask_id": subtask_id,
                 "supersedes_pr": supersedes_pr,
                 "follow_up_issue": follow_up_issue,
@@ -914,8 +929,8 @@ def write_run_report(report: RunReport, status: str,
             f"provider_scorecard_cost_currency: {scorecard.cost_currency or ''}",
             f"provider_scorecard_cost_confidence: {scorecard.cost_confidence or ''}",
             f"provider_scorecard_cost_source: {scorecard.cost_source or ''}",
-            f"rework_of: {rework_of or ''}",
-            f"rework_reason: {rework_reason or ''}",
+            f"rework_of: {effective_rework_of or ''}",
+            f"rework_reason: {effective_rework_reason or ''}",
             f"subtask_id: {subtask_id or ''}",
             f"supersedes_pr: {supersedes_pr or ''}",
             f"follow_up_issue: {follow_up_issue or ''}",
