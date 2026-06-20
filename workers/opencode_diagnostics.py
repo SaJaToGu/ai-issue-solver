@@ -301,3 +301,22 @@ def check_opencode_state_guard(
     )
     _print_opencode_state_conflict_recovery()
     return False
+
+
+def run_opencode_preflight_guard(
+    *,
+    allow_conflict: bool = False,
+    print_state: bool = True,
+) -> bool:
+    """Run the shared OpenCode executable/state guard before real worker runs."""
+    opencode_exe = find_opencode_executable()
+    if not opencode_exe:
+        print_err("OpenCode CLI wurde nicht gefunden!")
+        print("   → Installieren: https://opencode.ai/docs/installation")
+        print("   → Danach `opencode` im PATH verfügbar machen")
+        return False
+    return check_opencode_state_guard(
+        opencode_exe,
+        allow_conflict=allow_conflict,
+        print_state=print_state,
+    )

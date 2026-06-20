@@ -76,6 +76,7 @@ from workers.opencode_diagnostics import (  # noqa: E402
     check_opencode_auth,
     check_opencode_state_guard,
     find_opencode_executable,
+    run_opencode_preflight_guard,
     _looks_like_opencode_executable,
     _print_opencode_state_preflight,
 )
@@ -2840,6 +2841,35 @@ class OpenCodePreflightTests(unittest.TestCase):
 
         self.assertTrue(allowed)
         self.assertIn("ueberstimmt", printed.getvalue())
+
+    def test_opencode_preflight_guard_reports_missing_cli(self):
+        with patch("workers.opencode_diagnostics.find_opencode_executable", return_value=None):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                allowed = run_opencode_preflight_guard()
+
+        self.assertFalse(allowed)
+        self.assertIn("OpenCode CLI wurde nicht gefunden", printed.getvalue())
+
+    def test_opencode_preflight_guard_forwards_shared_state_check(self):
+        with patch(
+            "workers.opencode_diagnostics.find_opencode_executable",
+            return_value="/usr/bin/opencode",
+        ), patch(
+            "workers.opencode_diagnostics.check_opencode_state_guard",
+            return_value=True,
+        ) as state_guard:
+            allowed = run_opencode_preflight_guard(
+                allow_conflict=True,
+                print_state=False,
+            )
+
+        self.assertTrue(allowed)
+        state_guard.assert_called_once_with(
+            "/usr/bin/opencode",
+            allow_conflict=True,
+            print_state=False,
+        )
 
 
 class TestOpenRouterDirectWorkerPath(unittest.TestCase):

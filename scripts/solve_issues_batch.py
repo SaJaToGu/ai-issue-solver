@@ -42,8 +42,7 @@ from solver_commands import (  # noqa: E402
     add_solver_core_flags,
 )
 from workers.opencode_diagnostics import (  # noqa: E402
-    check_opencode_state_guard,
-    find_opencode_executable,
+    run_opencode_preflight_guard,
 )
 from utils import (  # noqa: E402
     is_placeholder_value,
@@ -1087,14 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
     user = require_config_value(cfg, "GITHUB_USER", "GitHub User")
 
     if args.model == "opencode" and not args.dry_run:
-        opencode_exe = find_opencode_executable()
-        if not opencode_exe:
-            print_err("OpenCode CLI wurde nicht gefunden!")
-            print("   → Installieren: https://opencode.ai/docs/installation")
-            print("   → Danach `opencode` im PATH verfügbar machen")
-            return 1
-        if not check_opencode_state_guard(
-            opencode_exe,
+        if not run_opencode_preflight_guard(
             allow_conflict=args.allow_opencode_state_conflict,
         ):
             return 1

@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ from solve_issues_batch import (  # noqa: E402
     run_issue_job,
     run_issue_jobs,
     get_result_badge,
+    main as batch_main,
     parse_args,
 )
 
@@ -160,6 +162,26 @@ class BatchRunnerTests(unittest.TestCase):
         cmd = build_worker_command(args, IssueJob("demo", 7), Path("scripts/solve_issues.py"))
 
         self.assertIn("--allow-opencode-state-conflict", cmd)
+
+    def test_main_uses_shared_opencode_preflight_guard(self):
+        with patch("solve_issues_batch.load_env", return_value={"GITHUB_TOKEN": "t", "GITHUB_USER": "u"}), patch(
+            "solve_issues_batch.require_config_value",
+            side_effect=lambda cfg, key, label=None: cfg[key],
+        ), patch(
+            "solve_issues_batch.run_opencode_preflight_guard",
+            return_value=False,
+        ) as preflight_guard:
+            result = batch_main([
+                "--model",
+                "opencode",
+                "--repo",
+                "demo",
+                "--issue",
+                "7",
+            ])
+
+        self.assertEqual(result, 1)
+        preflight_guard.assert_called_once_with(allow_conflict=False)
 
     def test_build_worker_command_forwards_mistral_vibe(self):
         args = self.make_args(model="mistral-vibe")
