@@ -14,6 +14,12 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Tuple
 
+from model_catalog import (
+    OPENCODE_FREE_MODELS,
+    OPENCODE_LOW_STRENGTH_MODELS,
+    OPENCODE_MEDIUM_STRENGTH_MODELS,
+)
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Konfiguration und Konstanten
 # ────────────────────────────────────────────────────────────────────────────────
@@ -46,9 +52,9 @@ RISK_MAP = {
 
 STRENGTH_MAP = {
     "low": ["mistral-small", "deepseek-coder:6.7b", "qwen-coder",
-            "opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free", "opencode/minimax-m3-free"],
+            *OPENCODE_LOW_STRENGTH_MODELS],
     "medium": ["mistral-medium", "claude-sonnet-3.5", "gpt-4o-mini",
-               "opencode/nemotron-3-ultra-free"],
+               *OPENCODE_MEDIUM_STRENGTH_MODELS],
     "high": ["mistral-large", "claude-sonnet-4", "gpt-4o"],
 }
 
@@ -57,10 +63,7 @@ COST_TIERS = {
     "mistral-small": "cheap",
     "deepseek-coder:6.7b": "cheap",
     "qwen-coder": "cheap",
-    "opencode/deepseek-v4-flash-free": "cheap",
-    "opencode/mimo-v2.5-free": "cheap",
-    "opencode/minimax-m3-free": "cheap",
-    "opencode/nemotron-3-ultra-free": "cheap",
+    **{model: "cheap" for model in OPENCODE_FREE_MODELS},
     "mistral-medium": "medium",
     "claude-sonnet-3.5": "medium",
     "gpt-4o-mini": "medium",
@@ -71,10 +74,7 @@ COST_TIERS = {
 
 # Standard-Modell-Reihenfolge für Eskalation
 MODEL_ESCALATION = [
-    "opencode/deepseek-v4-flash-free",
-    "opencode/mimo-v2.5-free",
-    "opencode/minimax-m3-free",
-    "opencode/nemotron-3-ultra-free",
+    *OPENCODE_FREE_MODELS,
     "mistral-small",
     "mistral-medium",
     "mistral-large",

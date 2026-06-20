@@ -28,11 +28,12 @@ import os
 from datetime import datetime
 from typing import Any
 
+from scripts.model_catalog import OPENROUTER_DIRECT_DEFAULT_MODEL as CATALOG_OPENROUTER_DIRECT_DEFAULT_MODEL
 from workers.base import WorkerAdapter, WorkerRunResult, AdapterDiagnostics
 
 
 # Standard-Modell für OpenRouter Direct
-OPENROUTER_DIRECT_DEFAULT_MODEL = "minimax/minimax-m3"
+OPENROUTER_DIRECT_DEFAULT_MODEL = CATALOG_OPENROUTER_DIRECT_DEFAULT_MODEL
 
 # Standard-Request-Timeout in Sekunden (wird durch kwargs überschrieben).
 DEFAULT_OPENROUTER_RUNTIME_SECONDS = 180

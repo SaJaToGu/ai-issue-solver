@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from model_catalog import OPENCODE_FREE_MODELS
 from utils import (
     load_env,
     print_banner,
@@ -28,12 +29,8 @@ from utils import (
 )
 
 
-FREE_OPencode_MODELS = [
-    "opencode/deepseek-v4-flash-free",
-    "opencode/mimo-v2.5-free",
-    "opencode/minimax-m3-free",
-    "opencode/nemotron-3-ultra-free",
-]
+FREE_OPENCODE_MODELS = list(OPENCODE_FREE_MODELS)
+FREE_OPencode_MODELS = FREE_OPENCODE_MODELS
 
 RUN_REPORT_RE = re.compile(r"Run-Report:\s*(\S+)")
 
@@ -254,7 +251,7 @@ def print_results(results: dict) -> None:
 
 def main() -> int:
     args = parse_args()
-    models = args.models.split(",") if args.models else FREE_OPencode_MODELS
+    models = args.models.split(",") if args.models else FREE_OPENCODE_MODELS
     
     print_banner("BENCHMARK FÜR NICHT-CODEX-SOLVER")
     print(f"Issue: {args.issue}")
