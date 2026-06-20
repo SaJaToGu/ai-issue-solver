@@ -21,6 +21,11 @@ from solve_issues import GitHubClient, MODEL_CONFIGS, requests  # noqa: E402
 from utils import load_env, print_banner, print_err, print_step, print_warn, require_config_value  # noqa: E402
 
 
+DEFAULT_BATCH_MODEL = "codex"
+MODEL_SOURCE_DEFAULT = "default"
+MODEL_SOURCE_CLI = "cli --model"
+
+
 KEYWORD_TOUCHES = (
     (("dashboard", "status_dashboard", "status dashboard"), ("scripts/status_dashboard.py", "tests/test_status_dashboard.py")),
     (("batch", "scheduler", "overnight", "rate limit", "fallback", "worker health"), ("scripts/solve_issues_batch.py", "scripts/run_overnight.py", "tests/test_solve_issues_batch.py", "tests/test_run_overnight.py")),
@@ -147,8 +152,27 @@ def batch_command_for_wave(wave: PlannedWave, model: str, base_branch: str | Non
     return " ".join(shlex.quote(part) for part in command)
 
 
-def render_plan(waves: list[PlannedWave], emit_commands: bool, model: str, base_branch: str | None) -> str:
+def render_model_selection(model: str, model_source: str) -> list[str]:
+    if model_source not in {MODEL_SOURCE_DEFAULT, MODEL_SOURCE_CLI}:
+        raise ValueError(f"unknown model_source: {model_source}")
+    return [
+        f"model_default: {DEFAULT_BATCH_MODEL}",
+        f"model_effective: {model}",
+        f"model_source: {model_source}",
+    ]
+
+
+def render_plan(
+    waves: list[PlannedWave],
+    emit_commands: bool,
+    model: str,
+    base_branch: str | None,
+    model_source: str,
+) -> str:
     lines: list[str] = []
+    if emit_commands:
+        lines.extend(render_model_selection(model, model_source))
+        lines.append("")
     previous: list[PlannedWave] = []
     for index, wave in enumerate(waves, start=1):
         lines.append(f"Welle {index}:")
@@ -184,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Offene Issues konfliktarm in lokale Bearbeitungswellen planen")
     parser.add_argument("--repo", default="ai-issue-solver", help="GitHub Repo ohne Owner")
     parser.add_argument("--label", default="", help="Optionales Issue-Label fuer die Suche")
-    parser.add_argument("--model", default="codex", choices=list(MODEL_CONFIGS.keys()), help="Modell fuer ausgegebene Batch-Kommandos")
+    parser.add_argument("--model", choices=list(MODEL_CONFIGS.keys()), help="Modell fuer ausgegebene Batch-Kommandos")
     parser.add_argument("--base-branch", default="develop", help="Basisbranch fuer ausgegebene Batch-Kommandos")
     parser.add_argument("--emit-commands", action="store_true", help="Batch-Kommandos pro Welle ausgeben")
     args = parser.parse_args(argv)
@@ -199,10 +223,12 @@ def main(argv: list[str] | None = None) -> int:
         print_warn("Keine offenen Issues gefunden")
         return 0
 
+    model = args.model or DEFAULT_BATCH_MODEL
+    model_source = MODEL_SOURCE_CLI if args.model else MODEL_SOURCE_DEFAULT
     print_step(1, f"{len(issues)} Issue(s) geladen")
     waves = plan_waves(issues)
     print_step(2, f"{len(waves)} konfliktarme Welle(n)")
-    print(render_plan(waves, args.emit_commands, args.model, args.base_branch))
+    print(render_plan(waves, args.emit_commands, model, args.base_branch, model_source))
     return 0
 
 
