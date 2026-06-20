@@ -11,11 +11,18 @@ Abgedeckte Szenarien:
 """
 
 from __future__ import annotations
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
 from model_selection import (
     classify_issue,
     estimate_risk_and_strength,
+    extract_touched_files_from_issue_body,
     select_model,
     select_model_for_issue,
     ISSUE_CATEGORIES,
@@ -133,6 +140,45 @@ class TestModelSelection(unittest.TestCase):
         )
         self.assertEqual(result["category"], "docs-only")
         self.assertIn(result["model"], ["mistral-small", "deepseek-coder:6.7b", "qwen-coder"])
+
+    def test_extract_touched_files_from_inline_touches_line(self):
+        body = "Please refactor this.\n\nTouches: scripts/foo.py, tests/test_foo.py"
+
+        files = extract_touched_files_from_issue_body(body)
+
+        self.assertEqual(files, ["scripts/foo.py", "tests/test_foo.py"])
+
+    def test_extract_touched_files_from_touches_block(self):
+        body = (
+            "Update docs.\n\n"
+            "Touches:\n"
+            "- docs/WORKFLOW.md\n"
+            "- README.md\n\n"
+            "Acceptance criteria follow."
+        )
+
+        files = extract_touched_files_from_issue_body(body)
+
+        self.assertEqual(files, ["docs/WORKFLOW.md", "README.md"])
+
+    def test_extract_touched_files_returns_empty_without_marker(self):
+        body = "Mention scripts/foo.py in prose but do not declare touched files."
+
+        self.assertEqual(extract_touched_files_from_issue_body(body), [])
+
+    def test_select_model_for_issue_uses_touches_line(self):
+        mock_issue = {
+            "body": "General cleanup.\n\nTouches: docs/WORKFLOW.md",
+            "labels": [],
+        }
+
+        result = select_model_for_issue(
+            issue=mock_issue,
+            repo_type="python",
+            max_cost_tier="cheap",
+        )
+
+        self.assertEqual(result["category"], "docs-only")
 
     def test_issue_categories_coverage(self):
         """Prüft, dass alle Issue-Kategorien in den Maps abgedeckt sind."""
