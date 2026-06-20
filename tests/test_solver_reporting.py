@@ -14,13 +14,16 @@ from scripts.solver_reporting import (
     ProviderScorecard,
     RunReport,
     build_run_outcome,
+    classify_run_status,
+    classify_worker_health,
     create_provider_scorecard,
     create_run_report,
-    write_run_report,
     format_heartbeat,
     format_heartbeat_progress,
+    load_run_outcome,
+    read_normalized_run_outcome,
+    write_run_report,
 )
-from scripts.solve_issues import build_issue_pr_body
 from scripts.solve_issues import build_issue_pr_body
 
 
@@ -110,6 +113,289 @@ class TestRunOutcomeSkipPr(unittest.TestCase):
         self.assertEqual(outcome["delivery_status"], "incomplete")
         self.assertEqual(outcome["failure_class"], "control_failure")
         self.assertEqual(outcome["recovery_status"], "manual_review")
+
+
+class TestNormalizedRunOutcomeReader(unittest.TestCase):
+    def write_run(
+        self,
+        root: Path,
+        name: str,
+        *,
+        summary: str = "",
+        metadata: dict | None = None,
+        health: dict | None = None,
+    ) -> Path:
+        run_dir = root / name
+        run_dir.mkdir(parents=True)
+        if summary:
+            (run_dir / "summary.txt").write_text(summary, encoding="utf-8")
+        if metadata is not None:
+            (run_dir / "metadata.json").write_text(
+                json.dumps(metadata, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        if health is not None:
+            (run_dir / "health.json").write_text(
+                json.dumps(health, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        return run_dir
+
+    def test_reads_complete_pr_created_run(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.write_run(
+                Path(temp_dir),
+                "20260620-100000-demo-issue-1",
+                metadata={
+                    "status": "pr_created",
+                    "repo": "demo",
+                    "issue_number": 1,
+                    "branch": "ai/fix-issue-1",
+                    "model": "opencode",
+                    "pr_url": "https://github.com/o/r/pull/1",
+                    "run_outcome": {
+                        "worker_status": "succeeded",
+                        "has_changes": True,
+                        "test_status": "passed",
+                        "delivery_status": "pr_created",
+                        "failure_class": "success",
+                        "recovery_status": "none",
+                    },
+                    "provider_scorecard": {"actual_model": "minimax/minimax-m3"},
+                },
+            )
+
+            outcome = read_normalized_run_outcome(run_dir)
+
+        self.assertEqual(outcome.category, "successful")
+        self.assertEqual(outcome.worker_health_state, "finished")
+        self.assertTrue(outcome.run_outcome["has_changes"])
+        self.assertEqual(outcome.provider_scorecard["actual_model"], "minimax/minimax-m3")
+        self.assertEqual(outcome.pr_url, "https://github.com/o/r/pull/1")
+
+    def test_classify_run_status_table(self):
+        cases = {
+            "": "unknown",
+            "queued": "queued",
+            "started": "running",
+            "unhealthy": "unhealthy",
+            "pr_created": "successful",
+            "cleanup_successful": "successful",
+            "no_changes": "noop",
+            "skip_existing_pr": "noop",
+            "nonzero_without_changes": "failed",
+            "push_failed": "failed",
+            "custom_failed": "failed",
+        }
+
+        for status, expected in cases.items():
+            with self.subTest(status=status):
+                self.assertEqual(classify_run_status(status), expected)
+
+        self.assertEqual(classify_run_status("custom", "1"), "failed")
+        self.assertEqual(classify_run_status("custom", "0"), "noop")
+
+    def test_classify_worker_health_table(self):
+        now = datetime(2026, 6, 20, 10, 20, 0)
+
+        self.assertEqual(
+            classify_worker_health("pr_created", "", now, now=now),
+            ("finished", "terminal status"),
+        )
+        self.assertEqual(
+            classify_worker_health("unhealthy", "", now, now=now),
+            ("unhealthy", "health status unhealthy"),
+        )
+        self.assertEqual(
+            classify_worker_health("started", "worker", now, now=now),
+            ("healthy", "phase worker"),
+        )
+        self.assertEqual(
+            classify_worker_health("started", "", now, now=now),
+            ("healthy", "recent update"),
+        )
+        self.assertEqual(
+            classify_worker_health("started", "", None, now=now),
+            ("unknown", "no health timestamp"),
+        )
+        state, reason = classify_worker_health(
+            "started",
+            "",
+            datetime(2026, 6, 20, 10, 0, 0),
+            now=now,
+            stale_seconds=60,
+        )
+        self.assertEqual(state, "stale")
+        self.assertIn("no update", reason)
+
+    def test_reads_incomplete_running_run_as_stale(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.write_run(
+                Path(temp_dir),
+                "20260620-100000-demo-issue-2",
+                metadata={"status": "started", "repo": "demo", "issue_number": 2},
+                health={
+                    "status": "running",
+                    "phase": "worker",
+                    "last_activity_at": "2026-06-20T10:00:00",
+                },
+            )
+
+            outcome = read_normalized_run_outcome(
+                run_dir,
+                now=datetime(2026, 6, 20, 10, 20, 0),
+                stale_seconds=60,
+            )
+
+        self.assertEqual(outcome.category, "running")
+        self.assertEqual(outcome.worker_health_state, "stale")
+        self.assertIn("no update", outcome.worker_health_reason)
+
+    def test_reads_unhealthy_health_status_without_metadata_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.write_run(
+                Path(temp_dir),
+                "20260620-100000-demo-issue-3",
+                health={
+                    "status": "unhealthy",
+                    "last_report_update_at": "2026-06-20T10:00:00",
+                },
+            )
+
+            outcome = read_normalized_run_outcome(run_dir, now=datetime(2026, 6, 20, 10, 0, 1))
+
+        self.assertEqual(outcome.status, "unhealthy")
+        self.assertEqual(outcome.category, "unhealthy")
+        self.assertEqual(outcome.worker_health_state, "unhealthy")
+
+    def test_reads_budget_exceeded_control_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.write_run(
+                Path(temp_dir),
+                "20260620-100000-demo-issue-4",
+                metadata={
+                    "status": "budget_exceeded",
+                    "worker_exit_code": 4,
+                    "run_outcome": {
+                        "worker_status": "failed",
+                        "has_changes": False,
+                        "test_status": "unknown",
+                        "delivery_status": "incomplete",
+                        "failure_class": "control_failure",
+                        "recovery_status": "manual_review",
+                    },
+                },
+            )
+
+            outcome = read_normalized_run_outcome(run_dir)
+
+        self.assertEqual(outcome.category, "failed")
+        self.assertEqual(outcome.run_outcome["failure_class"], "control_failure")
+        self.assertEqual(outcome.run_outcome["recovery_status"], "manual_review")
+
+    def test_metadata_run_outcome_has_changes_string_is_normalized(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.write_run(
+                Path(temp_dir),
+                "20260620-100000-demo-issue-7",
+                metadata={
+                    "status": "pr_created",
+                    "run_outcome": {
+                        "worker_status": "succeeded",
+                        "has_changes": "False",
+                        "delivery_status": "pr_created",
+                    },
+                },
+            )
+
+            outcome = read_normalized_run_outcome(run_dir)
+
+        self.assertFalse(outcome.run_outcome["has_changes"])
+
+    def test_load_run_outcome_returns_empty_dict_without_report(self):
+        self.assertEqual(load_run_outcome(None), {})
+
+    def test_missing_report_artifacts_return_empty_normalized_outcome(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "20260620-100000-demo-issue-9"
+            run_dir.mkdir()
+
+            outcome = read_normalized_run_outcome(run_dir)
+
+        self.assertEqual(outcome.status, "")
+        self.assertEqual(outcome.category, "unknown")
+        self.assertEqual(outcome.run_outcome, {})
+        self.assertEqual(outcome.repo, "")
+
+    def test_malformed_json_artifacts_are_ignored(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "20260620-100000-demo-issue-10"
+            run_dir.mkdir()
+            (run_dir / "summary.txt").write_text(
+                "status: pr_created\nrepo: demo\nissue_number: 10\n",
+                encoding="utf-8",
+            )
+            (run_dir / "metadata.json").write_text("{not-json", encoding="utf-8")
+            (run_dir / "health.json").write_text("{not-json", encoding="utf-8")
+
+            outcome = read_normalized_run_outcome(run_dir)
+
+        self.assertEqual(outcome.status, "pr_created")
+        self.assertEqual(outcome.category, "successful")
+        self.assertEqual(outcome.repo, "demo")
+
+    def test_health_running_without_metadata_status_is_left_statusless(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.write_run(
+                Path(temp_dir),
+                "20260620-100000-demo-issue-8",
+                health={
+                    "status": "running",
+                    "last_report_update_at": "2026-06-20T10:00:00",
+                },
+            )
+
+            outcome = read_normalized_run_outcome(run_dir, now=datetime(2026, 6, 20, 10, 0, 1))
+
+        self.assertEqual(outcome.status, "")
+        self.assertEqual(outcome.category, "unknown")
+        self.assertEqual(outcome.worker_health_state, "healthy")
+
+    def test_reads_no_change_and_pr_skipped_summary_fallbacks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            no_change = self.write_run(
+                root,
+                "20260620-100000-demo-issue-5",
+                summary="""status: no_changes
+repo: demo
+issue_number: 5
+run_outcome_worker_status: succeeded
+run_outcome_has_changes: False
+run_outcome_delivery_status: not_applicable
+run_outcome_failure_class: noop
+""",
+            )
+            pr_skipped = self.write_run(
+                root,
+                "20260620-100001-demo-issue-6",
+                summary="""status: pr_skipped
+repo: demo
+issue_number: 6
+run_outcome_worker_status: succeeded
+run_outcome_has_changes: True
+run_outcome_delivery_status: pushed_without_pr
+run_outcome_failure_class: success
+""",
+            )
+
+            no_change_outcome = read_normalized_run_outcome(no_change)
+            pr_skipped_outcome = load_run_outcome(pr_skipped)
+
+        self.assertEqual(no_change_outcome.category, "noop")
+        self.assertFalse(no_change_outcome.run_outcome["has_changes"])
+        self.assertTrue(pr_skipped_outcome["has_changes"])
+        self.assertEqual(pr_skipped_outcome["delivery_status"], "pushed_without_pr")
 
     def test_write_run_report_includes_openrouter_usage_and_cost_scorecard(self):
         """OpenRouter Direct usage is persisted and exposed through scorecards."""

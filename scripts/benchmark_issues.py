@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from model_catalog import OPENCODE_FREE_MODELS
+from solver_reporting import load_run_outcome
 from utils import (
     load_env,
     print_banner,
@@ -40,18 +41,6 @@ def extract_run_report_path(output: str) -> Path | None:
     if not match:
         return None
     return Path(match.group(1))
-
-
-def load_run_outcome(run_report: Path | None) -> dict:
-    if not run_report:
-        return {}
-    metadata_path = run_report / "metadata.json"
-    try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    outcome = metadata.get("run_outcome", {})
-    return outcome if isinstance(outcome, dict) else {}
 
 
 def parse_args() -> argparse.Namespace:

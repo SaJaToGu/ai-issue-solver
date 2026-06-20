@@ -35,6 +35,7 @@ from solver_commands import (  # noqa: E402
     add_health_flags,
     add_solver_core_flags,
 )
+from solver_reporting import read_normalized_run_outcome  # noqa: E402
 from workers.opencode_diagnostics import (  # noqa: E402
     check_opencode_state_guard,
     find_opencode_executable,
@@ -455,9 +456,10 @@ def collect_issue_outcomes(
         if not summary_path.exists():
             continue
 
-        fields = parse_summary_file(summary_path)
-        run_repo = fields.get("repo") or fields.get("selected_repo", "")
-        issue_number = fields.get("issue_number") or fields.get("issue", "")
+        normalized = read_normalized_run_outcome(run_dir)
+        fields = dict(normalized.summary)
+        run_repo = normalized.repo
+        issue_number = normalized.issue_number
 
         if repo and run_repo != repo:
             continue
@@ -465,9 +467,9 @@ def collect_issue_outcomes(
             if not issue_number.isdigit() or int(issue_number) not in issue_numbers:
                 continue
 
-        status = fields.get("status", "")
-        exit_code = fields.get("worker_exit_code", "")
-        category = classify_status(status, exit_code)
+        status = normalized.status
+        exit_code = normalized.worker_exit_code
+        category = normalized.category
 
         # Standardmaessig unvollstaendige Runs aus Dashboards/Reports ausblenden.
         # Die Overnight-Summary blendet sie ein, damit abgebrochene Health-Stopps
@@ -480,15 +482,15 @@ def collect_issue_outcomes(
         outcome = IssueOutcome(
             repo=run_repo,
             issue_number=issue_number,
-            issue_title=fields.get("issue_title", ""),
+            issue_title=normalized.issue_title,
             status=status,
             category=category,
             worker_exit_code=exit_code,
-            pr_url=fields.get("pr_url", ""),
+            pr_url=normalized.pr_url,
             git_diff_stat=fields.get("git_diff_stat", ""),
             warning_markers=warning_markers,
-            branch=fields.get("branch", ""),
-            model=fields.get("model", ""),
+            branch=normalized.branch,
+            model=normalized.model,
             run_dir=run_dir.name,
         )
         outcomes.append(outcome)

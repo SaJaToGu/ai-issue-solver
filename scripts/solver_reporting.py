@@ -119,6 +119,34 @@ OPENCODE_WAL_FAILURE_RE = re.compile(
 OPENCODE_EDIT_FAILURE_RE = re.compile(r"\bEdit\s+(.+?)\s+failed\b", re.IGNORECASE)
 OPENCODE_EDIT_FAILURE_REPEAT_THRESHOLD = 3
 NO_CHANGE_STATUSES = {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr"}
+RUNNING_STATUSES = frozenset({"started", "running", "queued"})
+ARCHIVED_STATUSES = frozenset({"archived", "cleanup_archived"})
+SUCCESS_STATUSES = frozenset({
+    "cleanup_successful",
+    "pr_created",
+    "pr_created_from_existing_branch",
+    "pr_created_with_warning",
+})
+NOOP_STATUSES = frozenset({
+    "cleanup_noop",
+    "no_changes",
+    "skip_closed_pr",
+    "skip_existing_pr",
+    "skip_merged_pr",
+})
+FAILED_STATUSES = frozenset({
+    "branch_create_failed",
+    "checkout_failed",
+    "cleanup_failed",
+    "clone_failed",
+    "nonzero_without_changes",
+    "pr_failed",
+    "pr_failed_from_existing_branch",
+    "push_failed",
+    "rate_limit_deferred",
+    "validation_failed",
+    "worker_validation_failed",
+})
 # Statuswerte, die einen hart abgebrochenen PR-Schritt markieren.
 PIPELINE_FAILURE_STATUSES = {
     "pr_failed",
@@ -179,6 +207,257 @@ class OpenCodeRuntimeDiagnostics:
     @property
     def has_findings(self) -> bool:
         return self.wal_failure or self.edit_loop
+
+
+@dataclass(frozen=True)
+class NormalizedRunOutcome:
+    """Read-side normalized view over a solver run report."""
+    run_dir: Path
+    summary: Mapping[str, str]
+    metadata: Mapping[str, object]
+    health: Mapping[str, object]
+    status: str
+    category: str
+    worker_exit_code: str
+    run_outcome: Mapping[str, object]
+    worker_health_state: str
+    worker_health_reason: str
+    last_activity_at: datetime | None
+    last_report_update_at: datetime | None
+    repo: str
+    issue_number: str
+    issue_title: str
+    branch: str
+    model: str
+    pr_url: str
+    preserved_worktree: str
+    provider_scorecard: Mapping[str, object]
+
+
+def _string_value(data: Mapping[str, object], key: str) -> str:
+    value = data.get(key)
+    return "" if value is None else str(value)
+
+
+def _bool_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def _read_json_file(path: Path) -> dict[str, object]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_summary_file(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    fields: dict[str, str] = {}
+    current_key: str | None = None
+    parts: list[str] = []
+    multiline_keys = {"output_tail", "git_diff_stat", "git_change_summary"}
+
+    for raw_line in lines:
+        key, separator, value = raw_line.partition(":")
+        if current_key:
+            if separator and not raw_line.startswith((" ", "\t")):
+                fields[current_key] = "\n".join(parts).strip()
+                current_key = None
+                parts = []
+            else:
+                parts.append(raw_line)
+                continue
+
+        if not raw_line.strip() or not separator:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if key in multiline_keys:
+            current_key = key
+            parts = [value] if value else []
+            continue
+        fields[key] = value
+
+    if current_key:
+        fields[current_key] = "\n".join(parts).strip()
+    return fields
+
+
+def _parse_datetime_value(value: str) -> datetime | None:
+    if not value:
+        return None
+    for candidate in (value, value.replace("Z", "+00:00")):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_created_at(run_name: str) -> datetime | None:
+    match = re.match(r"^(\d{8}-\d{6})", run_name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+
+def _latest_datetime(*values: datetime | None) -> datetime | None:
+    parsed = [value for value in values if value is not None]
+    return max(parsed) if parsed else None
+
+
+def classify_run_status(status: str, worker_exit_code: str = "") -> str:
+    """Normalize raw report status into the shared dashboard/supervisor category."""
+    if not status:
+        return "unknown"
+    if status == "queued":
+        return "queued"
+    if status == "started":
+        return "running"
+    if status == "unhealthy":
+        return "unhealthy"
+    if status in ARCHIVED_STATUSES:
+        return "archived"
+    if status in SUCCESS_STATUSES:
+        return "successful"
+    if status in NOOP_STATUSES:
+        return "noop"
+    if status in FAILED_STATUSES or status.endswith("_failed"):
+        return "failed"
+    if worker_exit_code and worker_exit_code != "0":
+        return "failed"
+    return "noop"
+
+
+def classify_worker_health(
+    status: str,
+    phase: str,
+    last_seen: datetime | None,
+    now: datetime | None = None,
+    stale_seconds: int = 15 * 60,
+) -> tuple[str, str]:
+    """Classify read-side worker health consistently for monitor-style tools."""
+    if status in TERMINAL_STATUSES:
+        return "finished", "terminal status"
+    if status == "unhealthy":
+        return "unhealthy", "health status unhealthy"
+    if last_seen is None:
+        return "unknown", "no health timestamp"
+
+    current = now or datetime.now()
+    age_seconds = int((current - last_seen).total_seconds())
+    if age_seconds > stale_seconds:
+        return "stale", f"no update for {age_seconds}s"
+    if phase:
+        return "healthy", f"phase {phase}"
+    return "healthy", "recent update"
+
+
+def read_normalized_run_outcome(
+    run_dir: Path,
+    *,
+    now: datetime | None = None,
+    stale_seconds: int = 15 * 60,
+) -> NormalizedRunOutcome:
+    """Read and normalize status, health, delivery, model, and metadata for one run."""
+    summary = _parse_summary_file(run_dir / "summary.txt")
+    metadata = _read_json_file(run_dir / "metadata.json")
+    health = _read_json_file(run_dir / "health.json")
+
+    status = _string_value(metadata, "status") or summary.get("status", "")
+    health_status = _string_value(health, "status")
+    if health_status and health_status not in RUNNING_STATUSES and not status:
+        status = health_status
+
+    worker_exit_code = _string_value(metadata, "worker_exit_code") or summary.get("worker_exit_code", "")
+    category = classify_run_status(status, worker_exit_code)
+    phase = _string_value(health, "phase")
+    last_activity = _parse_datetime_value(
+        _string_value(health, "last_activity_at")
+        or _string_value(metadata, "last_activity_at")
+        or summary.get("last_activity_at", "")
+    )
+    last_report_update = _parse_datetime_value(
+        _string_value(health, "last_report_update_at")
+        or _string_value(metadata, "last_report_update_at")
+        or summary.get("last_report_update_at", "")
+    )
+    last_seen = _latest_datetime(last_activity, last_report_update, _parse_created_at(run_dir.name))
+    worker_health_state, worker_health_reason = classify_worker_health(
+        status,
+        phase,
+        last_seen,
+        now=now,
+        stale_seconds=stale_seconds,
+    )
+
+    run_outcome = metadata.get("run_outcome")
+    if isinstance(run_outcome, dict):
+        run_outcome = dict(run_outcome)
+        if "has_changes" in run_outcome:
+            run_outcome["has_changes"] = _bool_value(run_outcome.get("has_changes"))
+    else:
+        run_outcome = {
+            "worker_status": summary.get("run_outcome_worker_status", ""),
+            "has_changes": summary.get("run_outcome_has_changes", "").lower() in {"true", "1", "yes"},
+            "test_status": summary.get("run_outcome_test_status", ""),
+            "delivery_status": summary.get("run_outcome_delivery_status", ""),
+            "failure_class": summary.get("run_outcome_failure_class", ""),
+            "recovery_status": summary.get("run_outcome_recovery_status", ""),
+        }
+        if not any(run_outcome.values()):
+            run_outcome = {}
+
+    provider_scorecard = metadata.get("provider_scorecard")
+    if not isinstance(provider_scorecard, dict):
+        provider_scorecard = {}
+
+    return NormalizedRunOutcome(
+        run_dir=run_dir,
+        summary=summary,
+        metadata=metadata,
+        health=health,
+        status=status,
+        category=category,
+        worker_exit_code=worker_exit_code,
+        run_outcome=run_outcome,
+        worker_health_state=worker_health_state,
+        worker_health_reason=worker_health_reason,
+        last_activity_at=last_activity,
+        last_report_update_at=last_report_update,
+        repo=_string_value(metadata, "repo") or summary.get("repo") or summary.get("selected_repo", ""),
+        issue_number=(
+            _string_value(metadata, "issue_number")
+            or _string_value(metadata, "issue")
+            or summary.get("issue_number")
+            or summary.get("issue", "")
+        ),
+        issue_title=_string_value(metadata, "issue_title") or summary.get("issue_title", ""),
+        branch=_string_value(metadata, "branch") or summary.get("branch", ""),
+        model=_string_value(metadata, "model") or summary.get("model", ""),
+        pr_url=_string_value(metadata, "pr_url") or summary.get("pr_url", ""),
+        preserved_worktree=_string_value(metadata, "preserved_worktree") or summary.get("preserved_worktree", ""),
+        provider_scorecard=provider_scorecard,
+    )
+
+
+def load_run_outcome(run_report: Path | None) -> dict:
+    """Compatibility helper for benchmark-style code."""
+    if not run_report:
+        return {}
+    return dict(read_normalized_run_outcome(run_report).run_outcome)
 
 
 def infer_test_status(test_result: str | None) -> str:
