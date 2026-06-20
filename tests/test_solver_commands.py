@@ -25,6 +25,7 @@ from solver_commands import (  # noqa: E402
     add_fallback_flags,
     add_health_flags,
     add_solver_core_flags,
+    build_single_solver_command,
 )
 
 
@@ -347,6 +348,31 @@ class CommandStructureIntegrationTest(unittest.TestCase):
     """Verifies that compound commands contain both shared (solver_commands)
     and script-specific flags in the expected structure.
     Narrow integration — not a full workflow test."""
+
+    def test_build_single_solver_command_has_shared_and_specific_flags(self):
+        cmd = build_single_solver_command(
+            make_args(model="opencode", model_name=""),
+            Path("scripts/solve_issues.py"),
+            repo="ai-issue-solver",
+            issue_number=380,
+            model_name="minimax/minimax-m3",
+            dry_run=True,
+            include_label=False,
+            skip_pr=True,
+            branch_suffix="bench/123/minimax",
+            ensemble=None,
+        )
+
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertIn("scripts/solve_issues.py", cmd[1])
+        self.assertTrue(has_pair(cmd, "--model", "opencode"))
+        self.assertTrue(has_pair(cmd, "--model-name", "minimax/minimax-m3"))
+        self.assertTrue(has_pair(cmd, "--repo", "ai-issue-solver"))
+        self.assertTrue(has_pair(cmd, "--issue", "380"))
+        self.assertTrue(has_pair(cmd, "--branch-suffix", "bench/123/minimax"))
+        self.assertIn("--dry-run", cmd)
+        self.assertIn("--skip-pr", cmd)
+        self.assertNotIn("--label", cmd)
 
     def test_build_worker_command_has_shared_and_specific_flags(self):
         from solve_issues_batch import IssueJob, build_worker_command

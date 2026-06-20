@@ -7,6 +7,8 @@ solve_issues_batch.py and run_overnight.py.
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 
 def _require_non_empty(value: str | None, *, name: str = "model") -> str:
@@ -21,7 +23,9 @@ def add_solver_core_flags(
     *,
     model: str | None = None,
     model_name: str | None = None,
+    dry_run: bool | None = None,
     verbosity: str | None = None,
+    include_label: bool = True,
 ) -> None:
     """Append core solver flags shared by all invocation entry points.
 
@@ -34,6 +38,8 @@ def add_solver_core_flags(
         model: Override for the model (falls back to args.model).
         model_name: Override for the model name (falls back to
                     args.model_name, then skipped if still None/empty).
+        dry_run: Override for dry-run mode (falls back to args.dry_run when
+                 None).
         verbosity: Override for verbosity (falls back to args.verbosity,
                    then skipped if still None).
     """
@@ -50,14 +56,16 @@ def add_solver_core_flags(
     if selected_model_name:
         cmd.extend(["--model-name", selected_model_name])
 
-    label = getattr(args, "label", "ai-generated")
-    cmd.extend(["--label", label])
+    if include_label:
+        label = getattr(args, "label", "ai-generated")
+        cmd.extend(["--label", label])
 
     base_branch = getattr(args, "base_branch", None)
     if base_branch:
         cmd.extend(["--base-branch", base_branch])
 
-    if getattr(args, "dry_run", False):
+    selected_dry_run = getattr(args, "dry_run", False) if dry_run is None else dry_run
+    if selected_dry_run:
         cmd.append("--dry-run")
     if getattr(args, "close_issues", False):
         cmd.append("--close-issues")
@@ -65,6 +73,45 @@ def add_solver_core_flags(
     v = verbosity or getattr(args, "verbosity", None)
     if v:
         cmd.extend(["--verbosity", v])
+
+
+def build_single_solver_command(
+    args: argparse.Namespace,
+    solve_script: Path,
+    *,
+    repo: str,
+    issue_number: int,
+    model: str | None = None,
+    model_name: str | None = None,
+    dry_run: bool | None = None,
+    include_label: bool = True,
+    skip_pr: bool = False,
+    branch_suffix: str | None = None,
+    ensemble: int | None = None,
+) -> list[str]:
+    """Build a command for one `solve_issues.py` invocation.
+
+    This is the shared command spec for callers that launch the single-run
+    solver directly, such as benchmark and batch-style wrappers.
+    """
+    cmd = [sys.executable, str(solve_script)]
+    add_solver_core_flags(
+        cmd,
+        args,
+        model=model,
+        model_name=model_name,
+        dry_run=dry_run,
+        include_label=include_label,
+    )
+    cmd.extend(["--repo", repo, "--issue", str(issue_number)])
+    if skip_pr:
+        cmd.append("--skip-pr")
+    if branch_suffix:
+        cmd.extend(["--branch-suffix", branch_suffix])
+    if ensemble is not None and ensemble > 0:
+        cmd.extend(["--ensemble", str(ensemble)])
+    add_budget_flags(cmd, args)
+    return cmd
 
 
 def add_budget_flags(cmd: list[str], args: argparse.Namespace) -> None:
