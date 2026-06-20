@@ -97,6 +97,10 @@ class OpenCodeStatePreflight:
         return bool(self.mismatched_serve_processes)
 
 
+def _format_version(value: str | None) -> str:
+    return value or "unknown"
+
+
 def _extract_opencode_serve_executable(command: str) -> str | None:
     """Best-effort extraction of the executable path from an `opencode serve` line."""
     marker = " serve"
@@ -237,9 +241,18 @@ def _print_opencode_state_preflight_result(preflight: OpenCodeStatePreflight) ->
         print(f"    pid={proc.pid}{version_suffix}{executable_suffix}")
 
     if preflight.mismatched_serve_processes:
+        print_err("OpenCode Versions-/Executable-Konflikt erkannt.")
+        print(f"    CLI:   version={_format_version(preflight.cli_version)}, exe={preflight.opencode_exe}")
+        for proc in preflight.mismatched_serve_processes:
+            print(
+                "    Serve: "
+                f"pid={proc.pid}, version={_format_version(proc.version)}, "
+                f"exe={proc.executable or 'unknown'}"
+            )
         print_warn(
-            "OpenCode Versions-/State-Mix möglich: CLI und laufender Server "
-            "nutzen nicht denselben Prozessstand."
+            "Root Cause: CLI und laufender Server nutzen nicht dieselbe "
+            "OpenCode-Version oder nicht dasselbe Executable. WAL/SHM-Dateien "
+            "sind dabei nur ein Symptom bzw. ein nachgelagerter Recovery-Schritt."
         )
 
 
@@ -251,10 +264,11 @@ def _print_opencode_state_preflight(opencode_exe: str, cli_version: str | None) 
 
 def _print_opencode_state_conflict_recovery() -> None:
     print("   Recovery:")
-    print("   1. Laufende OpenCode/MiniMax-Code-Prozesse beenden.")
+    print("   1. MiniMax Code/OpenCode App schließen oder OpenCode-Versionen angleichen.")
     print("   2. Danach erneut ausführen: python scripts/solve_issues.py --model opencode --diagnostic")
-    print("   3. Nur wenn kein OpenCode-Prozess mehr läuft: opencode.db-wal und opencode.db-shm entfernen.")
-    print("   4. Nicht löschen: auth.json, account.json oder opencode.db.")
+    print("   3. Erst wenn kein OpenCode/MiniMax-Prozess mehr läuft: opencode.db-wal und opencode.db-shm entfernen.")
+    print("   4. WAL/SHM nicht als Root Cause behandeln; sie sind nur ein SQLite-Recovery-Artefakt.")
+    print("   5. Nicht löschen: auth.json, account.json oder opencode.db.")
     print("   Override nur bewusst: --allow-opencode-state-conflict")
 
 
@@ -282,7 +296,8 @@ def check_opencode_state_guard(
 
     print_err(
         "OpenCode Worker-Start blockiert: laufender opencode-serve-Prozess "
-        "passt nicht zur aktuellen CLI-Version oder zum aktuellen Executable."
+        "passt nicht zur aktuellen CLI-Version oder zum aktuellen Executable. "
+        "Das ist ein Versions-/Executable-Konflikt, kein reines WAL-Problem."
     )
     _print_opencode_state_conflict_recovery()
     return False

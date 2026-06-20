@@ -2721,7 +2721,35 @@ class OpenCodePreflightTests(unittest.TestCase):
         self.assertIn("OpenCode WAL-Dateien", output)
         self.assertIn("opencode.db-wal", output)
         self.assertIn("pid=123", output)
-        self.assertIn("Versions-/State-Mix", output)
+        self.assertIn("Versions-/Executable-Konflikt", output)
+        self.assertIn("Root Cause", output)
+        self.assertIn("version=1.15.13", output)
+        self.assertIn("version=1.14.28", output)
+        self.assertIn("WAL/SHM-Dateien", output)
+
+    def test_opencode_state_preflight_reports_wal_without_blocking_version_mix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "opencode.db"
+            db_path.write_text("", encoding="utf-8")
+            Path(f"{db_path}-wal").write_text("", encoding="utf-8")
+
+            with patch(
+                "workers.opencode_session_reader.find_opencode_db_path",
+                return_value=db_path,
+            ), patch(
+                "workers.opencode_diagnostics._find_opencode_serve_processes",
+                return_value=[],
+            ):
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    _print_opencode_state_preflight("/Users/Guido/.opencode/bin/opencode", "1.15.13")
+
+        output = printed.getvalue()
+        self.assertIn("OpenCode WAL-Dateien", output)
+        self.assertIn("opencode.db-wal", output)
+        self.assertIn("opencode serve: kein laufender Prozess gefunden", output)
+        self.assertNotIn("Versions-/Executable-Konflikt", output)
+        self.assertNotIn("Root Cause", output)
 
     def test_opencode_process_filter_ignores_shell_commands_that_mention_serve(self):
         self.assertFalse(_looks_like_opencode_executable("/bin/zsh -c gh issue create"))
@@ -2755,7 +2783,11 @@ class OpenCodePreflightTests(unittest.TestCase):
         self.assertFalse(allowed)
         output = printed.getvalue()
         self.assertIn("Worker-Start blockiert", output)
+        self.assertIn("Versions-/Executable-Konflikt", output)
+        self.assertIn("kein reines WAL-Problem", output)
         self.assertIn("Recovery", output)
+        self.assertIn("Versionen angleichen", output)
+        self.assertIn("WAL/SHM nicht als Root Cause", output)
 
     def test_opencode_state_guard_allows_clean_state(self):
         preflight = OpenCodeStatePreflight(
