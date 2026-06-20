@@ -56,6 +56,7 @@ from utils import (  # noqa: E402
 
 DEFAULT_WORKERS = 2
 DEFAULT_WORKER_HEALTH_TIMEOUT_MINUTES = 60
+SUPPORTED_MODEL_HELP = ", ".join(MODEL_CONFIGS.keys())
 
 
 @dataclass(frozen=True)
@@ -943,7 +944,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model", required=True, choices=list(MODEL_CONFIGS.keys()),
-        help="KI-Modell: codex, mistral-vibe, opencode, claude, openai, mistral oder ollama"
+        help=f"KI-Modell / Provider: {SUPPORTED_MODEL_HELP}",
     )
     parser.add_argument(
         "--model-name",

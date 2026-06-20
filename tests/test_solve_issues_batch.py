@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import io
 import json
 import tempfile
 from datetime import datetime
@@ -24,6 +26,7 @@ from solve_issues_batch import (  # noqa: E402
     run_issue_job,
     run_issue_jobs,
     get_result_badge,
+    parse_args,
 )
 
 
@@ -80,6 +83,17 @@ class BatchRunnerTests(unittest.TestCase):
         jobs = discover_issue_jobs(FakeBatchClient(), ["demo"], [7, 7, 404], "ai-generated")
 
         self.assertEqual(jobs, [IssueJob("demo", 7)])
+
+    def test_help_text_lists_openrouter_providers(self):
+        printed = io.StringIO()
+        with self.assertRaises(SystemExit) as raised:
+            with contextlib.redirect_stdout(printed):
+                parse_args(["--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        help_text = printed.getvalue()
+        self.assertIn("openrouter", help_text)
+        self.assertIn("openrouter_direct", help_text)
 
     def test_build_worker_command_forwards_solver_flags(self):
         args = self.make_args(
