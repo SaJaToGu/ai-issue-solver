@@ -1,0 +1,279 @@
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Any
+
+from scripts.validation.github_client import ValidationGitHubClient
+from scripts.validation.metrics import (
+    compute_metrics,
+    format_cost,
+    format_duration,
+    persist_validation_run,
+    write_validation_report,
+)
+from scripts.validation.models import ValidationConfig, ValidationMetrics
+from scripts.validation.parsers import collect_run_reports
+from scripts.validation.pr_checks import check_pr_statuses
+from scripts.validation.runner import run_solver_for_issue
+from scripts.validation.selection import select_issues_by_label
+
+
+def _load_config() -> dict[str, Any]:
+    """Load configuration from environment / .env files."""
+    try:
+        from scripts.utils import load_env
+        config = load_env()
+    except ImportError:
+        config = {}
+    for key in ("GITHUB_TOKEN", "GITHUB_OWNER"):
+        import os
+        val = os.environ.get(key)
+        if val:
+            config[key] = val
+    if "GITHUB_OWNER" not in config:
+        config.setdefault("GITHUB_OWNER", "SaJaToGu")
+    return config
+
+
+def _get_client(config: dict[str, Any]) -> ValidationGitHubClient:
+    token = config.get("GITHUB_TOKEN", "")
+    owner = config.get("GITHUB_OWNER", "SaJaToGu")
+    if not token:
+        print("Warning: GITHUB_TOKEN not set. API calls will fail.", file=sys.stderr)
+    return ValidationGitHubClient(token, owner)
+
+
+def cmd_run(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Run the solver on N issues and produce a validation report."""
+    client = _get_client(config)
+    owner = config.get("GITHUB_OWNER", "SaJaToGu")
+    repo = args.repo
+
+    try:
+        issues = select_issues_by_label(
+            client=client,
+            repo=repo,
+            label=args.label,
+            max_issues=args.issues,
+            state="open",
+        )
+    except RuntimeError as exc:
+        print(f"Error fetching issues: {exc}", file=sys.stderr)
+        if args.dry_run:
+            print("Dry-run: proceeding with synthetic issues for smoke test.")
+            from scripts.validation.models import ValidationIssue
+            issues = [
+                ValidationIssue(number=n, title=f"Synthetic issue #{n}", body="")
+                for n in range(1, args.issues + 1)
+            ]
+        else:
+            return 1
+
+    if not issues:
+        print(f"No open issues found with label '{args.label}' in {owner}/{repo}")
+        return 1
+
+    print(f"Selected {len(issues)} issues for validation run:")
+    for iss in issues:
+        print(f"  #{iss.number}: {iss.title}")
+
+    reports: list = []
+
+    for idx, issue in enumerate(issues):
+        print(f"\n[{idx+1}/{len(issues)}] Running solver for issue #{issue.number}...")
+        report = run_solver_for_issue(
+            repo=repo,
+            issue_number=issue.number,
+            model=args.model or "opencode",
+            model_name=args.model_name or "opencode/deepseek-v4-flash-free",
+            max_run_cost_usd=args.max_run_cost_usd or 5.0,
+            dry_run=args.dry_run,
+            base_branch=args.base_branch,
+        )
+        if not args.dry_run:
+            if report.pr_number is not None:
+                print(f"  PR created: #{report.pr_number}")
+                report = check_pr_statuses(client, repo, report)
+                merged = "yes" if report.pr_merged else "no"
+                ci = "yes" if report.ci_green else ("no" if report.ci_green is False else "unknown")
+                print(f"  Merged: {merged}, CI green: {ci}")
+            else:
+                print(f"  Status: {report.status}")
+        reports.append(report)
+
+    metrics = compute_metrics(reports)
+
+    output_path = Path(args.output)
+    write_validation_report(metrics, output_path, title=args.title)
+    print(f"\nReport written to: {output_path}")
+
+    persist_validation_run(metrics, Path("reports/validation"))
+    print(f"Metrics persisted to: reports/validation/")
+
+    print(f"\n=== Validation Summary ===")
+    print(f"  Processed: {metrics.total_processed}")
+    print(f"  Merged:    {metrics.total_merged}")
+    print(f"  Success:   {metrics.success_rate:.1%}")
+    print(f"  Total cost: {format_cost(metrics.total_cost_usd)}")
+    print(f"  Total time: {format_duration(metrics.total_duration_seconds)}")
+    if metrics.top_errors:
+        print(f"  Top errors:")
+        for ec, count in metrics.top_errors:
+            print(f"    - {ec}: {count}")
+
+    return 0
+
+
+def cmd_report(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Generate a report from existing run reports."""
+    client = _get_client(config) if not args.no_github else None
+    repo = args.repo
+
+    runs_dir = Path(args.runs_dir)
+    reports = collect_run_reports(runs_dir)
+
+    if not reports:
+        print(f"No run reports found in {runs_dir}")
+        return 1
+
+    if client and not args.no_github:
+        enriched: list = []
+        for report in reports:
+            enriched.append(check_pr_statuses(client, repo, report))
+        reports = enriched
+
+    metrics = compute_metrics(reports)
+
+    output_path = Path(args.output)
+    write_validation_report(metrics, output_path, title=args.title)
+    print(f"Report written to: {output_path}")
+
+    print(f"\n=== Report Summary ===")
+    print(f"  Run reports found: {len(reports)}")
+    print(f"  Merged:            {metrics.total_merged}")
+    print(f"  Success rate:      {metrics.success_rate:.1%}")
+
+    return 0
+
+
+def cmd_check_prs(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Check PR statuses (merge state + CI) for a set of issues."""
+    client = _get_client(config)
+    owner = config.get("GITHUB_OWNER", "SaJaToGu")
+    repo = args.repo
+
+    if args.issues:
+        issue_numbers = [int(x) for x in args.issues]
+    else:
+        issues = client.get_repo_issues(repo, state="all")
+        issue_numbers = [i.number for i in issues][:args.max]
+
+    print(f"Checking PRs for up to {len(issue_numbers)} issues...")
+    checked = 0
+    for num in issue_numbers:
+        prs = client.get_pull_requests(repo, head=f"{owner}:ai/fix-issue-{num}")
+        if not prs:
+            continue
+        for pr in prs:
+            checked += 1
+            merged = "MERGED" if pr.merged else "open"
+            ci = "-"
+            if pr.merged and pr.merge_commit_sha:
+                ci_status = client.get_combined_ci_status(repo, pr.merge_commit_sha)
+                ci = "GREEN" if ci_status.state == "success" else "RED"
+            print(f"  #{pr.number} [{merged}] CI:{ci}  {pr.title[:60]}")
+
+    if checked == 0:
+        print("  No PRs found.")
+    return 0
+
+
+def cmd_list(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """List issues matching a label."""
+    client = _get_client(config)
+    repo = args.repo
+
+    issues = select_issues_by_label(
+        client=client,
+        repo=repo,
+        label=args.label,
+        max_issues=args.max,
+        state="open",
+    )
+
+    if not issues:
+        print(f"No issues found with label '{args.label}' in {repo}")
+        return 0
+
+    print(f"Issues with label '{args.label}' (showing up to {args.max}):")
+    for iss in issues:
+        labels_str = ", ".join(iss.labels) if iss.labels else "-"
+        print(f"  #{iss.number} [{iss.state}] {iss.title}")
+        print(f"       labels: {labels_str}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="validation_run",
+        description="AI Issue Solver — Validation Metrics & Run",
+    )
+    parser.add_argument("--repo", default="ai-issue-solver", help="Target repository")
+    parser.add_argument("--title", default="validation-0.9.0", help="Report title")
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser("run", help="Run solver on N issues and generate validation report")
+    run_parser.add_argument("--issues", type=int, default=3, help="Number of issues to process")
+    run_parser.add_argument("--label", default="ai-generated", help="Issue label filter")
+    run_parser.add_argument("--model", default="opencode", help="Solver model type")
+    run_parser.add_argument("--model-name", default="opencode/deepseek-v4-flash-free", help="Solver model name")
+    run_parser.add_argument("--max-run-cost-usd", type=float, default=None, help="Max cost per run in USD")
+    run_parser.add_argument("--base-branch", default=None, help="Base branch for PRs")
+    run_parser.add_argument("--dry-run", action="store_true", help="Simulate without actual solver invocation")
+    run_parser.add_argument("--output", default="reports/validation-0.9.0.md", help="Output report path")
+
+    report_parser = subparsers.add_parser("report", help="Generate report from existing run reports")
+    report_parser.add_argument("--runs-dir", default="reports/runs", help="Directory with run reports")
+    report_parser.add_argument("--output", default="reports/validation-0.9.0.md", help="Output report path")
+    report_parser.add_argument("--no-github", action="store_true", help="Skip GitHub API enrichment")
+
+    check_parser = subparsers.add_parser("check-prs", help="Check PR merge state and CI status")
+    check_parser.add_argument("--issues", nargs="*", default=None, help="Issue numbers to check")
+    check_parser.add_argument("--max", type=int, default=20, help="Max issues to check when no explicit list")
+
+    list_parser = subparsers.add_parser("list", help="List issues matching a label")
+    list_parser.add_argument("--label", default="ai-generated", help="Issue label filter")
+    list_parser.add_argument("--max", type=int, default=20, help="Max issues to show")
+
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    config = _load_config()
+
+    command_map = {
+        "run": cmd_run,
+        "report": cmd_report,
+        "check-prs": cmd_check_prs,
+        "list": cmd_list,
+    }
+
+    handler = command_map.get(args.command)
+    if handler is None:
+        print(f"Unknown command: {args.command}", file=sys.stderr)
+        return 1
+
+    return handler(args, config)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
