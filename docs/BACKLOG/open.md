@@ -42,198 +42,6 @@ python scripts/cleanup_backlog.py --backlog docs/BACKLOG/open.md --apply --confi
 
 ## Priority 1
 
-## 40. Align OpenRouter Direct guardrails with OpenCode solver runs
-
-
-Labels: `kind/feature`, `theme/provider`, `theme/quality`, `agent/solver`, `priority/1`
-
-Priority: `1`
-
-OpenRouter Direct is now usable without Aider, but its run guardrails are not
-yet comparable to the OpenCode/OpenSource solver path. OpenCode runs can be
-bounded and diagnosed with cost, token, and runtime controls. OpenRouter Direct
-currently performs a synchronous API call and patch application, but does not
-enforce the same abort criteria or persist equivalent provider metrics.
-
-This blocks fair 0.9.0+ validation comparisons across provider interfaces.
-Before OpenRouter Direct is used for broader measurement runs, it needs the
-same operational safety shape as the OpenCode path.
-
-Context:
-- OpenRouter Direct uses `OPENROUTER_API_KEY` and calls the OpenRouter API
-  directly, without Aider.
-- The direct path can now produce valid patches when given target file context.
-- The current CLI budget flags are forwarded into worker adapter kwargs, but
-  OpenRouter Direct does not consume them consistently.
-- OpenCode has an explicit budget-monitoring path around cost and token usage;
-  OpenRouter Direct needs equivalent reporting and abort semantics where the
-  API allows it.
-- Without this, OpenRouter Direct validation runs can look successful while
-  missing cost, token, or runtime comparability in `reports/runs/...`.
-
-Suggested scope:
-- add OpenRouter Direct support for the existing per-run CLI limits:
-  - `--max-run-cost-usd`
-  - `--max-run-input-tokens`
-  - `--max-run-output-tokens`
-  - `--max-run-cache-read-tokens` where applicable, or explicitly mark it
-    unsupported for OpenRouter Direct
-- map `--max-run-output-tokens` to the OpenRouter `max_tokens` request
-  parameter
-- add an explicit request timeout / runtime limit for the direct OpenRouter
-  API call and return a clear budget/runtime failure status on timeout
-- capture OpenRouter usage metadata from responses, including at least:
-  - prompt/input tokens
-  - completion/output tokens
-  - total tokens
-  - cost, when OpenRouter reports it
-  - model actually used, when available
-- persist these values in the per-run report and provider scorecard so they
-  can be aggregated alongside OpenCode runs
-- enforce post-response abort criteria when usage exceeds configured limits:
-  - do not commit or create a PR if the configured token or cost ceiling was
-    exceeded
-  - report the run as a budget/control failure, not as an ordinary model
-    failure
-- add preflight validation or clear warnings for controls that OpenRouter
-  Direct cannot enforce before spending tokens
-- document the difference between hard pre-call limits, post-call enforcement,
-  and future streaming-based live aborts
-- consider a streaming follow-up only if needed; the first implementation may
-  keep the single-call request model as long as it records honest limitations
-- align naming and report fields with the OpenCode budget diagnostics where
-  possible, so dashboards and validation reports do not need provider-specific
-  special cases
-
-Acceptance criteria:
-- OpenRouter Direct consumes the same `--max-run-*` CLI flags that are already
-  meaningful for OpenCode, or explicitly records unsupported fields.
-- A run that exceeds configured OpenRouter Direct cost or token limits does not
-  produce a commit or PR.
-- OpenRouter Direct request runtime is bounded by a configurable timeout.
-- Run reports contain comparable cost/token/runtime fields for OpenRouter
-  Direct and OpenCode.
-- The 0.9.0 validation report can distinguish OpenRouter Direct budget/control
-  failures from ordinary model patch failures.
-- Tests cover successful usage capture, token-limit abort, cost-limit abort,
-  timeout handling, and unsupported cache-token semantics.
-
-Touches: `workers/openrouter_worker.py`, `workers/openrouter_direct_adapter.py`,
-         `workers/base.py`, `scripts/solve_issues.py`,
-         `scripts/solver_reporting.py`, `tests/test_openrouter_worker.py`,
-         `tests/test_worker_adapters.py`, `tests/test_solve_issues.py`
-
-Checks:
-- `git diff --check`
-- `python -m unittest tests.test_openrouter_worker tests.test_worker_adapters`
-- `python -m unittest discover -s tests`
-
----
-
-## 22. Research backlog shaping frameworks before turning ideas into issues
-
-
-Labels: `theme/research`, `theme/workflow`, `theme/backlog`, `theme/quality`
-
-Priority: `1`
-
-The project needs a deliberate shaping layer between raw ideas and generated
-GitHub issues. We are moving bottom-up from concrete observations and
-experiments, but we need structure so interesting ideas do not immediately
-become oversized implementation issues. Before changing the backlog generator
-or dashboard workflow, research established approaches and recommend a small
-set of candidate structures that fit `ai-issue-solver`.
-
-Context:
-- raw ideas, initiatives, discovery work, ready implementation issues, and
-  generated GitHub issues are currently too close together
-- `open.md` should remain useful, but not every idea should become a
-  GitHub issue automatically
-- the dashboard/PWA will likely need to show ideas, shaped candidates, ready
-  issues, generated issues, and run history as different workflow states
-- strategic ideas such as reusing old laptops as coding worker nodes should be
-  researched against existing distributed-computing, home-lab, CI-runner, and
-  agent-runner solutions before we design our own implementation
-
-Suggested scope:
-- research and compare established product/workflow structures for the path
-  from idea to executable issue, including at least:
-  - Dual-Track Agile / Discovery and Delivery
-  - Opportunity Solution Tree
-  - GIST planning: Goals, Ideas, Steps, Tasks
-  - Backlog Refinement and Definition of Ready
-  - RICE or similar lightweight prioritisation/scoring methods
-  - Shape Up pitches, appetite, bets, and cycles if applicable
-- research structurally similar open-source or platform projects that are close
-  to this project's domain, including at least OpenCode, Codex, OpenRouter, and
-  other AI coding, model-routing, agent-orchestration, or provider-integration
-  projects
-- create a standardised comparison report for each researched approach:
-  - purpose and core workflow
-  - where raw ideas live
-  - how ideas become candidates
-  - how candidates become ready implementation work
-  - prioritisation model
-  - evidence or confidence signals
-  - fit for solo/mobile use
-  - fit for AI-assisted issue generation
-  - fit for dashboard/PWA representation
-  - risks, overhead, and failure modes
-- create an evidence log for project assumptions and lessons learned, for
-  example Aider currently being a weak fit for this workflow, MiniMax looking
-  promising for some R work, or Mistral Medium being a good cost/performance
-  default
-- define how often subjective provider/model assessments should be challenged
-  again using fresh benchmark runs, new public information, and recent local
-  solver outcomes
-- propose a lightweight model/provider knowledge base that records strengths,
-  weaknesses, cost tier, interface stability, task fit, last-reviewed date, and
-  evidence source for each model or provider interface
-- include internet research as one input for model preselection, but keep local
-  benchmark results and project-specific failures visible so recommendations do
-  not rely only on public claims
-- research comparable systems for reusing old hardware or distributed worker
-  capacity, including:
-  - self-hosted GitHub Actions runners
-  - Buildkite/GitLab/Jenkins style worker agents
-  - home-lab orchestration patterns
-  - distributed CI queues
-  - agent runner or coding-worker orchestration projects
-  - lightweight SSH-based job dispatch patterns
-- produce a recommended backlog state model for this project, for example:
-  `idea -> opportunity -> solution candidate -> discovery spike -> ready issue
-  -> generated GitHub issue -> solver run -> PR/rework/done`
-- define which states are allowed to generate GitHub issues automatically and
-  which states must remain research/shaping only
-- propose a small schema for `open.md` entries, including fields such as
-  `type`, `state`, `priority`, `confidence`, `evidence`, `dependencies`,
-  `generate_issue`, and `source`
-- propose dashboard views for the shaped backlog, including mobile-first
-  handling of idea inbox, candidates, ready issues, and generated GitHub issues
-- keep this issue as research and recommendation only; do not implement the
-  backlog generator or dashboard changes in the same PR
-
-Deliverables:
-- one markdown report under `docs/` comparing the researched frameworks
-- one recommended state model for `ai-issue-solver`
-- one proposed `open.md` item template
-- a list of follow-up implementation issues that can be generated separately
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-
----
-
-## Parked / Future
-
-Items below are NOT active priority-1 work. They are kept here so
-the file is a complete backlog, but they will not be picked up by
-`scripts/create_backlog_issues.py` until they are explicitly
-moved back into a priority section. Each entry explains why it
-is parked.
 ## 37. Free OpenCode models full integration and evaluation *(parked)*
 
 
@@ -353,5 +161,58 @@ Touches: `scripts/benchmark_issues.py`, `scripts/solve_issues.py`,
 Checks:
 - `git diff --check`
 - `python -m unittest discover -s tests`
+
+---
+
+## 41. Add label_taxonomy + label_usage_health checks to analyze_repos
+
+Labels: `kind/feature`, `theme/quality`, `area/labels`, `priority/3`
+
+Priority: `3`
+
+`scripts/analyze_repos.py` runs onboarding checks against a target repo
+(README, license, CI, recency, etc.) and generates findings with labels. Two
+checks are missing that would close the loop on the project's own
+`docs/label_taxonomy.md` deliverable:
+
+1. **`label_taxonomy_exists`** — does the target repo document its label
+   structure (e.g. `docs/label_taxonomy.md`, `CONTRIBUTING.md` with a labels
+   section, or similar)? If not, generate a finding that proposes the AIS
+   standard taxonomy as a starting point and offers to scaffold
+   `docs/label_taxonomy.md` from the existing template at
+   `docs/label_taxonomy.md` in the ai-issue-solver repo.
+2. **`label_usage_health`** — given the labels defined in the repo (via the
+   GitHub API) and the labels actually used on issues/PRs, flag any of:
+   - Labels defined but never used (dead weight)
+   - Open issues/PRs with no labels (untriaged)
+   - Issue labels that don't appear in any taxonomy doc (inconsistent)
+
+Both checks follow the same shape as the existing `missing_readme`,
+`missing_license`, etc. checks in the `CHECKS` dict: a title, a label, a
+priority, a description, and the fix suggestion. They emit findings via the
+existing `create_backlog_issues.py` path.
+
+Context:
+- `scripts/analyze_repos.py` already has 12+ onboarding checks.
+- `docs/label_taxonomy.md` is the AIS standard template for new repos.
+- The user-confirmed design (1.0 architecture discussion, 2026-06-21):
+  AIS proposes label taxonomies for target repos as a service, while keeping
+  AIS-internal state out of the label system (uses git notes instead).
+
+Suggested scope:
+- Add `label_taxonomy_exists` and `label_usage_health` entries to the
+  `CHECKS` dict in `scripts/analyze_repos.py`.
+- Implement the check logic in the `RepoAnalyzer` class, mirroring the
+  patterns used by `missing_readme` / `missing_tests`.
+- Reuse the existing `get(path)` API client for label enumeration.
+- Add a unit test per check in `tests/test_analyze_repos.py` covering the
+  three sub-cases (defined-but-unused, untriaged, undefined).
+- Document the two new checks in `scripts/analyze_repos.py` docstring.
+
+Touches: `scripts/analyze_repos.py`, `tests/test_analyze_repos.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_analyze_repos`
 
 ---
