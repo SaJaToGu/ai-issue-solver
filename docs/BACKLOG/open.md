@@ -164,3 +164,63 @@ Checks:
 
 ---
 
+
+
+## 42. 0.9.0 Validation Metrics & Run — first pass (GitHub #326)
+
+Labels: `kind/analysis`, `kind/feature`, `theme/quality`, `priority/1`
+
+Priority: `1`
+
+Deliverable of Release 0.9.0. Goal: measure whether ai-issue-solver
+actually solves real GitHub issues end-to-end, with a number as answer.
+
+Definition of Solved (machine-checkable, not judgment):
+1. Solver produced a PR.
+2. PR was merged into the default branch.
+3. Merge commit's CI run is green.
+
+Scope for this entry (first iteration, not full N=10):
+- Build `scripts/validation_run.py`: selects N small Python
+  bugfixes/refactorings from the cleaned backlog, runs solver + reviewer
+  pipeline against each, captures per-issue outcomes, aggregates to
+  `reports/validation-0.9.0.md`.
+- First validation pass with N=3 (smoke test, not full N=10). After this
+  run is stable, scale to N=10 in a follow-up entry.
+- Report must include: number processed, number merged, success rate,
+  cost per solved issue, time per solved issue, top-5 error classes,
+  cost & time totals.
+- Unit tests for selection logic, outcome parsing, and report
+  generation.
+
+Out of scope (explicit, per issue body):
+- New dashboard for metrics (Markdown report is the deliverable;
+  `status_dashboard.py` continues to show underlying run data).
+- Statistical significance (N is a sample, not a population).
+- Cross-repo validation (this release validates ai-issue-solver only).
+
+Run config (chosen 2026-06-21):
+- Model: `opencode/claude-sonnet-4-5` (paid; Mavis-M3-equivalent quality).
+  Fallback: `opencode/deepseek-v4-flash-free` if cost pressure.
+- `--max-run-cost-usd 5` per run.
+- `--skip-tests --skip-pull` (saves ~15-20 min on preflight that hangs in
+  this env).
+- `--caffeinate` so the runner doesn't get paused by macOS idle sleep.
+
+Reference: `docs/PLANNING_0.9.0.md` Issue 3.
+Sister issues: #323 (Cost-Limit-Forwarding), Reviewer Runtime.
+Backlog source: open.md drift noted 2026-06-21 — §42 added to track the
+deliverable inside the backlog, even though the GitHub issue already
+existed.
+
+Touches: `scripts/validation_run.py` (new), `reports/validation-0.9.0.md`
+(new), `tests/test_validation_run.py` (new), possibly
+`scripts/solve_issues.py` and `scripts/solver_reporting.py` if shared
+outcome-reading helpers are factored out during the work.
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_validation_run` (once added)
+- `python -m compileall scripts workers tests`
+
+---
