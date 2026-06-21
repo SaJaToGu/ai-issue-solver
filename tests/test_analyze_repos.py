@@ -1,3 +1,4 @@
+import base64
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -15,11 +16,15 @@ from analyze_repos import (  # noqa: E402
 
 
 class FakeGitHubClient:
-    def __init__(self, paths=None, readme_size=500, files=None, dirs=None):
+    def __init__(self, paths=None, readme_size=500, files=None, dirs=None,
+                 labels=None, issues=None, contents=None):
         self.paths = paths or []
         self.readme_size = readme_size
         self.files = set(files or [])
         self.dirs = set(dirs or [])
+        self._labels = labels or []
+        self._issues = issues or []
+        self._contents = contents or {}
 
     def get_repo_tree_paths(self, owner, repo, branch):
         return self.paths
@@ -32,6 +37,28 @@ class FakeGitHubClient:
 
     def repo_has_dir(self, owner, repo, dirpath):
         return dirpath in self.dirs
+
+    def get(self, path, **params):
+        lowered = path.lower()
+        if lowered.rstrip('/').endswith('/labels'):
+            return self._labels
+        if '/contents/' in lowered:
+            filepath = path.split('/contents/', 1)[1]
+            content = self._contents.get(filepath)
+            if content is not None:
+                encoded = base64.b64encode(content.encode()).decode()
+                return {
+                    "content": encoded,
+                    "encoding": "base64",
+                    "path": filepath,
+                }
+            return None
+        return None
+
+    def get_all_pages(self, path, **params):
+        if '/issues' in path.lower():
+            return self._issues
+        return []
 
 
 def repo_fixture(**overrides):
@@ -114,6 +141,76 @@ class AnalyzeRepoTests(unittest.TestCase):
         self.assertIn("very_stale_repo", result["findings"])
         self.assertNotIn("stale_repo", result["findings"])
         self.assertIn("Letzter Push", result["finding_details"]["very_stale_repo"])
+
+
+class LabelTaxonomyTests(unittest.TestCase):
+    def test_repo_without_taxonomy_doc_gets_finding(self):
+        client = FakeGitHubClient(
+            paths=["src/app.py"],
+        )
+        result = analyze_repo(client, "example", repo_fixture())
+        self.assertIn("label_taxonomy_exists", result["findings"])
+
+    def test_repo_with_taxonomy_file_skips_finding(self):
+        client = FakeGitHubClient(
+            paths=["docs/label_taxonomy.md", "src/app.py"],
+        )
+        result = analyze_repo(client, "example", repo_fixture())
+        self.assertNotIn("label_taxonomy_exists", result["findings"])
+
+    def test_repo_with_contributing_mentioning_labels_skips_finding(self):
+        client = FakeGitHubClient(
+            paths=["CONTRIBUTING.md", "src/app.py"],
+            contents={"CONTRIBUTING.md": "# Contributing\n\n## Labels\nUse bug, feature."},
+        )
+        result = analyze_repo(client, "example", repo_fixture())
+        self.assertNotIn("label_taxonomy_exists", result["findings"])
+
+
+class LabelUsageHealthTests(unittest.TestCase):
+    def test_unused_labels_get_flagged(self):
+        client = FakeGitHubClient(
+            paths=["src/app.py"],
+            labels=[{"name": "bug"}, {"name": "feature"}, {"name": "unused-label"}],
+            issues=[{"number": 1, "labels": [{"name": "bug"}]}],
+        )
+        result = analyze_repo(client, "example", repo_fixture())
+        self.assertIn("label_usage_health", result["findings"])
+        self.assertIn("unused-label", result["finding_details"]["label_usage_health"])
+
+    def test_untriaged_issues_get_flagged(self):
+        client = FakeGitHubClient(
+            paths=["src/app.py"],
+            labels=[{"name": "bug"}, {"name": "feature"}],
+            issues=[
+                {"number": 1, "labels": [{"name": "bug"}]},
+                {"number": 2, "labels": []},
+            ],
+        )
+        result = analyze_repo(client, "example", repo_fixture())
+        self.assertIn("label_usage_health", result["findings"])
+        self.assertIn("#2", result["finding_details"]["label_usage_health"])
+
+    def test_healthy_label_usage_no_finding(self):
+        client = FakeGitHubClient(
+            paths=["src/app.py"],
+            labels=[{"name": "bug"}],
+            issues=[{"number": 1, "labels": [{"name": "bug"}]}],
+        )
+        result = analyze_repo(client, "example", repo_fixture())
+        self.assertNotIn("label_usage_health", result["findings"])
+
+    def test_inconsistent_labels_reported(self):
+        client = FakeGitHubClient(
+            paths=["docs/label_taxonomy.md", "src/app.py"],
+            labels=[{"name": "bug"}, {"name": "custom-label"}],
+            issues=[{"number": 1, "labels": [{"name": "custom-label"}]}],
+            contents={"docs/label_taxonomy.md": "| `bug` | Bug fixes |"},
+        )
+        result = analyze_repo(client, "example", repo_fixture())
+        self.assertIn("label_usage_health", result["findings"])
+        self.assertIn("custom-label",
+                       result["finding_details"]["label_usage_health"])
 
 
 if __name__ == "__main__":
