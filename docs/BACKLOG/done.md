@@ -211,3 +211,25 @@ Closed via #244. Decompose oversized issues into sub-issues automatically.
 Original labels: `kind/automation`, `theme/workflow`, `theme/github`, `theme/quality`
 
 ---
+## Done — §41 Add label_taxonomy + label_usage_health checks to analyze_repos (#391)
+
+Closed via #391 (PR #392). Added two new onboarding checks to
+`scripts/analyze_repos.py`:
+
+- `label_taxonomy_exists` — flags repos without a documented label
+  taxonomy (`docs/label_taxonomy.md` or label section in `CONTRIBUTING.md`),
+  with suggestion to derive from the AIS standard template.
+- `label_usage_health` — flags labels defined but never used, untriaged
+  open issues/PRs, and issue labels not present in the repo's taxonomy
+  documentation.
+
+Implementation notes: 13 unit tests added in `tests/test_analyze_repos.py`
+covering all three sub-cases (defined-but-unused, untriaged, undefined)
+plus an empty-list edge case. CI green on Python 3.10 + 3.12.
+
+Review verdict: `request changes` (2 blockers + 5 suggestions); user opted
+to merge as-is after manual review of the suggestions.
+
+Original labels: `kind/feature`, `theme/quality`, `area/labels`, `priority/3`
+
+---
