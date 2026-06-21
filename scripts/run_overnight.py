@@ -37,8 +37,7 @@ from solver_commands import (  # noqa: E402
 )
 from solver_reporting import read_normalized_run_outcome  # noqa: E402
 from workers.opencode_diagnostics import (  # noqa: E402
-    check_opencode_state_guard,
-    find_opencode_executable,
+    run_opencode_preflight_guard,
 )
 from utils import print_banner, print_err, print_ok, print_step, print_warn  # noqa: E402
 
@@ -729,14 +728,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.model == "opencode" and not args.dry_run:
         print_step(next_step, "OpenCode-State-Preflight")
         next_step += 1
-        opencode_exe = find_opencode_executable()
-        if not opencode_exe:
-            print_err("OpenCode CLI wurde nicht gefunden!")
-            print("   → Installieren: https://opencode.ai/docs/installation")
-            print("   → Danach `opencode` im PATH verfügbar machen")
-            return 1
-        if not check_opencode_state_guard(
-            opencode_exe,
+        if not run_opencode_preflight_guard(
             allow_conflict=args.allow_opencode_state_conflict,
         ):
             return 1

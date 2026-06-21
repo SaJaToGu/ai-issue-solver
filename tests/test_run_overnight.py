@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import sys
 
@@ -23,6 +24,7 @@ from run_overnight import (  # noqa: E402
     create_session_dir,
     detect_warning_markers,
     format_duration,
+    main as overnight_main,
     parse_args,
     parse_run_dir_timestamp,
     parse_summary_file,
@@ -120,6 +122,27 @@ class OvernightRunnerTests(unittest.TestCase):
         command = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
 
         self.assertIn("--allow-opencode-state-conflict", command)
+
+    def test_main_uses_shared_opencode_preflight_guard(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir = Path(tmpdir) / "overnight"
+            session_dir.mkdir()
+            with patch("run_overnight.create_session_dir", return_value=session_dir), patch(
+                "run_overnight.run_opencode_preflight_guard",
+                return_value=False,
+            ) as preflight_guard:
+                result = overnight_main([
+                    "--model",
+                    "opencode",
+                    "--repo",
+                    "demo",
+                    "--issue",
+                    "7",
+                    "--skip-pull",
+                ])
+
+        self.assertEqual(result, 1)
+        preflight_guard.assert_called_once_with(allow_conflict=False)
 
     def test_build_dashboard_command_uses_configured_paths_and_owner(self):
         args = self.make_args(
