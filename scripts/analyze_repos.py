@@ -6,6 +6,10 @@ Morpheus-Style AI Issue Solver — github.com/SaJaToGu
 Scannt alle Repos eines GitHub-Users und erstellt einen
 detaillierten JSON-Report mit Verbesserungsvorschlägen.
 
+Prüft u.a.: README, Lizenz, CI/CD, Tests, Staleness,
+Label-Taxonomie (label_taxonomy_exists) und Label-Nutzung
+(label_usage_health: ungenutzte/fehlende/inkonsistente Labels).
+
 Verwendung:
     python scripts/analyze_repos.py --user SaJaToGu
     python scripts/analyze_repos.py --user SaJaToGu --output reports/analysis.json
@@ -14,6 +18,7 @@ Verwendung:
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
 import json
 import os
@@ -153,6 +158,31 @@ CHECKS = {
             "Dieses Repo ist ein Fork, hat aber keine eigene README oder Beschreibung, "
             "die erklärt was du daran geändert oder warum du es geforkt hast. "
             "Füge einen kurzen Abschnitt 'Meine Änderungen' in der README hinzu."
+        ),
+    },
+    "label_taxonomy_exists": {
+        "title": "Keine Label-Taxonomie dokumentiert",
+        "label": "documentation",
+        "priority": "medium",
+        "description": (
+            "Dieses Repo hat keine dokumentierte Label-Taxonomie (z.B. "
+            "docs/label_taxonomy.md oder CONTRIBUTING.md mit Labels-Abschnitt). "
+            "Eine definierte Taxonomie sorgt für konsistente Issue-Klassifikation "
+            "und ermöglicht agentenbasierte Weiterleitung. "
+            "Das AIS-Projekt bietet eine Standard-Taxonomie als Startpunkt "
+            "und kann eine docs/label_taxonomy.md aus der Vorlage ableiten."
+        ),
+    },
+    "label_usage_health": {
+        "title": "Label-Nutzung zeigt Probleme",
+        "label": "best-practice",
+        "priority": "medium",
+        "description": (
+            "Die Analyse der Label-Nutzung hat Auffälligkeiten ergeben. "
+            "Mögliche Probleme: Label definiert aber nie verwendet, "
+            "offene Issues/PRs ohne Label, oder Issue-Labels, die nicht "
+            "in der Taxonomie-Dokumentation auftauchen. "
+            "Details siehe konkrete Beobachtung."
         ),
     },
 }
@@ -399,6 +429,98 @@ def analyze_repo(client: GitHubClient, owner: str, repo: dict) -> dict:
     # Fork ohne Eigendoku
     if repo.get("fork") and readme_size < 300:
         add_finding("fork_no_customization", f"Fork mit README-Größe {readme_size} Bytes.")
+
+    # ── Label-Taxonomie prüfen ─────────────────────────────────
+    has_taxonomy_file = any(
+        'label_taxonomy' in p.lower() or p.lower().endswith('label_taxonomy.md')
+        for p in tree_paths
+    )
+    has_label_doc = has_taxonomy_file
+    if not has_taxonomy_file:
+        has_contrib = any(p.lower() == 'contributing.md' for p in tree_paths)
+        if has_contrib:
+            contrib_resp = client.get(
+                f"/repos/{owner}/{name}/contents/CONTRIBUTING.md"
+            )
+            if isinstance(contrib_resp, dict) and contrib_resp.get("content"):
+                try:
+                    raw_contrib = base64.b64decode(
+                        contrib_resp["content"]
+                    ).decode("utf-8")
+                    if 'label' in raw_contrib.lower():
+                        has_label_doc = True
+                except (ValueError, IndexError):
+                    pass
+    if not has_label_doc:
+        add_finding("label_taxonomy_exists",
+            "Keine docs/label_taxonomy.md oder CONTRIBUTING.md mit Labels-Abschnitt "
+            "gefunden. Das AIS-Projekt kann eine docs/label_taxonomy.md aus der "
+            "Standard-Vorlage ableiten.")
+
+    # ── Label-Gesundheit prüfen ─────────────────────────────────
+    labels_data = client.get(f"/repos/{owner}/{name}/labels")
+    issues_data = client.get_all_pages(
+        f"/repos/{owner}/{name}/issues", state="open"
+    )
+    if isinstance(labels_data, list) and isinstance(issues_data, list):
+        defined_labels = {l["name"] for l in labels_data}
+        used_labels = set()
+        untriaged = []
+        for issue in issues_data:
+            issue_lbls = {l["name"] for l in issue.get("labels", [])}
+            used_labels.update(issue_lbls)
+            if not issue_lbls:
+                untriaged.append(f"#{issue['number']}")
+
+        health_msgs = []
+
+        unused = defined_labels - used_labels
+        if unused:
+            sorted_unused = sorted(unused)[:10]
+            health_msgs.append(
+                f"Label definiert aber nie genutzt: {', '.join(sorted_unused)}"
+            )
+
+        if untriaged:
+            health_msgs.append(
+                f"Offene Issues/PRs ohne Label: {', '.join(untriaged[:10])}"
+            )
+
+        # Issue-Labels in Taxonomie-Dokumentation prüfen
+        taxonomy_paths = [
+            p for p in tree_paths
+            if 'label_taxonomy' in p.lower() or p.lower().endswith('label_taxonomy.md')
+        ]
+        if taxonomy_paths:
+            doc_labels = set()
+            for tax_path in taxonomy_paths:
+                content_resp = client.get(
+                    f"/repos/{owner}/{name}/contents/{tax_path}"
+                )
+                if isinstance(content_resp, dict) and content_resp.get("content"):
+                    try:
+                        raw = base64.b64decode(
+                            content_resp["content"]
+                        ).decode("utf-8")
+                        for line in raw.splitlines():
+                            line = line.strip()
+                            if line.startswith("| `") and "` |" in line:
+                                lbl = line.split("`")[1].strip()
+                                if lbl:
+                                    doc_labels.add(lbl)
+                    except (ValueError, IndexError):
+                        pass
+            if doc_labels:
+                inconsistent = used_labels - doc_labels
+                if inconsistent:
+                    sorted_inc = sorted(inconsistent)[:10]
+                    health_msgs.append(
+                        "Issue-Labels nicht in Taxonomie-Doku: "
+                        f"{', '.join(sorted_inc)}"
+                    )
+
+        if health_msgs:
+            add_finding("label_usage_health", "; ".join(health_msgs))
 
     print(f"{'✅' if not findings else f'⚠️  {len(findings)} Findings'}")
 
