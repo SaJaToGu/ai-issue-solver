@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import json
 import os
 import re
 import shutil
@@ -3905,6 +3906,57 @@ def print_solver_directories() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# Rework / retry flag usage instrumentation
+# ─────────────────────────────────────────────────────────────
+
+# Path is intentionally fixed (relative to repo CWD) so dashboard tools and
+# post-hoc analytics can find it without configuration.
+REWORK_FLAG_USAGE_LOG = Path("reports/usage/rework-flags.jsonl")
+
+
+def _log_rework_flag_use(args) -> None:
+    """Append one JSON line to REWORK_FLAG_USAGE_LOG when any of
+    --rework / --retry / --rework-pr / --compare-models is used.
+
+    Best-effort: any I/O failure is logged as a warning but does not
+    abort the solver run. The hook is also disabled when the
+    AIS_REWORK_FLAG_NO_LOG env var is set (used by unit tests).
+    """
+    if os.environ.get("AIS_REWORK_FLAG_NO_LOG"):
+        return
+
+    active_flags: list[str] = []
+    if getattr(args, "rework", False):
+        active_flags.append("--rework")
+    if getattr(args, "retry", False):
+        active_flags.append("--retry")
+    if getattr(args, "rework_pr", 0):
+        active_flags.append(f"--rework-pr {args.rework_pr}")
+    if getattr(args, "compare_models", False):
+        active_flags.append("--compare-models")
+    if not active_flags:
+        return
+
+    entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "flags": active_flags,
+        "model": getattr(args, "model", None),
+        "repo": getattr(args, "repo", None),
+        "issue": getattr(args, "issue", None),
+        "rework_pr": getattr(args, "rework_pr", 0) or None,
+        "dry_run": bool(getattr(args, "dry_run", False)),
+    }
+
+    try:
+        REWORK_FLAG_USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with REWORK_FLAG_USAGE_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        # Instrumentation must never break the solver.
+        print_warn(f"rework-flag usage log failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────
 
@@ -4148,6 +4200,10 @@ def main():
         )
     if args.rework_pr and not args.model:
         args.model = "openrouter_direct"
+
+    # Instrumentation: append a JSON line to reports/usage/rework-flags.jsonl
+    # if any rework/retry/compare-models flag was used. See §48 / #412.
+    _log_rework_flag_use(args)
 
     if requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")

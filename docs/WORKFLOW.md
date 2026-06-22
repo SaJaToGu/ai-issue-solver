@@ -210,6 +210,11 @@ Erstellt strukturierte Rework-Kontexte, wenn ein generierter PR nicht direkt
 gemergt werden sollte. Das gilt nicht nur für rote CI, sondern auch für grüne,
 aber zu große oder riskante PRs.
 
+> **Welchen Rework-Pfad soll ich nehmen?** Für eine Übersicht
+> `--rework` / `--retry` / `--rework-pr` / `--compare-models` vs.
+> `rework_workflow.py` siehe die [Decision Matrix](#which-rework-path-do-i-want-decision-matrix-48--412)
+> weiter unten.
+
 **Typische Auslöser:**
 - CI oder lokale Tests sind rot
 - PR ist grün, aber zu groß, zu breit oder nicht reviewbar genug
@@ -333,6 +338,28 @@ bewusst auf demselben Branch fortgesetzt werden:
 ```bash
 python scripts/solve_issues.py --model opencode --repo <repo-name> --issue <issue-number> --rework
 ```
+
+### Which rework path do I want? (Decision Matrix, §48 / #412)
+
+There are now four rework-adjacent entry points. Use the matrix below to
+pick the right one. Each invocation appends one JSON line to
+`reports/usage/rework-flags.jsonl` so usage can be analysed after one
+release cycle.
+
+| Situation                                                    | Use                                  |
+| ------------------------------------------------------------ | ------------------------------------ |
+| PR has review feedback (request-changes verdict), I want the solver to read the review threads and push follow-up commits on the same PR branch | `--rework-pr <N>` (PR-keyed, added in #404 / PR #405) |
+| Issue-branch already has an open PR and I want to keep working on it (continue the solver run on the same branch, not PR-feedback driven) | `--rework` (Issue-keyed)             |
+| Open PR exists and I want to force a fresh solver run anyway (e.g. flaky CI, want to retry the original issue scope) | `--retry`                            |
+| Compare multiple models on the same issue in one shot         | `--compare-models` (requires `--retry`) |
+| The PR is too large / risky / needs decomposition into sub-issues before any rework | `scripts/rework_workflow.py` (sub-issue planning only) |
+
+**Cheat rule of thumb:**
+
+- *"There is review feedback on PR #N"* → `--rework-pr <N>`
+- *"There is an open PR for issue #M and I want to push more commits to its branch"* → `--rework`
+- *"There is an open PR but I want to start over / compare models"* → `--retry` (or `--retry --compare-models`)
+- *"The PR is too big or risky, decompose it first"* → `rework_workflow.py`
 
 Der Modus wird verweigert, wenn mehrere offene PR-Branches gefunden werden oder
 der PR-Head/Base-Branch nicht eindeutig zum geplanten Issue-Branch passt.
