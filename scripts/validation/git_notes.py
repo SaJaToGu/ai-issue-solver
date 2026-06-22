@@ -79,3 +79,35 @@ def get_sub_issues_for_pr(
 ) -> list[dict[str, Any]]:
     note = read_note(repo_root=repo_root)
     return note.get(str(parent_pr), [])
+
+
+def add_rework_to_note(
+    pr_number: int,
+    rework_run: dict[str, Any],
+    repo_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Append a rework run entry under the PR's key in the notes ref.
+
+    The note structure under ``pr_number`` is:
+    ::
+        {
+            "rework_runs": [
+                {"run_id": "...", "ts": "...", "status": "...", ...},
+            ]
+        }
+
+    Existing sub-issues under the same key are preserved.
+    """
+    note = read_note(repo_root=repo_root)
+    key = str(pr_number)
+    entry = note.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    rework_runs = entry.get("rework_runs", [])
+    if not isinstance(rework_runs, list):
+        rework_runs = []
+    rework_runs.append(rework_run)
+    entry["rework_runs"] = rework_runs
+    note[key] = entry
+    write_note(note, repo_root=repo_root)
+    return note

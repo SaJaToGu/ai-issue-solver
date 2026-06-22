@@ -4056,6 +4056,17 @@ def main():
         help="Erzwingt die erneute Bearbeitung eines Issues, auch wenn bereits ein offener PR existiert",
     )
     parser.add_argument(
+        "--rework-pr",
+        type=int,
+        default=0,
+        help=(
+            "PR-Nummer fuer den Rework-Workflow: Holt PR-Diff + Review-Feedback, "
+            "erstellt einen fokussierten Prompt und wendet die Aenderungen als "
+            "Follow-up-Commits auf demselben Branch an. Nutzt das angegebene --model. "
+            "Beispiel: --rework-pr 403 --model openrouter_direct"
+        ),
+    )
+    parser.add_argument(
         "--compare-models",
         action="store_true",
         help="Mehrere Modelle auf demselben Issue ausfuehren (erfordert --retry)",
@@ -4130,8 +4141,13 @@ def main():
         exit_code = run_opencode_diagnostic()
         sys.exit(exit_code)
 
-    if not args.model:
-        parser.error("--model ist erforderlich, ausser bei --cleanup-preserved-worktrees")
+    if not args.model and not args.rework_pr:
+        parser.error(
+            "--model ist erforderlich, ausser bei --cleanup-preserved-worktrees "
+            "oder --rework-pr"
+        )
+    if args.rework_pr and not args.model:
+        args.model = "openrouter_direct"
 
     if requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")
@@ -4146,7 +4162,8 @@ def main():
     _ROLE_ROUTING = _ensure_role_routing()
 
     # OpenRouter-Slugs verifizieren (überspringbar mit --skip-slug-verification)
-    if _ROLE_ROUTING and not args.skip_slug_verification and not args.dry_run:
+    # Im --rework-pr-Modus nicht noetig (nutzt direkten API-Zugriff)
+    if _ROLE_ROUTING and not args.skip_slug_verification and not args.dry_run and not args.rework_pr:
         if not _ensure_slug_verification():
             sys.exit(1)
         print("   ✅ OpenRouter model slugs verified")
@@ -4281,6 +4298,44 @@ def main():
         print_step(1, f"Modell: {model_config['display_name']}")
         if model_name:
             print(f"   Modell-Name: {model_name}")
+
+    # Rework-PR-Modus: eigenstaendiger Pfad ohne Issue-Iteration
+    if args.rework_pr:
+        print_step(1, f"Rework-Workflow fuer PR #{args.rework_pr}")
+        print(f"   Modell: {args.model}")
+        if model_name:
+            print(f"   Modell-Name: {model_name}")
+        repo = args.repo or "ai-issue-solver"
+
+        if args.dry_run:
+            print_warn("DRY-RUN: Rework wird simuliert\n")
+
+        from scripts.validation.rework import run_pr_rework
+        result = run_pr_rework(
+            owner=user,
+            repo=repo,
+            pr_number=args.rework_pr,
+            model=model_name or model,
+            dry_run=args.dry_run,
+            timeout_seconds=args.max_run_runtime_seconds or 300,
+        )
+
+        status_str = result.status
+        print(f"\n   Rework-Status: {status_str}")
+        if result.pr_url:
+            print(f"   PR: {result.pr_url}")
+        if result.run_id:
+            print(f"   Run-ID: {result.run_id}")
+        if result.error_detail:
+            print(f"   Detail: {result.error_detail}")
+
+        if args.dry_run:
+            print(f"\n   [DRY-RUN] Wuerde Rework-Prompt mit folgenden Parametern ausfuehren:")
+            print(f"      PR #{args.rework_pr} in {user}/{repo}")
+            print(f"      Modell: {model_name or model}")
+            print(f"      Basis-Branch: aus PR-Metadaten")
+
+        sys.exit(0 if status_str in ("rework_pushed", "dry_run", "no_changes", "skip_merged_pr") else 1)
 
     # Repos ermitteln
     if args.repo:

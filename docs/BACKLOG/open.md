@@ -164,7 +164,7 @@ Checks:
 
 ---
 
-## 45. Add PR rework loop: apply review feedback via model call (GitHub #404)
+## 45. Add PR rework loop: apply review feedback via model call (GitHub #404) *(in progress)*
 
 Labels: `kind/feature`, `theme/workflow`, `area/runs`, `priority/2`
 

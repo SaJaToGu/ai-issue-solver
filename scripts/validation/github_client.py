@@ -30,6 +30,18 @@ class CiStatus:
     successful_count: int = 0
 
 
+@dataclass(frozen=True)
+class ReviewThread:
+    """A single review comment thread on a PR."""
+    id: int
+    body: str
+    user: str
+    path: str | None = None
+    position: int | None = None
+    commit_id: str | None = None
+    state: str = "pending"
+
+
 class ValidationGitHubClient:
     BASE = "https://api.github.com"
 
@@ -222,6 +234,71 @@ class ValidationGitHubClient:
                 break
             page += 1
         return results
+
+    def get_pr_review_threads(
+        self,
+        repo: str,
+        pr_number: int,
+    ) -> list[ReviewThread]:
+        """Fetch all review comments on a PR (inline diff comments).
+
+        Returns list of ReviewThread objects. Raises RuntimeError on API error.
+        """
+        results: list[ReviewThread] = []
+        page = 1
+        while True:
+            resp = self.session.get(
+                f"{self.BASE}/repos/{self.owner}/{repo}/pulls/{pr_number}/comments",
+                params={"per_page": 100, "page": page},
+            )
+            if resp.status_code == 404:
+                return results
+            self._raise_for_status(resp, f"get PR review threads: {repo}#{pr_number}")
+            page_threads = resp.json()
+            for item in page_threads:
+                results.append(ReviewThread(
+                    id=item.get("id", 0),
+                    body=item.get("body", ""),
+                    user=item.get("user", {}).get("login", "unknown"),
+                    path=item.get("path"),
+                    position=item.get("position"),
+                    commit_id=item.get("commit_id"),
+                    state=item.get("state", "pending"),
+                ))
+            if len(page_threads) < 100:
+                break
+            page += 1
+        return results
+
+    def get_pr_diff(
+        self,
+        repo: str,
+        pr_number: int,
+        *,
+        max_chars: int = 200_000,
+    ) -> str:
+        """Fetch the unified diff of a pull request via the GitHub API.
+
+        Uses the ``application/vnd.github.v3.diff`` media type. Returns the
+        diff text, truncated to ``max_chars`` with a clear marker if larger.
+
+        Raises RuntimeError on non-2xx responses.
+        """
+        url = f"{self.BASE}/repos/{self.owner}/{repo}/pulls/{pr_number}"
+        resp = self.session.get(
+            url,
+            headers={"Accept": "application/vnd.github.v3.diff"},
+        )
+        if resp.status_code == 404:
+            raise RuntimeError(f"PR #{pr_number} not found in {self.owner}/{repo}")
+        self._raise_for_status(resp, f"get PR diff: {repo}#{pr_number}")
+        diff = resp.text
+        if len(diff) > max_chars:
+            diff = (
+                diff[:max_chars]
+                + f"\n\n... [truncated, original diff was {len(resp.text)} chars] ...\n"
+            )
+        return diff
 
     @staticmethod
     def _raise_for_status(resp: requests.Response, context: str) -> None:
