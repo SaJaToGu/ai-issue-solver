@@ -919,10 +919,13 @@ class TestGetWorkerAdapter(unittest.TestCase):
 
 class TestConsistentOutcomeClassification(unittest.TestCase):
     """
-    Stellt sicher, dass die Outcome-Klassifizierung konsistent über alle Adapter ist.
+    Stellt sicher, dass die Outcome-Klassifizierung konsistent über alle
+    Adapter und die gemeinsame shared primitive ist.
 
-    Die Klassifizierung verwendet assess_worker_result() aus solve_issues,
-    die über alle Provider hinweg gilt.
+    Die Klassifizierung verwendet sowohl ``assess_worker_result()`` aus
+    ``solve_issues`` (Legacy) als auch ``classify_worker_outcome()`` aus
+    ``workers.execution`` (Shared), um sicherzustellen, dass beide denselben
+    Code durchlaufen und identische Ergebnisse liefern.
     """
 
     def _assess(self, returncode: int, git_status: str, **kwargs):
@@ -930,45 +933,53 @@ class TestConsistentOutcomeClassification(unittest.TestCase):
         result = WorkerRunResult(returncode=returncode, output="")
         return assess_worker_result(result, git_status, **kwargs)
 
+    def _assess_shared(self, returncode: int, git_status: str, **kwargs):
+        from workers.execution import classify_worker_outcome
+        from workers.base import WorkerRunResult
+        result = WorkerRunResult(returncode=returncode, output="")
+        return classify_worker_outcome(result, git_status, **kwargs)
+
+    def _assert_consistent(self, returncode: int, git_status: str,
+                           expected_reason: str,
+                           expected_continue: bool,
+                           expected_changes: bool, **kwargs):
+        legacy = self._assess(returncode, git_status, **kwargs)
+        shared = self._assess_shared(returncode, git_status, **kwargs)
+        for assessment in (legacy, shared):
+            self.assertEqual(assessment.reason, expected_reason)
+            self.assertEqual(assessment.should_continue, expected_continue)
+            self.assertEqual(assessment.has_changes, expected_changes)
+
     def test_returncode_0_with_changes_is_changed(self):
-        assessment = self._assess(0, " M README.md\n")
-        self.assertEqual(assessment.reason, "changed")
-        self.assertTrue(assessment.should_continue)
-        self.assertTrue(assessment.has_changes)
+        self._assert_consistent(0, " M README.md\n",
+                                "changed", True, True)
 
     def test_returncode_0_without_changes_is_no_changes(self):
-        assessment = self._assess(0, "")
-        self.assertEqual(assessment.reason, "no_changes")
-        self.assertFalse(assessment.should_continue)
-        self.assertFalse(assessment.has_changes)
+        self._assert_consistent(0, "",
+                                "no_changes", False, False)
 
     def test_nonzero_with_meaningful_changes_continues(self):
-        assessment = self._assess(1, " M scripts/solver.py\n")
-        self.assertEqual(assessment.reason, "nonzero_with_changes")
-        self.assertTrue(assessment.should_continue)
+        self._assert_consistent(1, " M scripts/solver.py\n",
+                                "nonzero_with_changes", True, True)
 
     def test_nonzero_without_changes_stops(self):
-        assessment = self._assess(1, "")
-        self.assertEqual(assessment.reason, "nonzero_without_changes")
-        self.assertFalse(assessment.should_continue)
+        self._assert_consistent(1, "",
+                                "nonzero_without_changes", False, False)
 
     def test_returncode_2_from_openrouter_direct_treated_as_nonzero(self):
         """OpenRouter Direct Returncode 2 (Prosa) wird als nonzero_without_changes klassifiziert."""
-        assessment = self._assess(2, "")
-        self.assertEqual(assessment.reason, "nonzero_without_changes")
-        self.assertFalse(assessment.should_continue)
+        self._assert_consistent(2, "",
+                                "nonzero_without_changes", False, False)
 
     def test_returncode_2_with_changes_continues_for_review(self):
         """OpenRouter Direct Returncode 2 mit Änderungen: partial success."""
-        assessment = self._assess(2, " M scripts/solver.py\n")
-        self.assertEqual(assessment.reason, "nonzero_with_changes")
-        self.assertTrue(assessment.should_continue)
+        self._assert_consistent(2, " M scripts/solver.py\n",
+                                "nonzero_with_changes", True, True)
 
     def test_aider_side_effects_only_stops(self):
         """Nur Aider-Nebenwirkungen ohne Änderungen → stoppt."""
-        assessment = self._assess(1, "?? .aider.chat.history.md\n")
-        self.assertEqual(assessment.reason, "nonzero_without_changes")
-        self.assertFalse(assessment.should_continue)
+        self._assert_consistent(1, "?? .aider.chat.history.md\n",
+                                "nonzero_without_changes", False, False)
 
 
 # ─────────────────────────────────────────────────────────────

@@ -400,19 +400,8 @@ VIBE_TURN_LIMIT_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class WorkerRunResult:
-    returncode: int
-    output: str
-    last_activity_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class WorkerAssessment:
-    should_continue: bool
-    has_changes: bool
-    reason: str
-
+from workers.base import WorkerRunResult
+from workers.base import WorkerOutcome as WorkerAssessment
 
 @dataclass(frozen=True)
 class WorkerValidation:
@@ -2352,22 +2341,15 @@ def run_post_solve_tests(repo_dir: str,
 def assess_worker_result(result: WorkerRunResult, git_status: str,
                          repo_dir: str | None = None,
                          issue_text: str = "") -> WorkerAssessment:
-    changed_paths = changed_paths_from_status(git_status)
-    meaningful_paths = meaningful_changed_paths_for_worker(
-        git_status,
-        repo_dir=repo_dir,
-        issue_text=issue_text,
-        worker_returncode=result.returncode,
-    )
-    has_changes = bool(changed_paths)
-    has_meaningful_changes = bool(meaningful_paths)
-    if result.returncode == 0 and has_changes:
-        return WorkerAssessment(True, True, "changed")
-    if result.returncode == 0:
-        return WorkerAssessment(False, False, "no_changes")
-    if has_meaningful_changes:
-        return WorkerAssessment(True, True, "nonzero_with_changes")
-    return WorkerAssessment(False, False, "nonzero_without_changes")
+    """Classify a worker result into a structured assessment.
+
+    Delegates to the shared ``classify_worker_outcome`` from
+    ``workers.execution``.  Kept as a public function in this module for
+    backward compatibility; new code should import
+    ``workers.execution.classify_worker_outcome`` directly.
+    """
+    from workers.execution import classify_worker_outcome
+    return classify_worker_outcome(result, git_status, repo_dir, issue_text)
 
 
 def parse_codex_reset_datetime(reset_text: str) -> datetime | None:

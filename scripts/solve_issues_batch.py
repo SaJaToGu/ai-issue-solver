@@ -17,10 +17,7 @@ import heapq
 import json
 import os
 from pathlib import Path
-import queue
-import subprocess
 import sys
-import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -32,14 +29,14 @@ from solve_issues import (  # noqa: E402
     format_worker_output_tail,
     requests,
     safe_run_repo_name,
-    should_surface_worker_line,
-)
-from solver_reporting import (  # noqa: E402
-    format_heartbeat,
 )
 from solver_commands import (  # noqa: E402
     add_budget_flags,
     add_solver_core_flags,
+)
+from workers.execution import (  # noqa: E402
+    WorkerHealthConfig,
+    run_worker_subprocess,
 )
 from workers.opencode_diagnostics import (  # noqa: E402
     run_opencode_preflight_guard,
@@ -444,108 +441,36 @@ def run_issue_job(job: IssueJob, cmd: list[str], project_root: Path,
                   heartbeat_interval_seconds: float | None = None,
                   heartbeat_job_label: str | None = None) -> IssueJobResult:
     started_at = time.monotonic()
-    try:
-        process = subprocess.Popen(
-            cmd,
-            cwd=project_root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-    except OSError as exc:
-        output = f"Worker konnte nicht gestartet werden: {exc}\n"
-        return IssueJobResult(
-            job=job,
-            returncode=127,
-            output=output,
-            duration_seconds=time.monotonic() - started_at,
-            unhealthy=True,
-            unhealthy_reason="Worker-Prozess konnte nicht gestartet werden",
+
+    health_config = None
+    if health_timeout_seconds is not None and health_timeout_seconds > 0:
+        health_config = WorkerHealthConfig(
+            health_timeout_seconds=health_timeout_seconds,
+            unhealthy_action=unhealthy_action,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
         )
 
-    output_parts: list[str] = []
-    line_queue: queue.Queue[str | None] = queue.Queue()
-    last_activity = time.monotonic()
-    unhealthy_reason = None
-    unhealthy_seen = False
-    last_heartbeat_at = started_at
-
-    def read_output() -> None:
-        try:
-            assert process.stdout is not None
-            for line in process.stdout:
-                line_queue.put(line)
-        finally:
-            line_queue.put(None)
-
-    reader = threading.Thread(target=read_output, daemon=True)
-    reader.start()
-
-    while True:
-        try:
-            line = line_queue.get(timeout=0.2)
-        except queue.Empty:
-            line = ""
-
-        if line is None:
-            break
-        if line:
-            output_parts.append(line)
-            if should_surface_worker_line(line):
-                last_activity = time.monotonic()
-
-        if process.poll() is not None and line_queue.empty():
-            break
-
-        if (
-            health_timeout_seconds
-            and health_timeout_seconds > 0
-            and not unhealthy_seen
-            and time.monotonic() - last_activity > health_timeout_seconds
-            and not worker_is_known_waiting("".join(output_parts), detect_rate_limit_fn, now_fn)
-        ):
-            unhealthy_seen = True
-            unhealthy_reason = (
-                f"keine Worker-Ausgabe seit {health_timeout_seconds:.0f}s"
-            )
-            output_parts.append(f"\n[batch-health] Unhealthy: {unhealthy_reason}\n")
-            if unhealthy_action in {"stop", "retry"}:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
-                break
-
-        if heartbeat_interval_seconds and heartbeat_interval_seconds > 0:
-            elapsed = time.monotonic() - last_heartbeat_at
-            if elapsed >= heartbeat_interval_seconds:
-                heartbeat_line = format_heartbeat(
-                    job.issue_number,
-                    time.monotonic() - started_at,
-                    job_label=heartbeat_job_label,
-                )
-                print(heartbeat_line)
-                last_heartbeat_at = time.monotonic()
-
-    if process.stdout:
-        process.stdout.close()
-    reader.join(timeout=1)
-    returncode = process.wait()
-    output = "".join(output_parts)
-    if unhealthy_seen and unhealthy_action == "warn":
-        unhealthy_reason = None
+    worker_result, health_result = run_worker_subprocess(
+        cmd,
+        str(project_root),
+        env,
+        health_config=health_config,
+        detect_rate_limit_fn=detect_rate_limit_fn,
+        is_known_waiting_fn=(
+            lambda output: worker_is_known_waiting(output, detect_rate_limit_fn, now_fn)
+        ),
+        heartbeat_label=heartbeat_job_label,
+        heartbeat_issue_number=job.issue_number,
+        now_fn=now_fn,
+    )
 
     return IssueJobResult(
         job=job,
-        returncode=returncode,
-        output=output,
+        returncode=worker_result.returncode,
+        output=worker_result.output,
         duration_seconds=time.monotonic() - started_at,
-        unhealthy=unhealthy_seen and unhealthy_action in {"stop", "retry"},
-        unhealthy_reason=unhealthy_reason,
+        unhealthy=health_result.unhealthy,
+        unhealthy_reason=health_result.unhealthy_reason,
     )
 
 
