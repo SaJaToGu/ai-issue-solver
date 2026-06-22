@@ -664,6 +664,38 @@ class TestAiderAdapter(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("Aider completed", diag.all_outputs[0])
 
+    def test_aider_emits_deprecation_warning_on_init(self):
+        """AiderAdapter.__init__ must emit a DeprecationWarning pointing at
+        opencode / openrouter_direct / codex as the supported paths."""
+        import warnings
+
+        from workers.aider_adapter import AiderAdapter
+        import workers.aider_adapter as aider_mod
+
+        # Reset the once-per-process guard so the warning fires reliably in
+        # this test even if an earlier test in the same process already
+        # instantiated AiderAdapter.
+        aider_mod._AIDER_DEPRECATION_EMITTED = False
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                AiderAdapter("claude")
+            deprecation = [
+                w for w in caught if issubclass(w.category, DeprecationWarning)
+            ]
+            self.assertEqual(
+                len(deprecation), 1,
+                "expected exactly one DeprecationWarning on AiderAdapter() init",
+            )
+            message = str(deprecation[0].message)
+            self.assertIn("aider", message.lower())
+            self.assertIn("opencode", message)
+            self.assertIn("openrouter_direct", message)
+            self.assertIn("codex", message)
+        finally:
+            # Restore the guard so the rest of the test run is not affected.
+            aider_mod._AIDER_DEPRECATION_EMITTED = True
+
 
 # ─────────────────────────────────────────────────────────────
 # OpenRouterDirectAdapter
