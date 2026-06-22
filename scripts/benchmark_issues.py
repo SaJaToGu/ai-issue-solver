@@ -148,7 +148,6 @@ def run_benchmark(
     ):
         return {
             "error": "opencode_state_preflight_failed",
-            "models_tested": 0,
         }
 
     if ensemble > 0:
@@ -270,18 +269,6 @@ def run_benchmark(
             }
 
     return results
-
-
-def print_results(results: dict) -> None:
-    """Gibt die Benchmark-Ergebnisse aus."""
-    print_banner("BENCHMARK-ERGEBNISSE")
-    for model, result in results.items():
-        print(f"\nModell: {model}")
-        print(f"  - Änderungen: {'Ja' if result.get('changes', False) else 'Nein'}")
-        print(f"  - PR erstellt: {'Ja' if result.get('pr', False) else 'Nein'}")
-        print(f"  - Tests bestanden: {'Ja' if result.get('tests_passed', False) else 'Nein'}")
-        if "error" in result:
-            print(f"  - Fehler: {result['error']}")
 
 
 def print_results(results: dict) -> None:
