@@ -15,16 +15,17 @@ from scripts.validation.cli import (  # noqa: E402
     cmd_list,
     cmd_report,
     cmd_run,
+    cmd_split,
     main,
     parse_args,
 )
 
 
 class BuildParserTests(unittest.TestCase):
-    def test_parser_has_four_subcommands(self):
+    def test_parser_has_five_subcommands(self):
         parser = build_parser()
         subcommands = {name for name, _ in parser._subparsers._group_actions[0].choices.items()}
-        self.assertEqual(subcommands, {"run", "report", "check-prs", "list"})
+        self.assertEqual(subcommands, {"run", "report", "check-prs", "list", "split"})
 
     def test_parser_requires_subcommand(self):
         with self.assertRaises(SystemExit):
@@ -187,6 +188,66 @@ class CmdListTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
 
 
+class CmdSplitTests(unittest.TestCase):
+    def test_cmd_split_not_oversized(self):
+        config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
+        args = parse_args(["split", "--pr", "42"])
+        with patch("scripts.validation.cli.decompose_pr_to_sub_issues") as mock_split:
+            mock_split.return_value = {
+                "is_oversized": False,
+                "total_loc": 100,
+                "total_files": 3,
+                "sub_issues": [],
+            }
+            exit_code = cmd_split(args, config)
+            self.assertEqual(exit_code, 0)
+
+    def test_cmd_split_oversized_creates_issues(self):
+        config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
+        args = parse_args(["split", "--pr", "42"])
+        with patch("scripts.validation.cli.decompose_pr_to_sub_issues") as mock_split:
+            mock_split.return_value = {
+                "is_oversized": True,
+                "total_loc": 600,
+                "total_files": 12,
+                "sub_issues": [
+                    {"number": 100, "title": "sub-1"},
+                    {"number": 101, "title": "sub-2"},
+                ],
+                "manual_review_files": [],
+            }
+            exit_code = cmd_split(args, config)
+            self.assertEqual(exit_code, 0)
+
+    def test_cmd_split_missing_owner(self):
+        config: dict = {}
+        args = parse_args(["split", "--pr", "42"])
+        exit_code = cmd_split(args, config)
+        self.assertNotEqual(exit_code, 0)
+
+    def test_cmd_split_pr_not_found(self):
+        config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
+        args = parse_args(["split", "--pr", "42"])
+        with patch("scripts.validation.cli.decompose_pr_to_sub_issues") as mock_split:
+            mock_split.side_effect = ValueError("PR #42 not found")
+            exit_code = cmd_split(args, config)
+            self.assertEqual(exit_code, 1)
+
+    def test_split_subcommand_parses_pr(self):
+        args = parse_args(["split", "--pr", "42"])
+        self.assertEqual(args.command, "split")
+        self.assertEqual(args.pr, 42)
+
+    def test_split_subcommand_close_parent_flag(self):
+        args = parse_args(["split", "--pr", "42", "--close-parent"])
+        self.assertTrue(args.close_parent)
+
+    def test_split_subcommand_custom_thresholds(self):
+        args = parse_args(["split", "--pr", "42", "--max-loc", "1000", "--max-files", "20"])
+        self.assertEqual(args.max_loc, 1000)
+        self.assertEqual(args.max_files, 20)
+
+
 class MainTests(unittest.TestCase):
     def test_main_handles_argument_error_gracefully(self):
         with patch("scripts.validation.cli.parse_args") as mock_parse:
@@ -221,6 +282,13 @@ class MainTests(unittest.TestCase):
             exit_code = main(["list"])
             self.assertEqual(exit_code, 0)
             mock_list.assert_called_once()
+
+    def test_main_with_split(self):
+        with patch("scripts.validation.cli.cmd_split") as mock_split:
+            mock_split.return_value = 0
+            exit_code = main(["split", "--pr", "42"])
+            self.assertEqual(exit_code, 0)
+            mock_split.assert_called_once()
 
 
 if __name__ == "__main__":

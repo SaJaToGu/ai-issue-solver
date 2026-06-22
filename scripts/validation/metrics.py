@@ -1,12 +1,47 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from scripts.validation.models import RunReportData, ValidationMetrics
+
+
+DEFAULT_MAX_PR_LOC = 500
+DEFAULT_MAX_PR_FILES = 10
+DEFAULT_TEST_RATIO = 0.3
+
+
+def load_thresholds(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    thresholds = {
+        "max_loc": int(os.environ.get("AIS_MAX_PR_LOC", DEFAULT_MAX_PR_LOC)),
+        "max_files": int(os.environ.get("AIS_MAX_PR_FILES", DEFAULT_MAX_PR_FILES)),
+        "test_ratio": float(os.environ.get("AIS_TEST_RATIO", DEFAULT_TEST_RATIO)),
+    }
+    if overrides:
+        for key in ("max_loc", "max_files", "test_ratio"):
+            if key in overrides and overrides[key] is not None:
+                thresholds[key] = overrides[key]
+    return thresholds
+
+
+def is_oversized(
+    loc: int,
+    num_files: int,
+    test_ratio: float,
+    thresholds: dict[str, Any] | None = None,
+) -> bool:
+    t = load_thresholds(thresholds)
+    if loc > t["max_loc"]:
+        return True
+    if num_files > t["max_files"]:
+        return True
+    if test_ratio < t["test_ratio"]:
+        return True
+    return False
 
 
 def compute_metrics(reports: list[RunReportData]) -> ValidationMetrics:
@@ -22,6 +57,14 @@ def compute_metrics(reports: list[RunReportData]) -> ValidationMetrics:
         if r.error_class:
             error_counter[r.error_class] += 1
 
+    thresholds = load_thresholds()
+    oversized_count = sum(
+        1 for r in reports
+        if r.pr_loc is not None and is_oversized(
+            r.pr_loc, r.pr_files or 0, 0.0, thresholds
+        )
+    )
+
     error_list = tuple(sorted(error_counter.items()))
     per_issue = tuple(reports)
 
@@ -33,6 +76,7 @@ def compute_metrics(reports: list[RunReportData]) -> ValidationMetrics:
         total_duration_seconds=total_duration,
         errors=error_list,
         per_issue=per_issue,
+        oversized_count=oversized_count,
     )
 
 
@@ -72,6 +116,7 @@ def generate_report(metrics: ValidationMetrics, title: str = "Validation Report"
     lines.append(f"| Time per solved issue | {format_duration(metrics.time_per_solved)} |")
     lines.append(f"| Total cost | {format_cost(metrics.total_cost_usd)} |")
     lines.append(f"| Total time | {format_duration(metrics.total_duration_seconds)} |")
+    lines.append(f"| Oversized PRs | {metrics.oversized_count} |")
     lines.append("")
 
     if metrics.top_errors:
@@ -85,8 +130,9 @@ def generate_report(metrics: ValidationMetrics, title: str = "Validation Report"
 
     lines.append("## Per-Issue Results")
     lines.append("")
-    lines.append("| # | Issue | Status | PR | Merged | CI Green | Cost | Duration | Error |")
-    lines.append("|---|---|---|---|---|---|---|---|---|")
+    lines.append("| # | Issue | Status | PR | Merged | CI Green | Cost | Duration | Error | Oversized |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    thresholds = load_thresholds()
     for report in metrics.per_issue:
         issue_link = f"#{report.issue_number}" if report.issue_number else "-"
         status = report.status or "-"
@@ -96,7 +142,10 @@ def generate_report(metrics: ValidationMetrics, title: str = "Validation Report"
         cost = format_cost(report.cost_usd)
         duration = format_duration(report.duration_seconds)
         error = report.error_class or "-"
-        lines.append(f"| {issue_link} | {report.issue_title[:50]} | {status} | {pr_link} | {merged} | {ci} | {cost} | {duration} | {error} |")
+        oversized = ""
+        if report.pr_loc is not None:
+            oversized = "yes" if is_oversized(report.pr_loc, report.pr_files or 0, 0.0, thresholds) else "no"
+        lines.append(f"| {issue_link} | {report.issue_title[:50]} | {status} | {pr_link} | {merged} | {ci} | {cost} | {duration} | {error} | {oversized} |")
     lines.append("")
 
     return "\n".join(lines)
@@ -132,6 +181,7 @@ def persist_validation_run(
         "success_rate": metrics.success_rate,
         "cost_per_solved": metrics.cost_per_solved,
         "time_per_solved": metrics.time_per_solved,
+        "oversized_count": metrics.oversized_count,
         "errors": list(metrics.errors),
         "per_issue": [
             {
@@ -144,6 +194,8 @@ def persist_validation_run(
                 "cost_usd": r.cost_usd,
                 "duration_seconds": r.duration_seconds,
                 "error_class": r.error_class,
+                "pr_loc": r.pr_loc,
+                "pr_files": r.pr_files,
             }
             for r in metrics.per_issue
         ],
