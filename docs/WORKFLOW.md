@@ -337,6 +337,53 @@ python scripts/solve_issues.py --model opencode --repo <repo-name> --issue <issu
 Der Modus wird verweigert, wenn mehrere offene PR-Branches gefunden werden oder
 der PR-Head/Base-Branch nicht eindeutig zum geplanten Issue-Branch passt.
 
+### PR-keyed Rework via Review Feedback (`--rework-pr`)
+
+Wenn ein PR Review-Feedback erhalten hat (Verdict "request changes" mit
+konkreten Blockern und/oder Suggestions), übernimmt `--rework-pr <N>` das
+bisherige Mavis-as-dev-Refactor: Es liest die offenen Review-Threads, holt
+den aktuellen PR-Diff, baut einen fokussierten Prompt (PR-Kontext +
+Review-Feedback + Base-Branch-Info), spawnt einen Worker auf demselben
+PR-Branch und pusht Follow-up-Commits. CI läuft automatisch erneut, der
+Reviewer wird via PR-Comment re-notified.
+
+Im Gegensatz zu `--rework` (Issue-keyed, setzt einen Solver-Run auf dem
+Issue-Branch fort) ist `--rework-pr` PR-keyed: keine neue Branch-Anlage,
+kein Kampf mit `skip_existing_pr`, fokussierter auf Review-Feedback statt
+auf den ursprünglichen Issue-Scope.
+
+```bash
+python scripts/solve_issues.py --rework-pr <N>
+python scripts/solve_issues.py --rework-pr <N> --dry-run    # nur Prompt anzeigen
+python scripts/solve_issues.py --rework-pr <N> --model opencode/deepseek-v4-flash-free
+```
+
+**Ablauf:**
+
+1. Unresolved review threads via GitHub client holen
+2. PR-Diff (current tip vs base) fetchen
+3. Fokussierten Prompt konstruieren (billiger als Volllauf — Issue-Scope
+   muss nicht re-derived werden)
+4. Worker auf demselben Branch spawnen, Follow-up-Commits pushen
+5. Run-Report unter `reports/runs/pr-{N}-rework-{ts}/`
+
+**Out of scope** (von #404 explizit ausgeschlossen):
+
+- Auto-Merge nach erfolgreichem Rework — Menschen approven weiterhin
+- Cross-PR-Rework (ein Rework → mehrere abhängige PRs)
+- Webhook-getriebenes automatisches Rework auf Review-Event
+  (braucht einen Server; deferred)
+- LLM-basierte Decomposition von "oversized + rework" → Split-Pfad
+  (orthogonal zum Backward-Split-Loop aus #402)
+
+**Wann nutzen:**
+
+- Review-Verdict "request changes" + konkrete Fixes
+- Worker hat was Brauchbares produziert, aber Reviewer hat
+  Line-Cap / Naming / Test-Coverage angemerkt
+- NICHT für: neue Features, breite Refactors, scope-creep — dafür
+  ist ein neuer Issue besser
+
 ### OpenCode WAL/SQLite-State
 
 Vor echten OpenCode-Worker-Läufen prüft der Solver den globalen OpenCode-State.
