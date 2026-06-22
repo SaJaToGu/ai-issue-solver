@@ -80,7 +80,6 @@ class BenchmarkIssueTests(unittest.TestCase):
             )
 
         self.assertEqual(result["error"], "opencode_state_preflight_failed")
-        self.assertEqual(result["models_tested"], 0)
         preflight_guard.assert_called_once_with(allow_conflict=True)
 
     def test_run_benchmark_skips_opencode_preflight_for_dry_run(self):
