@@ -15,6 +15,9 @@ venv/
 # Generated reports
 reports/*
 !reports/.gitkeep
+# Aggregated release-level reports are tracked (per #326 release plan)
+!reports/validation-0.9.0.md
+!reports/validation-*.md
 
 # Generated benchmark artifacts
 benchmark_results_*.json
