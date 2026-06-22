@@ -206,11 +206,9 @@ ai-issue-solver/
 │   ├── analyze_repos.py         # Schritt 1: Repos analysieren
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
-│   ├── import_repolens_results.py # RepoLens-Reports als Issues importieren
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
 │   ├── plan_issue_batches.py    # Konfliktarme Issue-Wellen planen
 │   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
-│   ├── run_repolens_docker.sh   # RepoLens in Docker-Sandbox ausfuehren
 │   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
 │   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
 │   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen

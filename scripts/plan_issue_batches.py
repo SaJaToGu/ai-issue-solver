@@ -31,7 +31,8 @@ KEYWORD_TOUCHES = (
     (("batch", "scheduler", "overnight", "rate limit", "fallback", "worker health"), ("scripts/solve_issues_batch.py", "scripts/run_overnight.py", "tests/test_solve_issues_batch.py", "tests/test_run_overnight.py")),
     (("mistral", "opencode", "provider", "worker", "vibe", "aider"), ("scripts/solve_issues.py", "tests/test_solve_issues.py", "README.md", "config/config.example.env")),
     (("docs", "documentation", "readme", "language", "policy"), ("README.md", "docs/")),
-    (("repolens",), ("README.md", "scripts/import_repolens_results.py", "scripts/run_repolens_docker.sh", "tests/")),
+    # RepoLens archived 2026-06-23 (Issue #406). Lens removed; revival
+    # would need a separate issue documenting the Docker image source.
     (("github api", "pull request", "post merge", "cleanup"), ("scripts/github_summary.py", "scripts/post_merge_cleanup.py", "tests/")),
 )
 
