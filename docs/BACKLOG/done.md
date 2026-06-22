@@ -257,3 +257,18 @@ fail-fast if not in config or supplied via CLI / env var.
 Original labels: `kind/analysis`, `kind/feature`, `theme/quality`, `priority/1`
 
 ---
+## Done — §43 First validation pass with N=3 (GitHub #398)
+
+Closed via #398 (PRs #399, #400, #401, all merged into develop).
+
+3 PRs created + merged (3/3 per-issue success on PR creation, 0/3
+on the strict "merged + CI green" definition at first read — since
+then: 3 PRs merged, all CI green). Validation infrastructure from
+#326 is now end-to-end proven.
+
+The validation-0.9.0.md report at reports/validation-0.9.0.md is the
+deliverable.
+
+Original labels: `kind/analysis`, `kind/feature`, `theme/quality`, `priority/2`
+
+---
