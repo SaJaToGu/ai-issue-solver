@@ -6,9 +6,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from scripts.validation.github_client import ValidationGitHubClient
 from scripts.validation.git_notes import add_sub_issues_to_note
 from scripts.validation.metrics import is_oversized, load_thresholds
+from scripts.validation.split_client import SplitGitHubClient
 
 
 SUB_ISSUE_LABELS = ["kind/refactor", "priority/2", "area/runs"]
@@ -73,7 +73,7 @@ def build_sub_issue_body(
 
 
 def decompose_pr_to_sub_issues(
-    client: ValidationGitHubClient,
+    client: SplitGitHubClient,
     repo: str,
     pr_number: int,
     close_parent: bool = False,
@@ -152,7 +152,7 @@ def decompose_pr_to_sub_issues(
 
 
 def close_parent_with_cross_ref(
-    client: ValidationGitHubClient,
+    client: SplitGitHubClient,
     repo: str,
     pr_number: int,
     sub_issue_numbers: list[int],
@@ -166,7 +166,7 @@ def close_parent_with_cross_ref(
         sub_refs = ", ".join(f"#{n}" for n in sub_issue_numbers)
         comment = (
             f"Closed: decomposed into {sub_refs} "
-            f"via #402 backward-split loop."
+            f"via the backward-split loop."
         )
 
     client.create_comment(repo, pr_number, comment)

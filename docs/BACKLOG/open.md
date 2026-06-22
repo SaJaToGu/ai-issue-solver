@@ -218,3 +218,68 @@ Checks:
   proposed decomposition without actually creating sub-issues
 
 ---
+
+## 45. Add PR rework loop: apply review feedback via model call (GitHub #404)
+
+Labels: `kind/feature`, `theme/workflow`, `area/runs`, `priority/2`
+
+Priority: `2`
+
+The current pipeline has no clean path for "PR needs rework after
+review". Both `run_overnight.py --issue N` and `solve_issues.py --retry N`
+skip when a PR already exists (`skip_existing_pr=True` guard fires even
+with `--retry`). Manual Mavis-as-dev rework works but is not a
+pipeline-produced PR, so it doesn't count for the 0.9.0 metric and
+doesn't reuse the existing review flow.
+
+Triggered in practice: PR #403 review of #402 backward-split loop came
+back with 2 blockers + 3 suggestions, both retry paths skipped, ended
+up doing manual refactor (extracting split_client.py, line-cap fixes).
+
+Solution: new CLI entry on the existing solver layer:
+`solve_issues.py --rework-pr <N>` that
+
+1. fetches the PR's unresolved review threads (GitHub client)
+2. fetches the PR diff (current tip vs base)
+3. constructs a focused prompt: PR context + review feedback + base
+   branch info (cheaper than a full solve prompt — no re-derivation)
+4. spawns a worker on the same branch (NOT a new branch) with the rework
+   prompt; worker pushes follow-up commits, preserves head ref
+5. CI re-runs automatically; reviewer re-notified via PR comment
+6. run-report written under `reports/runs/pr-{N}-rework-{ts}/`
+
+Acceptance:
+- `solve_issues.py --rework-pr 403` produces follow-up commits on the
+  PR's branch (or reports an actionable error)
+- The model's prompt contains: PR diff + review thread bodies + base
+  branch name + reviewer usernames (for mention context)
+- Rework run-report key shape `pr-{N}-rework-{ts}` does not collide with
+  issue-keyed runs
+- Tests: `--rework-pr` mocked end-to-end + dry-run path covered
+
+Out of scope (this issue):
+- Auto-merge after rework (humans still approve)
+- Cross-PR rework (dependent PRs)
+- Webhook-driven automatic rework (deferred — needs a server)
+- LLM-based "oversized + rework" → split decomposition (orthogonal to
+  #402 backward-split loop)
+
+Refs: PR #403 review of #402 (trigger), #326 validation infra (run-type
+recording), `solve_issues.py --retry` (sibling — issue-keyed, not PR-keyed).
+
+Touches: `scripts/solve_issues.py`, `scripts/solver/runner.py` (or new
+`scripts/solver/rework.py`), `scripts/validation/github_client.py` (or
+new sibling client per #402 split pattern), `prompts/rework_pr.md` (new),
+`reports/` convention, `tests/test_solver/test_rework.py` (new),
+`docs/PLANNING_1.0.md` (rework-loop section).
+
+Checks:
+- `python -m unittest discover -s tests` (regression check)
+- `python scripts/solve_issues.py --help` shows `--rework-pr` flag
+- `python scripts/solve_issues.py --rework-pr 403 --dry-run` prints the
+  constructed prompt + PR metadata without spawning a worker
+- `python scripts/solve_issues.py --rework-pr 403` (live) on PR #403
+  produces ≥1 follow-up commit + run-report under
+  `reports/runs/pr-403-rework-*/`
+
+---

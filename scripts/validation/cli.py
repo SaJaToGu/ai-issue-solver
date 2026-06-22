@@ -275,6 +275,12 @@ def cmd_split(args: argparse.Namespace, config: dict[str, Any]) -> int:
         return 1
     repo = args.repo
 
+    # Wrap the core client in a SplitGitHubClient so split.py can call
+    # the file-listing / sub-issue-creation / close-issue helpers without
+    # bloating ValidationGitHubClient beyond its line cap.
+    from scripts.validation.split_client import SplitGitHubClient
+    split_client = SplitGitHubClient(client)
+
     thresholds = load_thresholds(
         {"max_loc": args.max_loc, "max_files": args.max_files}
     )
@@ -282,7 +288,7 @@ def cmd_split(args: argparse.Namespace, config: dict[str, Any]) -> int:
     print(f"Decomposing PR #{args.pr}...")
     try:
         result = decompose_pr_to_sub_issues(
-            client=client,
+            client=split_client,
             repo=repo,
             pr_number=args.pr,
             close_parent=args.close_parent,
@@ -311,7 +317,7 @@ def cmd_split(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
     if args.close_parent and result["sub_issues"]:
         sub_numbers = [s["number"] for s in result["sub_issues"]]
-        close_parent_with_cross_ref(client, repo, args.pr, sub_numbers)
+        close_parent_with_cross_ref(split_client, repo, args.pr, sub_numbers)
         print(f"  Parent PR #{args.pr} closed.")
 
     return 0

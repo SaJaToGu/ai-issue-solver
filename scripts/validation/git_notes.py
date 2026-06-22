@@ -22,6 +22,23 @@ def _git(*args: str, repo_root: str | Path | None = None) -> str:
 
 
 def ensure_notes_ref(repo_root: str | Path | None = None) -> None:
+    """Ensure the `refs/notes/ais` ref exists by adding an empty note on HEAD.
+
+    No-op if HEAD does not resolve (empty repository or detached CI clone
+    without a checkout). Without this guard, an empty repo would raise
+    `fatal: ambiguous argument 'HEAD': unknown revision`.
+    """
+    try:
+        head = _git("rev-parse", "HEAD", repo_root=repo_root)
+    except RuntimeError:
+        # Empty repository (or HEAD unborn) — nothing to anchor the
+        # notes ref to. Skip silently; the caller should detect this and
+        # decide whether to fail or proceed.
+        print("git_notes: HEAD unavailable, skipping notes ref creation",
+              file=sys.stderr)
+        return
+    if not head:
+        return
     _git("notes", "--ref", NOTES_REF, "add", "-m", "{}", "HEAD", repo_root=repo_root)
 
 

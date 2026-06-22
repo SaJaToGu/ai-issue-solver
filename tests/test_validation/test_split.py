@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from scripts.validation.github_client import (  # noqa: E402
-    PrFileInfo,
     PullRequestInfo,
     ValidationGitHubClient,
 )
@@ -20,6 +19,10 @@ from scripts.validation.split import (  # noqa: E402
     close_parent_with_cross_ref,
     decompose_pr_to_sub_issues,
     group_files_by_module,
+)
+from scripts.validation.split_client import (  # noqa: E402
+    PrFileInfo,
+    SplitGitHubClient,
 )
 
 
@@ -94,7 +97,7 @@ class ChangesForFileTests(unittest.TestCase):
 
 class DecomposePrToSubIssuesTests(unittest.TestCase):
     def test_happy_path_decomposes(self):
-        client = MagicMock(spec=ValidationGitHubClient)
+        client = MagicMock(spec=SplitGitHubClient)
         client.get_pull_request.return_value = _mock_pr()
         client.get_pr_files.return_value = _mock_files()
         client.create_issue.side_effect = [
@@ -115,7 +118,7 @@ class DecomposePrToSubIssuesTests(unittest.TestCase):
         mock_note.assert_called_once()
 
     def test_not_oversized_returns_early(self):
-        client = MagicMock(spec=ValidationGitHubClient)
+        client = MagicMock(spec=SplitGitHubClient)
         client.get_pull_request.return_value = _mock_pr()
         client.get_pr_files.return_value = [
             PrFileInfo(filename="README.md", status="modified", additions=1, deletions=0, changes=1),
@@ -147,7 +150,7 @@ class DecomposePrToSubIssuesTests(unittest.TestCase):
 
 class CloseParentWithCrossRefTests(unittest.TestCase):
     def test_closes_with_default_comment(self):
-        client = MagicMock(spec=ValidationGitHubClient)
+        client = MagicMock(spec=SplitGitHubClient)
         client.get_pull_request.return_value = _mock_pr()
         client.create_comment.return_value = {}
         client.close_issue.return_value = {}
@@ -161,7 +164,7 @@ class CloseParentWithCrossRefTests(unittest.TestCase):
         self.assertIn("#101", result["comment"])
 
     def test_closes_with_custom_comment(self):
-        client = MagicMock(spec=ValidationGitHubClient)
+        client = MagicMock(spec=SplitGitHubClient)
         client.get_pull_request.return_value = _mock_pr()
 
         close_parent_with_cross_ref(
@@ -172,7 +175,7 @@ class CloseParentWithCrossRefTests(unittest.TestCase):
         self.assertEqual(call_body, "custom close")
 
     def test_pr_not_found_raises(self):
-        client = MagicMock(spec=ValidationGitHubClient)
+        client = MagicMock(spec=SplitGitHubClient)
         client.get_pull_request.return_value = None
 
         with self.assertRaises(ValueError):
