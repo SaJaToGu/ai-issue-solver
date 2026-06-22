@@ -2,14 +2,16 @@
 
 Split from monolithic scripts/validation_run.py (1570 LOC) into modules:
 
-  models  — data classes (ValidationIssue, RunReportData,
-            ValidationConfig, ValidationMetrics)
-  parsers — summary.txt + run-report reading
-  metrics — compute_metrics, format_duration, format_cost,
-            generate_report, validation-run persistence
-
-This package is being merged in 3 stacked PRs:
-  PR-A: models + parsers + metrics (library core, no IO)
-  PR-B: + github_client + runner + pr_checks + selection (IO)
-  PR-C: + cli + shim (CLI surface, wires everything)
+  models         — data classes
+  parsers        — summary.txt + run-report reading
+  pr_checks      — check_pr_statuses + GitHub merge/CI helpers
+  selection      — issue selection by label
+  github_client  — ValidationGitHubClient wrapping the GitHub API
+  runner         — subprocess orchestration for solver + reviewer
+  metrics        — compute_metrics, format_duration, generate_report,
+                   validation-run persistence
+  cli            — argparse subcommands + main entry point
 """
+from validation.cli import main
+
+__all__ = ["main"]
