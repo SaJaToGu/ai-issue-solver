@@ -331,3 +331,92 @@ tests (Python 3.10 + 3.12 CI green after fix).
 Original labels: `kind/feature`, `theme/workflow`, `area/runs`, `priority/2`
 
 ---
+
+## Done — §46 Sync VERSION file and CHANGELOG to current 0.9.0 milestone (GitHub #410)
+
+Closed via #410 (PR #413, squash-merged into develop at commit `74b08cb`).
+
+Single-commit diff:
+- `VERSION` (+1/-1) — bumped from `0.3.1` to `0.9.0`
+- `CHANGELOG.md` (+25) — new top section `## 0.9.0 - 2026-06-23`
+  summarising §42–§45 work (validation library, first validation run,
+  backward-split loop, PR rework loop) plus the RepoLens archive (#406)
+- `docs/BACKLOG/open.md` (+135) — §46/§47/§48 entries (the two
+  follow-up items got their own done.md entries below)
+
+Tag `v0.9.0` pushed to origin immediately after the squash-merge.
+
+Original labels: `kind/refactor`, `priority/3`, `theme/workflow`
+
+---
+
+## Done — §47 Deprecate Aider worker adapter in favour of opencode/openrouter/codex (GitHub #411)
+
+Closed via #411 (PR #414, squash-merged into develop at commit `a16fbd6`).
+
+Adapter stays functional — only a deprecation signal was added. Four
+files touched (+92/-2):
+- `workers/aider_adapter.py` — new `_emit_aider_deprecation_warning()`
+  helper + module-level `_AIDER_DEPRECATION_EMITTED` guard. Called from
+  `AiderAdapter.__init__` with `stacklevel=2`. Module docstring now has a
+  Sphinx-style `.. deprecated::` directive listing the three supported
+  paths.
+- `requirements-aider.txt` — header rewritten with a deprecation banner
+  and migration note. The `aider-chat` pin stays.
+- `docs/SETUP_AIDER.md` — top-of-file banner flags the deprecation and
+  points at opencode / openrouter_direct / codex.
+- `tests/test_worker_adapters.py` — new
+  `test_aider_emits_deprecation_warning_on_init` asserts the warning
+  fires exactly once and references all three supported paths.
+
+Local tests: 94/94 `TestWorkerAdapters` green, including the new test.
+The once-per-process guard keeps existing tests printing the warning to
+stderr once but not failing.
+
+Follow-up (separate issue, NOT here): actual removal of
+`workers/aider_adapter.py`, `requirements-aider.txt`, and
+`docs/SETUP_AIDER.md` after 1–2 releases confirm zero usage in
+`reports/runs/.../metadata.json`.
+
+Original labels: `kind/refactor`, `priority/3`, `theme/workflow`, `theme/provider`
+
+---
+
+## Done — §48 Consolidate rework/retry flag surface across solve_issues.py (GitHub #412)
+
+Closed via #412 (PR #415, squash-merged into develop at commit `5304258`
+after a rebase onto the post-§46 develop — no semantic conflict, just
+the open.md § entries had to be re-applied). Tag cleanup followed.
+
+Scope delivered (no flag removal yet — that is the explicit follow-up):
+- `scripts/solve_issues.py` (+56) — new module-level
+  `REWORK_FLAG_USAGE_LOG` constant pointing at
+  `reports/usage/rework-flags.jsonl`, plus `_log_rework_flag_use()`
+  helper that appends one JSON line per invocation when any of
+  `--rework` / `--retry` / `--rework-pr` / `--compare-models` is set.
+  Best-effort I/O with a single `print_warn` on failure. Env-var
+  opt-out (`AIS_REWORK_FLAG_NO_LOG`) for unit tests.
+- `docs/WORKFLOW.md` (+27) — new "Which rework path do I want?" decision
+  matrix covering all four entry points plus `rework_workflow.py`, with
+  a cheat rule of thumb. Linked from the existing `rework_workflow.py`
+  section.
+- `docs/BACKLOG/open.md` (-10) — housekeeping: removed duplicated
+  `Touches:` / `Checks:` tail block in §39 (pre-existing copy-paste
+  artifact from earlier § cleanup work).
+- `tests/test_solve_issues.py` (+120) — new `TestReworkFlagUsageLog`
+  class with 4 unit tests covering no-op without flag, single-flag
+  entry, `--rework-pr` records PR number + `dry_run`, and combined
+  `--retry --compare-models`.
+
+Local tests: 163/163 `test_solve_issues` green, including the new
+4 tests. CI green on Python 3.10 + 3.12.
+
+Follow-up (separate issue, NOT here): after one release of telemetry,
+analyse `reports/usage/rework-flags.jsonl` for actual flag usage, pick
+the canonical rework path, deprecate the others with a clear migration
+note.
+
+Original labels: `kind/refactor`, `priority/3`, `theme/workflow`, `area/runs`
+
+---
+
