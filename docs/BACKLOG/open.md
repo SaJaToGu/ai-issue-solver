@@ -163,3 +163,54 @@ Checks:
 - `python -m unittest discover -s tests`
 
 ---
+
+## 43. First validation pass with N=3 (GitHub #398)
+
+Labels: `kind/analysis`, `kind/feature`, `theme/quality`, `priority/2`
+
+Priority: `2`
+
+First end-to-end run of the validation infrastructure shipped in #326
+(PRs #395/#396/#397). Demonstrates that `scripts/validation_run.py
+run` actually drives the solver pipeline and produces the report.
+
+Issues to process:
+- #386 — chore: cleanup benchmark_issues.py duplicates
+- #387 — Add mandatory split-planning step before broad solver runs
+- #382 — Consolidate worker execution and health result handling
+
+Run config (proven from #391, #326 v2):
+- Model: opencode/deepseek-v4-flash-free (free, no billing risk)
+- --max-run-cost-usd 5 per run, hard ceiling on total
+- --skip-tests --skip-pull (saves preflight time on this env)
+- --allow-opencode-state-conflict (CLI 1.15.13 vs stale serve 1.14.28)
+- --caffeinate (mac idle sleep)
+- Token from config/.env (GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO,
+  OPENCODE_MODEL, OPENCODE_MODEL_NAME)
+
+Acceptance:
+- All 3 issues processed (PR produced OR recorded as no_change).
+- Reports/validation/<run-id>.md aggregated from per-issue outcomes.
+- Report includes 6 metrics: processed, merged, success rate,
+  cost/solved, time/solved, top-5 error classes, totals.
+
+Out of scope:
+- Dashboard (Markdown report is the deliverable).
+- Cross-repo validation.
+- Statistical significance (N=3 is directional).
+
+Definition of Solved (per #326 release-level): an issue counts as
+solved if the produced PR was merged AND the merge commit's CI is
+green. Anything less is partial.
+
+Touches: scripts/validation_run.py, reports/validation/<run-id>.md,
+reports/runs/<run-id>/summary.txt per issue.
+
+Checks:
+- `python -m unittest discover -s tests` (regression check)
+- `python scripts/validation_run.py --help` lists 4 subcommands
+- `python -m compileall scripts tests` clean
+- Final report present at `reports/validation/<run-id>.md` with
+  all 6 metrics filled
+
+---
