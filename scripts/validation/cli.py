@@ -12,6 +12,8 @@ from scripts.validation.metrics import (
     compute_metrics,
     format_cost,
     format_duration,
+    is_oversized,
+    load_thresholds,
     persist_validation_run,
     write_validation_report,
 )
@@ -20,6 +22,7 @@ from scripts.validation.parsers import collect_run_reports
 from scripts.validation.pr_checks import check_pr_statuses
 from scripts.validation.runner import run_solver_for_issue
 from scripts.validation.selection import select_issues_by_label
+from scripts.validation.split import close_parent_with_cross_ref, decompose_pr_to_sub_issues
 
 
 def _load_config() -> dict[str, Any]:
@@ -190,10 +193,18 @@ def cmd_report(args: argparse.Namespace, config: dict[str, Any]) -> int:
     write_validation_report(metrics, output_path, title=args.title)
     print(f"Report written to: {output_path}")
 
+    thresholds = load_thresholds()
+    oversized_flag = metrics.oversized_count > 0
+
     print(f"\n=== Report Summary ===")
     print(f"  Run reports found: {len(reports)}")
     print(f"  Merged:            {metrics.total_merged}")
     print(f"  Success rate:      {metrics.success_rate:.1%}")
+    print(f"  Oversized PRs:     {metrics.oversized_count}")
+    if oversized_flag:
+        for r in reports:
+            if r.pr_loc is not None and is_oversized(r.pr_loc, r.pr_files or 0, 0.0, thresholds):
+                print(f"    - PR #{r.pr_number}: {r.pr_loc} LOC, {r.pr_files} files")
 
     return 0
 
@@ -258,6 +269,54 @@ def cmd_list(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_split(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    client, owner = _get_client(config)
+    if client is None or owner is None:
+        return 1
+    repo = args.repo
+
+    thresholds = load_thresholds(
+        {"max_loc": args.max_loc, "max_files": args.max_files}
+    )
+
+    print(f"Decomposing PR #{args.pr}...")
+    try:
+        result = decompose_pr_to_sub_issues(
+            client=client,
+            repo=repo,
+            pr_number=args.pr,
+            close_parent=args.close_parent,
+            report_path=args.report_path,
+            thresholds=thresholds,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(f"GitHub API error: {exc}", file=sys.stderr)
+        return 1
+
+    if not result["is_oversized"]:
+        print(f"PR #{args.pr} is not oversized ({result['total_loc']} LOC, {result['total_files']} files).")
+        return 0
+
+    print(f"\nPR #{args.pr} is oversized:")
+    print(f"  Total LOC: {result['total_loc']}")
+    print(f"  Total files: {result['total_files']}")
+    print(f"  Sub-issues created: {len(result['sub_issues'])}")
+    for s in result["sub_issues"]:
+        print(f"    #{s['number']}: {s['title']}")
+    if result.get("manual_review_files"):
+        print(f"  Manual review needed for: {result['manual_review_files']}")
+
+    if args.close_parent and result["sub_issues"]:
+        sub_numbers = [s["number"] for s in result["sub_issues"]]
+        close_parent_with_cross_ref(client, repo, args.pr, sub_numbers)
+        print(f"  Parent PR #{args.pr} closed.")
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="validation_run",
@@ -291,6 +350,13 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--label", default="ai-generated", help="Issue label filter")
     list_parser.add_argument("--max", type=int, default=20, help="Max issues to show")
 
+    split_parser = subparsers.add_parser("split", help="Decompose an oversized PR into sub-issues")
+    split_parser.add_argument("--pr", type=int, required=True, help="PR number to decompose")
+    split_parser.add_argument("--close-parent", action="store_true", help="Close parent PR with cross-reference after decomposition")
+    split_parser.add_argument("--report-path", default=None, help="Path to validation report for context")
+    split_parser.add_argument("--max-loc", type=int, default=None, help="Override max LOC threshold (default: 500)")
+    split_parser.add_argument("--max-files", type=int, default=None, help="Override max file threshold (default: 10)")
+
     return parser
 
 
@@ -308,6 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         "report": cmd_report,
         "check-prs": cmd_check_prs,
         "list": cmd_list,
+        "split": cmd_split,
     }
 
     handler = command_map.get(args.command)

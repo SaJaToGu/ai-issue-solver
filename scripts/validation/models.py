@@ -34,6 +34,8 @@ class RunReportData:
     started_at: str | None = None
     finished_at: str | None = None
     run_id: str | None = None
+    pr_loc: int | None = None
+    pr_files: int | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,7 @@ class ValidationMetrics:
     total_duration_seconds: float = 0.0
     errors: tuple[tuple[str, int], ...] = ()
     per_issue: tuple[RunReportData, ...] = ()
+    oversized_count: int = 0
 
     @property
     def success_rate(self) -> float:

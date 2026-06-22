@@ -14,6 +14,8 @@ from scripts.validation.metrics import (  # noqa: E402
     format_cost,
     format_duration,
     generate_report,
+    is_oversized,
+    load_thresholds,
     persist_validation_run,
     write_validation_report,
 )
@@ -178,6 +180,40 @@ class PersistValidationRunTests(unittest.TestCase):
             path = persist_validation_run(metrics, reports_dir)
             self.assertTrue(path.is_file())
             self.assertIn("validation-", path.stem)
+
+
+class IsOversizedTests(unittest.TestCase):
+    def test_under_threshold_returns_false(self):
+        self.assertFalse(is_oversized(100, 3, 0.5, {"max_loc": 500, "max_files": 10, "test_ratio": 0.3}))
+
+    def test_over_loc_returns_true(self):
+        self.assertTrue(is_oversized(600, 3, 0.5))
+
+    def test_over_files_returns_true(self):
+        self.assertTrue(is_oversized(100, 15, 0.5))
+
+    def test_low_test_ratio_returns_true(self):
+        self.assertTrue(is_oversized(100, 3, 0.1))
+
+    def test_custom_thresholds(self):
+        thresholds = {"max_loc": 1000, "max_files": 20, "test_ratio": 0.5}
+        self.assertFalse(is_oversized(800, 15, 0.6, thresholds))
+        self.assertTrue(is_oversized(800, 15, 0.3, thresholds))
+
+    def test_zero_values(self):
+        self.assertFalse(is_oversized(0, 0, 1.0))
+
+    def test_load_thresholds_defaults(self):
+        thresholds = load_thresholds()
+        self.assertEqual(thresholds["max_loc"], 500)
+        self.assertEqual(thresholds["max_files"], 10)
+        self.assertEqual(thresholds["test_ratio"], 0.3)
+
+    def test_load_thresholds_with_overrides(self):
+        thresholds = load_thresholds({"max_loc": 999, "max_files": 50})
+        self.assertEqual(thresholds["max_loc"], 999)
+        self.assertEqual(thresholds["max_files"], 50)
+        self.assertEqual(thresholds["test_ratio"], 0.3)
 
 
 if __name__ == "__main__":

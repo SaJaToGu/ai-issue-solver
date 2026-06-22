@@ -23,6 +23,15 @@ class PullRequestInfo:
 
 
 @dataclass(frozen=True)
+class PrFileInfo:
+    filename: str
+    status: str
+    additions: int
+    deletions: int
+    changes: int
+
+
+@dataclass(frozen=True)
 class CiStatus:
     state: str
     conclusion: str | None = None
@@ -192,6 +201,43 @@ class ValidationGitHubClient:
             total_count=total,
             successful_count=successful,
         )
+
+    def get_pr_files(self, repo: str, number: int) -> list[PrFileInfo]:
+        resp = self.session.get(
+            f"{self.BASE}/repos/{self.owner}/{repo}/pulls/{number}/files",
+            params={"per_page": 100},
+        )
+        if resp.status_code == 404:
+            return []
+        self._raise_for_status(resp, f"get PR files: {repo}#{number}")
+        return [
+            PrFileInfo(
+                filename=f["filename"],
+                status=f.get("status", ""),
+                additions=f.get("additions", 0),
+                deletions=f.get("deletions", 0),
+                changes=f.get("changes", 0),
+            )
+            for f in resp.json()
+        ]
+
+    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> dict:
+        url = f"{self.BASE}/repos/{self.owner}/{repo}/issues"
+        resp = self.session.post(url, json={"title": title, "body": body, "labels": labels})
+        self._raise_for_status(resp, f"create issue: {title}")
+        return resp.json()
+
+    def create_comment(self, repo: str, issue_number: int, body: str) -> dict:
+        url = f"{self.BASE}/repos/{self.owner}/{repo}/issues/{issue_number}/comments"
+        resp = self.session.post(url, json={"body": body})
+        self._raise_for_status(resp, f"create comment on #{issue_number}")
+        return resp.json()
+
+    def close_issue(self, repo: str, issue_number: int) -> dict:
+        url = f"{self.BASE}/repos/{self.owner}/{repo}/issues/{issue_number}"
+        resp = self.session.patch(url, json={"state": "closed"})
+        self._raise_for_status(resp, f"close issue: #{issue_number}")
+        return resp.json()
 
     def get_repo_issues(self, repo: str, state: str = "open") -> list[ValidationIssue]:
         results: list[ValidationIssue] = []
