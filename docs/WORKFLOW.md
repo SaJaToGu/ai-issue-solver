@@ -25,6 +25,12 @@ Dieser Guide erklärt den detaillierten Workflow des AI Issue Solvers, die Batch
 └────────┬────────┘
           │
           ▼
+┌──────────────────────┐
+│ 2b. SPLIT PLANNING   │  ← NEU: Aufteilungsschritt vor breiten
+│    split_planning.py  │    Solver-Läufen. Analysiert, ob ein
+└────────┬─────────────┘    Issue broad ist und erzeugt enge
+          │                 Child-Issues mit Wellen-Reihenfolge
+          ▼
 ┌─────────────────┐
 │ 3. solve_issues  │  ← Wählt KI-Modell (Codex/Claude/OpenAI/Ollama)
 │    .py           │    Nutzt Codex oder aider als Code-Worker
@@ -41,6 +47,18 @@ Dieser Guide erklärt den detaillierten Workflow des AI Issue Solvers, die Batch
 │    merge         │    gezielt nacharbeiten oder mergen
 └─────────────────┘
 ```
+
+**Wichtig:** Vor jedem breiten Solver-Lauf MUSS der `split_planning.py`-Schritt
+durchlaufen werden. Ein Issue gilt als **broad**, wenn es:
+- mehrere unabhaengige Bereiche (`scripts/`, `tests/`, `docs/`) betrifft
+- mehr als 5 Bullet-Items oder ToDos enthaelt
+- mehr als 2 Markdown-Sektionen hat
+- Schluesselwoerter wie "mehrere", "verschiedene" oder "sowohl ... als auch" enthaelt
+- ein `enhancement`-, `epic`- oder `feature`-Label traegt
+
+Ein broad Issue darf NICHT direkt an Minimax Code oder einen anderen Worker
+uebergeben werden. Es muss vorher in enge, konfliktarme Child-Issues aufgeteilt
+werden.
 
 ---
 
@@ -74,6 +92,35 @@ Die Modellauswahl folgt der gemeinsamen, englischsprachigen Policy in
 [MODEL_OVERRIDE_POLICY.md](MODEL_OVERRIDE_POLICY.md): Kommandozeilen-Overrides
 gelten nur fuer den einzelnen Lauf; Defaults bleiben in Rollen- oder
 Provider-Konfiguration.
+
+### `split_planning.py`
+Analysiert ein Parent-Issue auf Breite und erzeugt einen strukturierten
+Aufteilungsplan mit Child-Issues, Ausführungswellen und Modell-Empfehlung.
+
+**Flags:**
+- `--issue`: Parent-Issue-Nummer (Pflicht)
+- `--repo`: GitHub-Repository (Default: `ai-issue-solver`)
+- `--dry-run`: Nur anzeigen, nichts ändern
+- `--emit-command`: Worker- und `gh issue create`-Kommandos ausgeben
+- `--emit-comment`: Split-Plan als Issue-Kommentar posten
+
+**Beispiele:**
+```bash
+python scripts/split_planning.py --issue 387
+python scripts/split_planning.py --issue 387 --emit-command
+python scripts/split_planning.py --issue 387 --emit-comment
+```
+
+**Ausgabe:**
+- `BROAD ISSUE erkannt`: Der Plan enthaelt Child-Issues, Wellen-Reihenfolge
+  und Konfliktanalyse. Der Solver darf NUR Child-Issues erhalten.
+- `Issue ist NICHT broad`: Kein Split noetig; direkte Übergabe an den Solver.
+
+**Regel:** Ein broad Issue darf NIEMALS direkt an `solve_issues.py` oder
+`minimax-code` uebergeben werden. Der `split_planning.py`-Schritt MUSS
+vor jedem breiten Solver-Lauf durchlaufen werden.
+
+---
 
 ### `solve_issues.py`
 Löst offene Issues automatisch mit KI + Codex, Mistral Vibe, OpenCode oder aider.

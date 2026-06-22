@@ -42,7 +42,7 @@ For the process we run after each release to revisit this document, see
 
 - `release-review`
 - `backlog-planning`
-- `issue-splitting`
+- `issue-splitting` (implementiert in `scripts/split_planning.py` — siehe [WORKFLOW.md](WORKFLOW.md))
 - `roadmap-planning`
 
 **Note:** The Planner does **not** handle knowledge lifecycle actions
