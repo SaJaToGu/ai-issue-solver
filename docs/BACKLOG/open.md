@@ -154,16 +154,6 @@ Checks:
 
 ---
 
-Touches: `scripts/benchmark_issues.py`, `scripts/solve_issues.py`,
-         `scripts/status_dashboard.py`, `scripts/model_selection.py`,
-         `reports/`, `tests/`
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-
 ## 46. Sync VERSION file and CHANGELOG to current 0.9.0 milestone
 
 

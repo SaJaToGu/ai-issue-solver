@@ -2898,5 +2898,125 @@ class TestOpenRouterDirectWorkerPath(unittest.TestCase):
         )
 
 
+class TestReworkFlagUsageLog(unittest.TestCase):
+    """Tests for `_log_rework_flag_use` (issue #412 / §48).
+
+    Each invocation that uses any of `--rework`, `--retry`,
+    `--rework-pr`, `--compare-models` should append one JSON line to
+    `reports/usage/rework-flags.jsonl`. Invocations without those
+    flags must be no-ops.
+    """
+
+    def setUp(self):
+        # Force the helper into a temp dir so we never touch the real
+        # repo's `reports/usage/rework-flags.jsonl`.
+        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp_path = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _patch_log_path(self):
+        import solve_issues
+
+        log_path = self._tmp_path / "rework-flags.jsonl"
+        return patch.object(solve_issues, "REWORK_FLAG_USAGE_LOG", log_path)
+
+    def _read_entries(self) -> list[dict]:
+        log_path = self._tmp_path / "rework-flags.jsonl"
+        with log_path.open("r", encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_no_rework_flag_writes_nothing(self):
+        import solve_issues
+        from solve_issues import _log_rework_flag_use
+
+        args = SimpleNamespace(
+            rework=False,
+            retry=False,
+            rework_pr=0,
+            compare_models=False,
+            model="opencode",
+            repo="some-repo",
+            issue=42,
+            dry_run=False,
+        )
+        with self._patch_log_path():
+            _log_rework_flag_use(args)
+            self.assertFalse(
+                solve_issues.REWORK_FLAG_USAGE_LOG.exists(),
+                "log file must not be created when no rework flag is active",
+            )
+
+    def test_rework_flag_writes_entry(self):
+        import solve_issues
+        from solve_issues import _log_rework_flag_use
+
+        args = SimpleNamespace(
+            rework=True,
+            retry=False,
+            rework_pr=0,
+            compare_models=False,
+            model="opencode",
+            repo="some-repo",
+            issue=42,
+            dry_run=False,
+        )
+        with self._patch_log_path():
+            _log_rework_flag_use(args)
+            self.assertTrue(solve_issues.REWORK_FLAG_USAGE_LOG.exists())
+            entries = self._read_entries()
+            self.assertEqual(len(entries), 1)
+            self.assertIn("--rework", entries[0]["flags"])
+            self.assertEqual(entries[0]["model"], "opencode")
+            self.assertEqual(entries[0]["issue"], 42)
+            self.assertIsNone(entries[0]["rework_pr"])
+
+    def test_rework_pr_flag_records_pr_number(self):
+        import solve_issues
+        from solve_issues import _log_rework_flag_use
+
+        args = SimpleNamespace(
+            rework=False,
+            retry=False,
+            rework_pr=405,
+            compare_models=False,
+            model="openrouter_direct",
+            repo="ai-issue-solver",
+            issue=None,
+            dry_run=True,
+        )
+        with self._patch_log_path():
+            _log_rework_flag_use(args)
+            entries = self._read_entries()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["flags"], ["--rework-pr 405"])
+            self.assertEqual(entries[0]["rework_pr"], 405)
+            self.assertTrue(entries[0]["dry_run"])
+
+    def test_multiple_flags_combined(self):
+        import solve_issues
+        from solve_issues import _log_rework_flag_use
+
+        args = SimpleNamespace(
+            rework=False,
+            retry=True,
+            rework_pr=0,
+            compare_models=True,
+            model="opencode",
+            repo="some-repo",
+            issue=7,
+            dry_run=False,
+        )
+        with self._patch_log_path():
+            _log_rework_flag_use(args)
+            entries = self._read_entries()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(
+                sorted(entries[0]["flags"]),
+                sorted(["--retry", "--compare-models"]),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
