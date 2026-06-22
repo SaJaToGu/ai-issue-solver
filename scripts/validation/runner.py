@@ -17,8 +17,8 @@ REVIEW_PR_SCRIPT = Path("scripts/review_pr.py")
 def run_solver_for_issue(
     repo: str,
     issue_number: int,
-    model: str = "opencode",
-    model_name: str = "opencode/deepseek-v4-flash-free",
+    model: str,
+    model_name: str,
     max_run_cost_usd: float = 5.0,
     dry_run: bool = False,
     base_branch: str | None = None,
@@ -134,8 +134,8 @@ def run_solver_for_issue(
 def run_reviewer_for_pr(
     pr_number: int,
     role: str = "code",
-    owner: str = "SaJaToGu",
-    repo: str = "ai-issue-solver",
+    owner: str = "",
+    repo: str = "",
     dry_run: bool = False,
     timeout_seconds: int = 300,
 ) -> dict[str, Any]:

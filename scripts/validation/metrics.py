@@ -54,7 +54,7 @@ def format_cost(usd: float | None) -> str:
     return f"${usd:.4f}"
 
 
-def generate_report(metrics: ValidationMetrics, title: str = "validation-0.9.0") -> str:
+def generate_report(metrics: ValidationMetrics, title: str = "Validation Report") -> str:
     lines: list[str] = []
     lines.append(f"# Validation Report: {title}")
     lines.append("")
@@ -105,7 +105,7 @@ def generate_report(metrics: ValidationMetrics, title: str = "validation-0.9.0")
 def write_validation_report(
     metrics: ValidationMetrics,
     output_path: Path,
-    title: str = "validation-0.9.0",
+    title: str = "Validation Report",
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     report_text = generate_report(metrics, title=title)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,28 +29,43 @@ def _load_config() -> dict[str, Any]:
         config = load_env()
     except ImportError:
         config = {}
-    for key in ("GITHUB_TOKEN", "GITHUB_OWNER"):
+    for key in ("GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"):
         import os
         val = os.environ.get(key)
         if val:
             config[key] = val
-    if "GITHUB_OWNER" not in config:
-        config.setdefault("GITHUB_OWNER", "SaJaToGu")
     return config
 
 
-def _get_client(config: dict[str, Any]) -> ValidationGitHubClient:
+def _require_config(config: dict[str, Any], key: str, subcommand: str) -> str | None:
+    """Return a required config value, or print error and return None."""
+    val = config.get(key)
+    if not val:
+        print(
+            f"Error: {key} not set. Add it to config/.env or set it as an "
+            f"environment variable before running 'validation_run {subcommand}'.",
+            file=sys.stderr,
+        )
+        return None
+    return val
+
+
+def _get_client(config: dict[str, Any]) -> tuple[ValidationGitHubClient | None, str | None]:
+    """Build client + return (client, owner) or (None, None) on missing config."""
     token = config.get("GITHUB_TOKEN", "")
-    owner = config.get("GITHUB_OWNER", "SaJaToGu")
+    owner = _require_config(config, "GITHUB_OWNER", "run/check-prs/list")
+    if owner is None:
+        return None, None
     if not token:
         print("Warning: GITHUB_TOKEN not set. API calls will fail.", file=sys.stderr)
-    return ValidationGitHubClient(token, owner)
+    return ValidationGitHubClient(token, owner), owner
 
 
 def cmd_run(args: argparse.Namespace, config: dict[str, Any]) -> int:
     """Run the solver on N issues and produce a validation report."""
-    client = _get_client(config)
-    owner = config.get("GITHUB_OWNER", "SaJaToGu")
+    client, owner = _get_client(config)
+    if client is None or owner is None:
+        return 1
     repo = args.repo
 
     try:
@@ -83,11 +100,27 @@ def cmd_run(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
     for idx, issue in enumerate(issues):
         print(f"\n[{idx+1}/{len(issues)}] Running solver for issue #{issue.number}...")
+        # Resolve model: CLI flag > env var (OPENCODE_MODEL / OPENCODE_MODEL_NAME)
+        # > config/.env. No silent defaults — fail fast if missing.
+        model = args.model or os.environ.get("OPENCODE_MODEL")
+        if not model:
+            print(
+                "Error: --model (or OPENCODE_MODEL env) required.",
+                file=sys.stderr,
+            )
+            return 1
+        model_name = args.model_name or os.environ.get("OPENCODE_MODEL_NAME")
+        if not model_name:
+            print(
+                "Error: --model-name (or OPENCODE_MODEL_NAME env) required.",
+                file=sys.stderr,
+            )
+            return 1
         report = run_solver_for_issue(
             repo=repo,
             issue_number=issue.number,
-            model=args.model or "opencode",
-            model_name=args.model_name or "opencode/deepseek-v4-flash-free",
+            model=model,
+            model_name=model_name,
             max_run_cost_usd=args.max_run_cost_usd or 5.0,
             dry_run=args.dry_run,
             base_branch=args.base_branch,
@@ -104,12 +137,13 @@ def cmd_run(args: argparse.Namespace, config: dict[str, Any]) -> int:
         reports.append(report)
 
     metrics = compute_metrics(reports)
+    run_id = datetime.utcnow().strftime("validation-%Y%m%d-%H%M%S")
 
-    output_path = Path(args.output)
+    output_path = Path(args.output) if args.output else Path("reports/validation") / f"{run_id}.md"
     write_validation_report(metrics, output_path, title=args.title)
     print(f"\nReport written to: {output_path}")
 
-    persist_validation_run(metrics, Path("reports/validation"))
+    persist_validation_run(metrics, Path("reports/validation"), run_id=run_id)
     print(f"Metrics persisted to: reports/validation/")
 
     print(f"\n=== Validation Summary ===")
@@ -128,7 +162,12 @@ def cmd_run(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 def cmd_report(args: argparse.Namespace, config: dict[str, Any]) -> int:
     """Generate a report from existing run reports."""
-    client = _get_client(config) if not args.no_github else None
+    client = None
+    owner: str | None = None
+    if not args.no_github:
+        client, owner = _get_client(config)
+        if client is None or owner is None:
+            return 1
     repo = args.repo
 
     runs_dir = Path(args.runs_dir)
@@ -145,8 +184,9 @@ def cmd_report(args: argparse.Namespace, config: dict[str, Any]) -> int:
         reports = enriched
 
     metrics = compute_metrics(reports)
+    run_id = datetime.utcnow().strftime("validation-%Y%m%d-%H%M%S")
 
-    output_path = Path(args.output)
+    output_path = Path(args.output) if args.output else Path("reports/validation") / f"{run_id}.md"
     write_validation_report(metrics, output_path, title=args.title)
     print(f"Report written to: {output_path}")
 
@@ -160,8 +200,9 @@ def cmd_report(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 def cmd_check_prs(args: argparse.Namespace, config: dict[str, Any]) -> int:
     """Check PR statuses (merge state + CI) for a set of issues."""
-    client = _get_client(config)
-    owner = config.get("GITHUB_OWNER", "SaJaToGu")
+    client, owner = _get_client(config)
+    if client is None or owner is None:
+        return 1
     repo = args.repo
 
     if args.issues:
@@ -192,7 +233,9 @@ def cmd_check_prs(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 def cmd_list(args: argparse.Namespace, config: dict[str, Any]) -> int:
     """List issues matching a label."""
-    client = _get_client(config)
+    client, _owner = _get_client(config)
+    if client is None:
+        return 1
     repo = args.repo
 
     issues = select_issues_by_label(
@@ -220,24 +263,24 @@ def build_parser() -> argparse.ArgumentParser:
         prog="validation_run",
         description="AI Issue Solver — Validation Metrics & Run",
     )
-    parser.add_argument("--repo", default="ai-issue-solver", help="Target repository")
-    parser.add_argument("--title", default="validation-0.9.0", help="Report title")
+    parser.add_argument("--repo", default="ai-issue-solver", help="Target repository (default: from --repo or config GITHUB_REPO)")
+    parser.add_argument("--title", default="Validation Report", help="Report title (default: 'Validation Report')")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Run solver on N issues and generate validation report")
     run_parser.add_argument("--issues", type=int, default=3, help="Number of issues to process")
     run_parser.add_argument("--label", default="ai-generated", help="Issue label filter")
-    run_parser.add_argument("--model", default="opencode", help="Solver model type")
-    run_parser.add_argument("--model-name", default="opencode/deepseek-v4-flash-free", help="Solver model name")
+    run_parser.add_argument("--model", default=None, help="Solver model type (e.g. opencode, mistral, claude). Reads OPENCODE_MODEL env if not set.")
+    run_parser.add_argument("--model-name", default=None, help="Solver model name (e.g. opencode/deepseek-v4-flash-free). Reads OPENCODE_MODEL_NAME env if not set.")
     run_parser.add_argument("--max-run-cost-usd", type=float, default=None, help="Max cost per run in USD")
     run_parser.add_argument("--base-branch", default=None, help="Base branch for PRs")
     run_parser.add_argument("--dry-run", action="store_true", help="Simulate without actual solver invocation")
-    run_parser.add_argument("--output", default="reports/validation-0.9.0.md", help="Output report path")
+    run_parser.add_argument("--output", default=None, help="Output report path (default: reports/validation/<run-id>.md)")
 
     report_parser = subparsers.add_parser("report", help="Generate report from existing run reports")
     report_parser.add_argument("--runs-dir", default="reports/runs", help="Directory with run reports")
-    report_parser.add_argument("--output", default="reports/validation-0.9.0.md", help="Output report path")
+    report_parser.add_argument("--output", default=None, help="Output report path (default: reports/validation/<run-id>.md)")
     report_parser.add_argument("--no-github", action="store_true", help="Skip GitHub API enrichment")
 
     check_parser = subparsers.add_parser("check-prs", help="Check PR merge state and CI status")

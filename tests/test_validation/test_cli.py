@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -87,7 +88,13 @@ class BuildParserTests(unittest.TestCase):
 class CmdRunTests(unittest.TestCase):
     def test_cmd_run_dry_run_returns_zero(self):
         config = {"GITHUB_OWNER": "test-owner"}
-        args = parse_args(["run", "--dry-run", "--issues", "1"])
+        args = parse_args(
+            [
+                "run", "--dry-run", "--issues", "1",
+                "--model", "opencode",
+                "--model-name", "opencode/deepseek-v4-flash-free",
+            ]
+        )
         with patch("scripts.validation.cli.select_issues_by_label") as mock_select:
             from scripts.validation.models import ValidationIssue
             mock_select.return_value = [
@@ -98,11 +105,45 @@ class CmdRunTests(unittest.TestCase):
 
     def test_cmd_run_no_issues_returns_one(self):
         config = {"GITHUB_OWNER": "test-owner"}
-        args = parse_args(["run"])
+        args = parse_args(
+            [
+                "run",
+                "--model", "opencode",
+                "--model-name", "opencode/deepseek-v4-flash-free",
+            ]
+        )
         with patch("scripts.validation.cli.select_issues_by_label") as mock_select:
             mock_select.return_value = []
             exit_code = cmd_run(args, config)
             self.assertEqual(exit_code, 1)
+
+    def test_cmd_run_missing_model_returns_one(self):
+        """Without --model/--model-name (or env), cmd_run fails fast."""
+        config = {"GITHUB_OWNER": "test-owner"}
+        # No --model flag, no env vars → should fail-fast
+        for key in ("OPENCODE_MODEL", "OPENCODE_MODEL_NAME"):
+            os.environ.pop(key, None)
+        args = parse_args(["run", "--dry-run", "--issues", "1"])
+        with patch("scripts.validation.cli.select_issues_by_label") as mock_select:
+            from scripts.validation.models import ValidationIssue
+            mock_select.return_value = [
+                ValidationIssue(number=1, title="Test", body="body"),
+            ]
+            exit_code = cmd_run(args, config)
+            self.assertEqual(exit_code, 1)
+
+    def test_cmd_run_missing_owner_returns_nonzero(self):
+        """Without GITHUB_OWNER in config, cmd_run fails fast."""
+        config: dict = {}  # no GITHUB_OWNER
+        args = parse_args(
+            [
+                "run", "--dry-run", "--issues", "1",
+                "--model", "opencode",
+                "--model-name", "opencode/deepseek-v4-flash-free",
+            ]
+        )
+        exit_code = cmd_run(args, config)
+        self.assertNotEqual(exit_code, 0)
 
 
 class CmdReportTests(unittest.TestCase):

@@ -62,17 +62,36 @@ class RunReportDataTests(unittest.TestCase):
 
 class ValidationConfigTests(unittest.TestCase):
     def test_default_values(self):
+        """Defaults are empty for user/repo/model (no hardcoded fallback) and
+        retain only structural defaults."""
         cfg = ValidationConfig()
-        self.assertEqual(cfg.repo, "ai-issue-solver")
+        # User/repo/model are intentionally empty (no silent defaults)
+        self.assertEqual(cfg.repo, "")
+        self.assertEqual(cfg.owner, "")
+        self.assertEqual(cfg.model, "")
+        self.assertEqual(cfg.model_name, "")
+        # Structural defaults stay
         self.assertEqual(cfg.max_issues, 3)
         self.assertEqual(cfg.max_run_cost_usd, 5.0)
         self.assertFalse(cfg.dry_run)
 
     def test_custom_values(self):
-        cfg = ValidationConfig(repo="other", max_issues=10, dry_run=True)
+        cfg = ValidationConfig(
+            repo="other", owner="someone", model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
+            max_issues=10, dry_run=True,
+        )
         self.assertEqual(cfg.repo, "other")
+        self.assertEqual(cfg.owner, "someone")
+        self.assertEqual(cfg.model, "opencode")
+        self.assertEqual(cfg.model_name, "opencode/deepseek-v4-flash-free")
         self.assertEqual(cfg.max_issues, 10)
         self.assertTrue(cfg.dry_run)
+
+    def test_required_user_repo_can_be_omitted_at_construction(self):
+        """User is expected to fill owner/repo from config; empty default is fine."""
+        cfg = ValidationConfig()
+        self.assertEqual(cfg.owner, "")
 
 
 class ValidationMetricsTests(unittest.TestCase):

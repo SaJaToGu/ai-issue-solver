@@ -38,12 +38,12 @@ class RunReportData:
 
 @dataclass(frozen=True)
 class ValidationConfig:
-    repo: str = "ai-issue-solver"
-    owner: str = "SaJaToGu"
+    repo: str = ""
+    owner: str = ""
     max_issues: int = 3
     max_run_cost_usd: float = 5.0
-    model: str = "opencode"
-    model_name: str = "opencode/deepseek-v4-flash-free"
+    model: str = ""
+    model_name: str = ""
     dry_run: bool = False
     reports_dir: Path = Path("reports/validation")
     runs_dir: Path = Path("reports/runs")

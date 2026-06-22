@@ -20,6 +20,8 @@ class RunSolverForIssueTests(unittest.TestCase):
     def test_dry_run_returns_early(self, mock_run):
         result = run_solver_for_issue(
             repo="test-repo",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
             issue_number=42,
             dry_run=True,
         )
@@ -37,6 +39,8 @@ class RunSolverForIssueTests(unittest.TestCase):
 
         result = run_solver_for_issue(
             repo="test-repo",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
             issue_number=42,
             dry_run=False,
         )
@@ -53,6 +57,8 @@ class RunSolverForIssueTests(unittest.TestCase):
 
         result = run_solver_for_issue(
             repo="test-repo",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
             issue_number=42,
             dry_run=False,
         )
@@ -69,6 +75,8 @@ class RunSolverForIssueTests(unittest.TestCase):
 
         result = run_solver_for_issue(
             repo="test-repo",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
             issue_number=42,
             dry_run=False,
         )
@@ -84,6 +92,8 @@ class RunSolverForIssueTests(unittest.TestCase):
 
         result = run_solver_for_issue(
             repo="test-repo",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
             issue_number=42,
             dry_run=False,
         )
@@ -96,6 +106,8 @@ class RunSolverForIssueTests(unittest.TestCase):
 
         result = run_solver_for_issue(
             repo="test-repo",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
             issue_number=42,
             timeout_seconds=30,
             dry_run=False,
@@ -106,6 +118,8 @@ class RunSolverForIssueTests(unittest.TestCase):
     def test_returns_run_report_dataclass(self):
         result = run_solver_for_issue(
             repo="test-repo",
+            model="opencode",
+            model_name="opencode/deepseek-v4-flash-free",
             issue_number=1,
             dry_run=True,
         )
