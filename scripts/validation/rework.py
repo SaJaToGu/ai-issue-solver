@@ -26,7 +26,12 @@ from scripts.solver_repository import (
     git_output,
 )
 
-REWORK_PROMPT_PATH = Path("prompts/rework_pr.md")
+# Resolve the prompt template path relative to the repo root, not the
+# current working directory. The previous Path("prompts/rework_pr.md")
+# broke whenever the CWD changed (e.g. inside run_pr_rework's tmpdir
+# checkout) and the tests asserted against an absolute path.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+REWORK_PROMPT_PATH = _REPO_ROOT / "prompts" / "rework_pr.md"
 REWORK_COMMIT_MESSAGE_PREFIX = "rework: apply review feedback"
 
 
