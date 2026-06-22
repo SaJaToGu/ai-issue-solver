@@ -187,7 +187,7 @@ Module split (NON-NEGOTIABLE, line caps enforced):
 - scripts/validation/cli.py (≤650)
 - scripts/validation_run.py as thin shim (≤40)
 
-Tests (NON-NEGOTIABLE): tests/validation/test_<module>.py per module,
+Tests (NON-NEGOTIABLE): tests/test_validation/test_<module>.py per module,
 ≥1 happy-path + ≥1 error-path test per public function. External HTTP
 mocked with unittest.mock.
 
