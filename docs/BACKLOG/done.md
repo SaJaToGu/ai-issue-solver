@@ -272,3 +272,30 @@ deliverable.
 Original labels: `kind/analysis`, `kind/feature`, `theme/quality`, `priority/2`
 
 ---
+
+## Done — §44 Add backward-split loop: detect oversized PRs and route to sub-issues (GitHub #402)
+
+Closed via #402 (PR #403, squash-merged into develop at 2026-06-22T20:17:06Z).
+
+PR #403 head `ai/fix-issue-402` (+964/-6, 12 files) was followed by a
+review-rework commit on the same branch addressing 2 review blockers
+(github_client.py over line cap; hardcoded "#402" in close comment) and
+3 minor suggestions.
+
+Final file layout (LOC vs cap):
+- `scripts/validation/github_client.py` 231 / 250 ✓
+- `scripts/validation/split.py` 182 / 300 ✓
+- `scripts/validation/git_notes.py` 81 / 150 ✓
+- `scripts/validation/split_client.py` 105 (new — split off from
+  github_client.py via composition)
+- `scripts/validation/cli.py` 395 / 700 ✓
+
+Tests: 165/165 validation tests pass (Python 3.10 + 3.12 CI green).
+
+Open follow-up: §45 / Issue #404 (PR rework loop via model call) so
+future PRs with review feedback can be reworked through the solver
+pipeline instead of manual Mavis-as-dev refactor.
+
+Original labels: `kind/refactor`, `theme/workflow`, `area/runs`, `priority/2`
+
+---
