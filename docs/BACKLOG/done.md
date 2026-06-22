@@ -299,3 +299,35 @@ pipeline instead of manual Mavis-as-dev refactor.
 Original labels: `kind/refactor`, `theme/workflow`, `area/runs`, `priority/2`
 
 ---
+
+## Done — §45 Add PR rework loop: apply review feedback via model call (GitHub #404)
+
+Closed via #404 (PR #405, squash-merged into develop at 2026-06-22T21:54:22Z).
+
+PR #405 (+1032/-4, 9 files) introduced the `--rework-pr` CLI flag
+end-to-end: read PR review threads, fetch the diff, build a focused
+prompt, spawn a worker on the same branch (no `skip_existing_pr`
+fight), push follow-up commits, re-run CI. Initial CI run failed
+3 tests because `REWORK_PROMPT_PATH` was CWD-relative; follow-up
+commit `3737d58` resolved it to `Path(__file__).resolve().parents[2]`.
+
+Files (final layout):
+- `prompts/rework_pr.md` (new, 38 lines) — focused prompt template
+- `scripts/validation/rework.py` (new, 462 lines) — orchestrator
+  (prompt build, worker subprocess, clone/checkout/commit/push,
+  run-report, git notes)
+- `scripts/validation/runner.py` (+23) — `run_rework_for_pr()` entry
+- `scripts/validation/github_client.py` (+77) — `get_pr_review_threads`
+  + `get_pr_diff` helpers
+- `scripts/validation/git_notes.py` (+32) — `add_rework_to_note()`
+- `scripts/solve_issues.py` (+58/-3) — `--rework-pr` CLI flag
+- `tests/test_validation/test_rework.py` (new, 11 unit tests)
+- `tests/test_rework_pr_cli.py` (new, 5 CLI tests)
+- `docs/BACKLOG/open.md` (+1/-1) — §45 entry
+
+Tests: 176/176 validation tests pass + 5 CLI tests + 11 rework
+tests (Python 3.10 + 3.12 CI green after fix).
+
+Original labels: `kind/feature`, `theme/workflow`, `area/runs`, `priority/2`
+
+---
