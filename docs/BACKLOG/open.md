@@ -164,3 +164,138 @@ Checks:
 
 ---
 
+## 46. Sync VERSION file and CHANGELOG to current 0.9.0 milestone
+
+
+Labels: `kind/refactor`, `priority/3`, `theme/workflow`
+
+Priority: `3`
+
+`VERSION` is still `0.3.1` and `CHANGELOG.md` tops out at `0.3.1 - 2026-06-01`.
+Since then §42–§45 of `docs/BACKLOG/open.md` have all shipped via merged PRs
+(#399/#400/#401, #402/#403, #404/#405, #406). Effectively we are post-0.9.0.
+
+Problem:
+- `VERSION` lies about the current release.
+- No CHANGELOG entry exists for §42–§45 work, so external readers can't see
+  what landed in 0.9.0.
+- Release tooling (CI tags, badges, anything reading `VERSION`) is silently
+  wrong.
+
+Suggested scope:
+- bump `VERSION` to `0.9.0` (or `0.9.1` if a patch fix lands first)
+- add a top section `## 0.9.0 - <today>` to `CHANGELOG.md` summarising the
+  §42–§45 shipped work in 4–8 bullets (split-loop, solver consolidation,
+  PR rework loop, RepoLens archive)
+- keep the existing `0.3.0` / `0.3.1` entries intact below
+- create tag `v0.9.0` on the merge commit (or a follow-up release commit)
+- ensure no code/CLI defaults reference the old version string
+
+Out of scope:
+- cutting the actual release (just the version bump + changelog)
+- removing the `0.3.x` history entries
+
+Touches: `VERSION`, `CHANGELOG.md`
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
+
+## 47. Deprecate Aider worker adapter (opencode + openrouter + codex suffice)
+
+
+Labels: `kind/refactor`, `priority/3`, `theme/workflow`, `theme/provider`
+
+Priority: `3`
+
+Three worker paths exist: `workers/aider_adapter.py`, plus opencode,
+openrouter, and codex. Aider requires `requirements-aider.txt` extra install
+and `docs/SETUP_AIDER.md` setup; in practice the proven free path
+`opencode/deepseek-v4-flash-free` plus `openrouter_direct` and `codex`
+covers every overnight/batch run from the last month.
+
+Problem:
+- `requirements-aider.txt` pulls in a heavy dep tree nobody runs by default.
+- `docs/SETUP_AIDER.md` still presents Aider as a primary path — misleading.
+- Worker-adapter surface in `workers/` is wider than needed, slows onboarding.
+
+Suggested scope:
+- make `workers/aider_adapter.py` emit a `DeprecationWarning` on import,
+  printed once per process, naming opencode / openrouter / codex as the
+  three supported paths
+- add the same deprecation note to the top of `requirements-aider.txt` and
+  mark it optional
+- add a banner at the top of `docs/SETUP_AIDER.md`: "Aider is deprecated.
+  Use `opencode/deepseek-v4-flash-free` for default runs. This file will be
+  removed in the next minor release."
+- keep the adapter working so existing workflows don't break
+- file a follow-up issue for actual removal after 1–2 releases confirm
+  zero usage in run-reports
+
+Out of scope:
+- removing the adapter outright (deferred to next release after telemetry)
+- changing default `--model` values anywhere
+
+Touches: `workers/aider_adapter.py`, `requirements-aider.txt`, `docs/SETUP_AIDER.md`
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+- `python -c "import workers.aider_adapter"` shows the warning once
+
+---
+
+## 48. Consolidate rework/retry flag surface across solve_issues.py
+
+
+Labels: `kind/refactor`, `priority/3`, `theme/workflow`, `area/runs`
+
+Priority: `3`
+
+`solve_issues.py` currently exposes three rework entry points:
+- `--rework <issue>` — Issue-keyed, solver run on existing issue-branch
+- `--retry` — force a run despite an open PR
+- `--rework-pr <N>` — PR-keyed, applies review feedback via direct model
+  call (added in PR #405 / Issue #404)
+
+Plus the standalone `scripts/rework_workflow.py` for sub-issue decomposition,
+with its own CLI surface (`--rework-of`, `--from-pr`, `--from-run`,
+`--from-note`).
+
+After PR #405, `--rework-pr` is the orthogonal PR-feedback path; the older
+`--rework` / `--retry` / `rework_workflow.py` trio may overlap or be unused.
+
+Problem:
+- new users see four rework-adjacent flags and don't know which to pick
+- `rework_workflow.py` partly overlaps with `solve_issues.py --rework`
+- we don't have usage data yet to know which flags are actually exercised
+  in nightly/batch runs
+
+Suggested scope:
+- add light instrumentation: each `--rework*` / `--retry` flag use appends
+  one line to `reports/usage/rework-flags.jsonl`
+  (timestamp + flag + model + run-id)
+- update `docs/WORKFLOW.md` rework section (around lines 208, 334, 340)
+  with an explicit decision matrix: when to use `--rework` vs `--retry` vs
+  `--rework-pr` vs `rework_workflow.py`
+- no flag removal yet — gather usage for one release cycle first
+
+Follow-up (separate issue, NOT in scope here):
+- after one release of telemetry: pick the canonical path, deprecate the
+  others with a clear migration note
+
+Out of scope:
+- removing `rework_workflow.py`
+- merging rework logic into a single function
+- changing CLI defaults
+
+Touches: `scripts/solve_issues.py`, `scripts/rework_workflow.py`,
+         `docs/WORKFLOW.md`, `reports/usage/`
+
+Checks:
+- `git diff --check`
+- `python -m unittest discover -s tests`
+
+---
