@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.validation.models import RunReportData
+from scripts.validation.rework import run_pr_rework as _run_pr_rework
 
 
 SOLVE_ISSUES_SCRIPT = Path("scripts/solve_issues.py")
@@ -128,6 +129,28 @@ def run_solver_for_issue(
         started_at=started_at,
         finished_at=finished_at,
         run_id=None,
+    )
+
+
+def run_rework_for_pr(
+    pr_number: int,
+    owner: str = "",
+    repo: str = "",
+    model: str = "mistralai/mistral-large",
+    dry_run: bool = False,
+    timeout_seconds: int = 300,
+) -> RunReportData:
+    """Run the rework workflow for a PR via the rework module.
+
+    Returns a :class:`RunReportData` with the outcome.
+    """
+    return _run_pr_rework(
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        model=model,
+        dry_run=dry_run,
+        timeout_seconds=float(timeout_seconds),
     )
 
 
