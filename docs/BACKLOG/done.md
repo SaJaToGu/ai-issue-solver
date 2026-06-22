@@ -233,3 +233,27 @@ to merge as-is after manual review of the suggestions.
 Original labels: `kind/feature`, `theme/quality`, `area/labels`, `priority/3`
 
 ---
+## Done — §42 0.9.0 Validation Metrics & Run (GitHub #326)
+
+Closed via #326 (PR #395 + #396 + #397, merged into develop @ 4b2589b).
+
+3-PR stacked delivery:
+- PR-A #395 (library, models+parsers+metrics, 49 tests)
+- PR-B #396 (IO, github_client+runner+pr_checks+selection, 101 tests)
+- PR-C #397 (CLI surface, cli+shim+__init__, 123 tests, +follow-up fix → 126 tests)
+
+Module line caps all respected (largest: github_client.py 231/250). All 9
+modules under their caps. CI green on Python 3.10 + 3.12.
+
+Definition of Solved (per the issue): code ships; the actual first
+validation run with N=3 issues is a follow-up to demonstrate
+end-to-end (deferred to a separate issue to keep #326 PR-reviewable).
+
+User code-review feedback mid-PR: removed hardcoded defaults
+('validation-0.9.0' as title, 'SaJaToGu' as owner fallback,
+'opencode/deepseek-v4-flash-free' as model default) — now all
+fail-fast if not in config or supplied via CLI / env var.
+
+Original labels: `kind/analysis`, `kind/feature`, `theme/quality`, `priority/1`
+
+---
