@@ -1,5 +1,16 @@
 # KI-Modelle & Provider Setup
 
+> ⚠️ **Aider is deprecated.** The Aider worker adapter (`workers/aider_adapter.py`)
+> is deprecated as of the 0.9.0 release and will be removed in the next minor
+> release. New solver runs should use one of the three supported paths:
+>
+> - **`opencode`** (default model `opencode/deepseek-v4-flash-free`, proven free path)
+> - **`openrouter_direct`**
+> - **`codex`**
+>
+> This file is kept temporarily for legacy setups only. See issue #411 / §47
+> in `docs/BACKLOG/open.md` for migration notes and the removal timeline.
+
 Dieser Guide erklärt die Einrichtung der verschiedenen KI-Modelle und Provider für den AI Issue Solver.
 
 ## Voraussetzungen

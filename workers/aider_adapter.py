@@ -1,6 +1,18 @@
 """
 workers.aider_adapter — Adapter für Aider-basierte Provider.
 
+.. deprecated::
+    ``workers.aider_adapter`` is deprecated as of the 0.9.0 release and will
+    be removed in the next minor release. Use one of the supported worker
+    paths instead:
+
+    - ``opencode`` (default model ``opencode/deepseek-v4-flash-free``)
+    - ``openrouter_direct``
+    - ``codex``
+
+    See issue #411 / §47 in ``docs/BACKLOG/open.md`` and
+    ``docs/SETUP_AIDER.md`` for migration guidance.
+
 Kapselt Befehlsaufbau und Ausführung für alle Provider, die Aider als
 Worker verwenden: claude, openai, mistral, ollama, openrouter.
 
@@ -21,11 +33,30 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
 from workers.base import WorkerAdapter, WorkerRunResult, AdapterDiagnostics
 from workers.codex_adapter import _run_subprocess
+
+
+_AIDER_DEPRECATION_EMITTED = False
+_AIDER_DEPRECATION_MESSAGE = (
+    "workers.aider_adapter is deprecated and will be removed in the next "
+    "minor release. Use opencode (opencode/deepseek-v4-flash-free), "
+    "openrouter_direct, or codex instead. "
+    "See issue #411 / §47 in docs/BACKLOG/open.md."
+)
+
+
+def _emit_aider_deprecation_warning(stacklevel: int = 3) -> None:
+    """Emit the Aider deprecation warning at most once per process."""
+    global _AIDER_DEPRECATION_EMITTED
+    if _AIDER_DEPRECATION_EMITTED:
+        return
+    _AIDER_DEPRECATION_EMITTED = True
+    warnings.warn(_AIDER_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=stacklevel)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -168,6 +199,7 @@ class AiderAdapter(WorkerAdapter):
         Raises:
             ValueError: Bei unbekanntem Provider.
         """
+        _emit_aider_deprecation_warning(stacklevel=2)
         if provider not in AIDER_MODEL_CONFIGS:
             raise ValueError(
                 f"Unbekannter Aider-Provider: '{provider}'. "
