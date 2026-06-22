@@ -25,6 +25,9 @@ from solver_commands import (  # noqa: E402
     add_fallback_flags,
     add_health_flags,
     add_solver_core_flags,
+    build_batch_command,
+    build_caffeinate_command,
+    build_dashboard_command,
     build_single_solver_command,
 )
 
@@ -434,6 +437,138 @@ class CommandStructureIntegrationTest(unittest.TestCase):
         for flag in ("--workers", "--repo", "--worker-health-timeout-minutes"):
             self.assertIn(flag, cmd)
         self.assertEqual(cmd.count("--issue"), 2)
+
+    def test_build_single_solver_command_forwards_run_report_dir(self):
+        cmd = build_single_solver_command(
+            make_args(model="codex"),
+            Path("scripts/solve_issues.py"),
+            repo="owner/repo",
+            issue_number=42,
+            run_report_dir=Path("reports/runs/test-dir"),
+        )
+        self.assertTrue(has_pair(cmd, "--run-report-dir", "reports/runs/test-dir"))
+
+    def test_build_single_solver_command_forwards_defer_codex_rate_limit(self):
+        cmd = build_single_solver_command(
+            make_args(model="codex"),
+            Path("scripts/solve_issues.py"),
+            repo="owner/repo",
+            issue_number=42,
+            defer_codex_rate_limit=True,
+        )
+        self.assertIn("--defer-codex-rate-limit", cmd)
+
+    def test_build_single_solver_command_forwards_allow_opencode_state_conflict(self):
+        cmd = build_single_solver_command(
+            make_args(model="opencode"),
+            Path("scripts/solve_issues.py"),
+            repo="owner/repo",
+            issue_number=42,
+            allow_opencode_state_conflict=True,
+        )
+        self.assertIn("--allow-opencode-state-conflict", cmd)
+
+    def test_build_single_solver_command_forwards_verbosity_override(self):
+        cmd = build_single_solver_command(
+            make_args(model="opencode", verbosity=None),
+            Path("scripts/solve_issues.py"),
+            repo="owner/repo",
+            issue_number=42,
+            verbosity="quiet",
+        )
+        self.assertTrue(has_pair(cmd, "--verbosity", "quiet"))
+
+    def test_build_single_solver_command_omits_optional_flags_by_default(self):
+        cmd = build_single_solver_command(
+            make_args(model="opencode"),
+            Path("scripts/solve_issues.py"),
+            repo="owner/repo",
+            issue_number=42,
+        )
+        self.assertNotIn("--run-report-dir", cmd)
+        self.assertNotIn("--defer-codex-rate-limit", cmd)
+        self.assertNotIn("--allow-opencode-state-conflict", cmd)
+        self.assertNotIn("--skip-pr", cmd)
+        self.assertNotIn("--branch-suffix", cmd)
+        self.assertNotIn("--ensemble", cmd)
+
+    def test_shared_build_batch_command_forwards_fallback_and_health(self):
+        args = argparse.Namespace(**{
+            "model": "opencode",
+            "model_name": "",
+            "repo": "owner/repo",
+            "issue": [7],
+            "label": "ai-generated",
+            "base_branch": None,
+            "workers": 2,
+            "dry_run": False,
+            "close_issues": False,
+            "fallback_model": "mistral",
+            "fallback_model_name": "magistral-medium-2509",
+            "worker_health_timeout_minutes": 15,
+            "unhealthy_action": "stop",
+            "unhealthy_retries": 1,
+            "verbosity": None,
+            "skip_congestion_check": False,
+            "max_run_cost_usd": 10.0,
+            "max_run_input_tokens": 100000,
+            "max_run_output_tokens": 20000,
+        })
+        cmd = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+        self.assertIn("--fallback-model", cmd)
+        self.assertIn("--fallback-model-name", cmd)
+        self.assertIn("--worker-health-timeout-minutes", cmd)
+        self.assertIn("--unhealthy-action", cmd)
+        self.assertIn("--unhealthy-retries", cmd)
+        self.assertIn("--max-run-cost-usd", cmd)
+        self.assertIn("--max-run-input-tokens", cmd)
+        self.assertIn("--max-run-output-tokens", cmd)
+
+    def test_shared_build_batch_command_skip_congestion_check(self):
+        cmd = build_batch_command(
+            make_args(model="opencode", skip_congestion_check=True),
+            Path("scripts/solve_issues_batch.py"),
+            skip_congestion_check=True,
+        )
+        self.assertIn("--skip-congestion-check", cmd)
+
+    def test_shared_build_batch_command_allow_opencode_state_conflict(self):
+        cmd = build_batch_command(
+            make_args(model="opencode", allow_opencode_state_conflict=True),
+            Path("scripts/solve_issues_batch.py"),
+        )
+        self.assertIn("--allow-opencode-state-conflict", cmd)
+
+    def test_build_dashboard_command_defaults(self):
+        cmd = build_dashboard_command(
+            Path("scripts/status_dashboard.py"),
+            Path("reports/status.html"),
+        )
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertIn("scripts/status_dashboard.py", cmd[1])
+        self.assertTrue(has_pair(cmd, "--output", "reports/status.html"))
+        self.assertNotIn("--runs-dir", cmd)
+        self.assertNotIn("--owner", cmd)
+
+    def test_build_dashboard_command_with_runs_dir_and_owner(self):
+        cmd = build_dashboard_command(
+            Path("scripts/status_dashboard.py"),
+            Path("reports/status.html"),
+            runs_dir=Path("reports/runs"),
+            owner="test-owner",
+        )
+        self.assertTrue(has_pair(cmd, "--runs-dir", "reports/runs"))
+        self.assertTrue(has_pair(cmd, "--owner", "test-owner"))
+
+    def test_build_caffeinate_command_basic(self):
+        cmd = build_caffeinate_command()
+        self.assertEqual(cmd[0], "caffeinate")
+        self.assertIn("-dimsu", cmd)
+
+    def test_build_caffeinate_command_with_pid(self):
+        cmd = build_caffeinate_command(pid=12345)
+        self.assertIn("-w", cmd)
+        self.assertIn("12345", cmd)
 
 
 if __name__ == "__main__":

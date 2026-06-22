@@ -65,13 +65,10 @@ DEFAULT_WORKFLOW_PR_THRESHOLD = 3
 DEFAULT_WORKFLOW_STALE_DAYS = 7
 GITHUB_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/")
 GITHUB_PR_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
-CODEX_RATE_LIMIT_RESET_RE = re.compile(
-    r"rate limit will be reset on\s+(.+?)(?:\.|\n|$)",
-    re.IGNORECASE,
-)
-CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
-    r"(?:reached the codex message limit|rate limit will be reset)",
-    re.IGNORECASE,
+from workers.codex_adapter import (  # noqa: E402
+    CODEX_RATE_LIMIT_MESSAGE_RE,
+    CODEX_RATE_LIMIT_RESET_RE,
+    parse_codex_reset_datetime,
 )
 
 # =============================================================================
@@ -503,22 +500,6 @@ def file_mtime(path: Path) -> datetime | None:
         return datetime.fromtimestamp(path.stat().st_mtime)
     except OSError:
         return None
-
-
-def parse_codex_reset_datetime(reset_text: str) -> datetime | None:
-    normalized = re.sub(r"\s+", " ", reset_text.strip())
-    normalized = normalized.replace(", at ", " ").replace(" at ", " ")
-    for date_format in (
-        "%B %d, %Y %I:%M %p",
-        "%b %d, %Y %I:%M %p",
-        "%B %d %Y %I:%M %p",
-        "%b %d %Y %I:%M %p",
-    ):
-        try:
-            return datetime.strptime(normalized, date_format)
-        except ValueError:
-            pass
-    return None
 
 
 def codex_rate_limit_wait_until(output_tail: str) -> datetime | None:

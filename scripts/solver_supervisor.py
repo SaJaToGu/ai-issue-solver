@@ -30,35 +30,15 @@ from typing import Iterable
 
 sys.path.insert(0, str(Path(__file__).parent))
 from solver_reporting import (  # noqa: E402
+    RUNNING_STATUSES,
     RUN_REPORTS_ROOT,
+    TERMINAL_STATUSES,
     classify_worker_health,
     preserve_worker_worktree,
     read_normalized_run_outcome,
 )
 from status_dashboard import parse_datetime_value, parse_summary  # noqa: E402
 from utils import print_banner, print_ok, print_step, print_warn  # noqa: E402
-
-
-RUNNING_STATUSES = {"started", "running", "queued"}
-TERMINAL_STATUSES = {
-    "archived",
-    "cleanup_noop",
-    "cleanup_successful",
-    "clone_failed",
-    "failed",
-    "no_changes",
-    "nonzero_without_changes",
-    "pr_created",
-    "pr_created_from_existing_branch",
-    "pr_created_with_warning",
-    "pr_failed",
-    "push_failed",
-    "rate_limit_deferred",
-    "skip_existing_pr",
-    "skip_merged_pr",
-    "validation_failed",
-    "worker_validation_failed",
-}
 DEFAULT_STALE_SECONDS = 15 * 60
 DEFAULT_GRACEFUL_TIMEOUT_SECONDS = 10
 DEFAULT_KILL_TIMEOUT_SECONDS = 5
