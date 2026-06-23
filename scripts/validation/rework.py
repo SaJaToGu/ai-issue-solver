@@ -11,13 +11,13 @@ from typing import Any
 from validation.github_client import ValidationGitHubClient, ReviewThread
 from validation.git_notes import add_rework_to_note
 from validation.models import RunReportData
-from scripts.solver_reporting import (
+from solver_reporting import (
     RUN_REPORTS_ROOT,
     safe_run_repo_name,
     create_run_report,
     write_run_report,
 )
-from scripts.solver_repository import (
+from solver_repository import (
     CloneResult,
     clone_repo,
     checkout_existing_remote_branch,

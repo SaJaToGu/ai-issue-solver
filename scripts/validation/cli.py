@@ -34,7 +34,7 @@ from validation.split import close_parent_with_cross_ref, decompose_pr_to_sub_is
 def _load_config() -> dict[str, Any]:
     """Load configuration from environment / .env files."""
     try:
-        from scripts.utils import load_env
+        from utils import load_env
         config = load_env()
     except ImportError:
         config = {}
