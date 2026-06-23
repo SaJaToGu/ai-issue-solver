@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import os
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock
 
@@ -97,17 +99,21 @@ class ReworkPrCliDryRunTests(unittest.TestCase):
                             mock_client_cls.return_value = mock_client
                             mock_client.get_repo.return_value = {"has_issues": True}
 
-                            with patch("solve_issues.print") as mock_print:
+                            # `solve_issues.print` doesn't exist — `print` is a
+                            # builtin, and `from solve_issues import main` does
+                            # not re-export it. The original test patched a
+                            # non-existent attribute and asserted empty output.
+                            # Capture stdout instead via `redirect_stdout`.
+                            stdout_buffer = io.StringIO()
+                            with redirect_stdout(stdout_buffer):
                                 with patch.object(sys, "argv", [
                                     "solve_issues.py", "--rework-pr", "1", "--model", "openrouter_direct", "--dry-run",
                                 ]):
                                     with self.assertRaises(SystemExit):
                                         main()
 
-                                printed_text = " ".join(
-                                    str(call) for call in mock_print.call_args_list
-                                )
-                                self.assertIn("Rework-Status", printed_text)
+                            printed_text = stdout_buffer.getvalue()
+                            self.assertIn("Rework-Status", printed_text)
 
 
 if __name__ == "__main__":
