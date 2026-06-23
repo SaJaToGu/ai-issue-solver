@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim for Validation Metrics & Run (0.9.0).
+"""Thin shim for Validation Metrics & Run.
 
 Re-exports main from the validation package. Run with --help to see
 all four subcommands.

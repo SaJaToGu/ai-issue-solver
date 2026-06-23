@@ -1,4 +1,4 @@
-"""validation — 0.9.0 Validation Metrics & Run package.
+"""validation — Validation Metrics & Run package.
 
 Split from monolithic scripts/validation_run.py (1570 LOC) into modules:
 
