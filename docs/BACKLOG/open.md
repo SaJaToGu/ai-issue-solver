@@ -153,3 +153,49 @@ Checks:
 - `python -m unittest discover -s tests`
 
 ---
+
+## 49. Forward --max-run-cost-usd / --max-run-input-tokens / --max-run-output-tokens in run_overnight.py build_batch_command
+
+
+Labels: `kind/bug`, `kind/refactor`, `priority/2`, `area/runs`, `theme/cost`
+
+Priority: `2`
+
+`run_overnight.py` does not forward the cost/token limit flags to
+its spawned worker subprocess. `solve_issues_batch.py` had the same
+gap and was fixed in commit `d811692`; the overnight path was never
+done.
+
+Tests:
+- `tests/test_cost_limit_forwarding.py` (5 tests) fail on Python 3.10
+  + 3.12 because the now-removed duplicate `build_batch_command` in
+  `run_overnight.py` was the only code path the tests exercised.
+  With the duplicate removed in #383 (PR #417), the test fixture
+  expectation collides with the still-missing forwarding.
+
+Suggested scope:
+- mirror the `d811692` batch fix in `run_overnight.py`:
+  `build_batch_command` (or its replacement now in
+  `scripts/solver_commands.py`) must accept
+  `--max-run-cost-usd` / `--max-run-input-tokens` /
+  `--max-run-output-tokens` and forward them to the worker.
+- add `tests/test_run_overnight.py` coverage that mirrors the
+  batch-side tests, so the next refactor doesn't surface the same
+  gap.
+- close the gap on `--max-post-worker-runtime-seconds` too, if it
+  has the same problem (verify via test fixture).
+
+Out of scope:
+- changing default cost caps anywhere
+- changing the user-side cap that already goes through (per memory
+  the user-side cap is a hint, not an enforcement — leave that as is)
+
+Touches: `scripts/run_overnight.py`, `scripts/solver_commands.py`,
+         `tests/test_run_overnight.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_cost_limit_forwarding tests.test_run_overnight`
+- `python -m unittest discover -s tests`
+
+---

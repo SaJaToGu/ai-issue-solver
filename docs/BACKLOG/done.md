@@ -466,3 +466,44 @@ Original labels: `agent/solver`, `theme/workflow`, `theme/provider`, `area/runs`
 
 ---
 
+## Done — §383 Retire legacy orchestration helpers after shared solver layers land (GitHub #383)
+
+Closed via #383 (PR #417, squash-merged into develop at commit `64d28a8`).
+
+**Scope delivered:** Final cleanup slice for parent #357.
+
+- `scripts/run_overnight.py` (+12/-68) — removed duplicate
+  `build_batch_command` / `build_dashboard_command`, dead
+  `classify_status`. 56 lines of duplicate code eliminated.
+- `scripts/status_dashboard.py` (+9/-68) — consolidated four
+  duplicate parsers (`parse_summary`, `parse_datetime_value`,
+  `parse_created_at`, `latest_datetime`) into one place in
+  `solver_reporting.py`.
+- `scripts/solver_reporting.py` (+37/-16) — public API additions
+  for the consolidated parsers.
+- `scripts/solver_supervisor.py` (+2/-2) — imports updated to use
+  `solver_reporting`.
+- `scripts/watchdog.py` (+4/-8) — small refactor for shared
+  helpers.
+- `docs/WORKFLOW.md` (+57/-0) — added section pointing at the
+  shared command/outcome layers introduced in #357 (PR #416).
+- 4 test files updated.
+
+Net diff: +157/-291 across 10 files = -134 LOC of duplicate
+orchestration removed. With #357 (PR #416, +384/-205) and #383
+(PR #417) together, the consolidation effort removed ~302 lines of
+duplicate code from the solver orchestration surface.
+
+**⚠️ Follow-up:** 5 unit tests in `tests/test_cost_limit_forwarding.py`
+fail on Python 3.10 + 3.12 after this PR landed. This is the
+**known cost-limit-forwarding gap for run_overnight** — the batch
+path was fixed in commit `d811692`; the overnight path was never
+done. The #383 refactor surfaces the gap because the now-removed
+duplicate `build_batch_command` in `run_overnight.py` was the only
+code path the tests were still exercising. Tracked as the new
+backlog §50.
+
+Original labels: `agent/solver`, `theme/workflow`, `area/runs`, `priority/2`, `kind/refactor`
+
+---
+
