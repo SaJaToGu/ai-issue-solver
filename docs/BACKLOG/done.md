@@ -555,3 +555,62 @@ Original labels: `kind/bug`, `kind/refactor`, `priority/2`, `area/runs`, `theme/
 
 ---
 
+## Done — check-prs handles merged PRs with deleted branches + correct CI status (PR #420)
+
+Surfaced as part of post-#418 follow-up (the user asked "Können wir
+eigentlich das Validierung Skript für solche manuellen Änderungen
+verwenden?"). Three bugs in `validation_run check-prs` made it
+unusable for the common post-merge case:
+
+1. **Head-branch lookup fails for merged PRs** — `cmd_check_prs`
+   searched by `head=ai/fix-issue-{N}`. After `--delete-branch` on
+   squash-merge, the branch is gone and the lookup returns no PRs.
+   Refactored to call `get_pull_request(N)` first (works for any PR
+   by number, including merged with deleted branches), with the
+   branch-name lookup kept as a fallback for legacy open-PR support.
+
+2. **CI queried on the wrong SHA** — the script queried CI on
+   `merge_commit_sha`, but PR CI runs on the PR head SHA, not the
+   merge commit. Switched to `head_sha` (with `merge_commit_sha` as
+   fallback). Added `head_sha` to the `PullRequestInfo` dataclass
+   and populated it in both `get_pull_request` and `get_pull_requests`.
+
+3. **Empty commit-statuses misread as 'pending'** — GitHub's legacy
+   commit-statuses API returns `state='pending'` for commits with
+   zero legacy statuses (PRs that only use the Check Runs API). The
+   combined check then failed. `get_ci_status` now normalises
+   empty-statuses to `missing`.
+
+**Argparse:** added `--numbers` as the primary flag; `--issues`
+remains as a deprecated alias (hidden from help via
+`argparse.SUPPRESS`) and is concatenated with `--numbers` in the
+resolver, with deduplication.
+
+**Files (+215/-25 across 5):**
+
+- `scripts/validation/cli.py` — `cmd_check_prs` refactor + new
+  `_resolve_pr_for_number` helper + argparse
+- `scripts/validation/github_client.py` — `head_sha` field +
+  empty-statuses fix
+- `tests/test_validation/test_cli.py` — 5 new/updated tests
+- `tests/test_validation/test_github_client.py` — 1 new test
+- `docs/WORKFLOW.md` — new "Validierung gemergter PRs" section
+
+**Validation (local, 181/181 tests pass):**
+
+```
+$ python3 scripts/validation_run.py check-prs --numbers 416 417 419
+Checking PRs for up to 3 numbers...
+  #416 [MERGED] CI:GREEN  [AI] Fix: Consolidate solver orchestration
+  #417 [MERGED] CI:RED     [AI] Fix: Retire legacy orchestration helpers
+  #419 [MERGED] CI:GREEN  [AI] Fix: Forward --max-run-cost-usd
+```
+
+**Lesson captured (memory):** `validation_run check-prs` should
+default to PR-by-number lookup with branch-name as fallback, and
+CI should be queried on `head_sha` for both open and merged PRs.
+The `--issues` flag remains as a deprecated alias for `--numbers`
+to keep older commands working.
+
+---
+
