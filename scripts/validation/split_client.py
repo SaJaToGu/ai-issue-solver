@@ -17,8 +17,8 @@ from typing import Any
 
 import requests
 
-from scripts.validation.github_client import ValidationGitHubClient
-from scripts.validation.models import ValidationIssue
+from validation.github_client import ValidationGitHubClient
+from validation.models import ValidationIssue
 
 
 @dataclass(frozen=True)

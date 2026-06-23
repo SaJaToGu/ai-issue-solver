@@ -8,11 +8,11 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.github_client import (  # noqa: E402
+from validation.github_client import (  # noqa: E402
     PullRequestInfo,
     ValidationGitHubClient,
 )
-from scripts.validation.split import (  # noqa: E402
+from validation.split import (  # noqa: E402
     SUB_ISSUE_LABELS,
     _changes_for_file,
     build_sub_issue_body,
@@ -20,7 +20,7 @@ from scripts.validation.split import (  # noqa: E402
     decompose_pr_to_sub_issues,
     group_files_by_module,
 )
-from scripts.validation.split_client import (  # noqa: E402
+from validation.split_client import (  # noqa: E402
     PrFileInfo,
     SplitGitHubClient,
 )
@@ -105,7 +105,7 @@ class DecomposePrToSubIssuesTests(unittest.TestCase):
             {"number": 101, "html_url": "http://example.com/101"},
         ]
 
-        with patch("scripts.validation.split.add_sub_issues_to_note") as mock_note:
+        with patch("validation.split.add_sub_issues_to_note") as mock_note:
             result = decompose_pr_to_sub_issues(
                 client, "test-repo", 42,
                 thresholds={"max_loc": 100, "max_files": 100, "test_ratio": 0.0},

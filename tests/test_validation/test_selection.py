@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.github_client import ValidationGitHubClient  # noqa: E402
-from scripts.validation.models import ValidationIssue  # noqa: E402
-from scripts.validation.selection import (  # noqa: E402
+from validation.github_client import ValidationGitHubClient  # noqa: E402
+from validation.models import ValidationIssue  # noqa: E402
+from validation.selection import (  # noqa: E402
     select_issues_by_criteria,
     select_issues_by_label,
 )

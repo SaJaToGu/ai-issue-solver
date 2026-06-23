@@ -6,7 +6,7 @@ from typing import Any
 
 import requests
 
-from scripts.validation.models import ValidationIssue
+from validation.models import ValidationIssue
 
 
 @dataclass(frozen=True)

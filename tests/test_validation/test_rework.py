@@ -9,16 +9,16 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.rework import (
+from validation.rework import (
     _build_rework_prompt,
     _load_rework_prompt_template,
     run_pr_rework,
 )
-from scripts.validation.github_client import (
+from validation.github_client import (
     PullRequestInfo,
     ReviewThread,
 )
-from scripts.validation.models import RunReportData
+from validation.models import RunReportData
 
 
 class BuildReworkPromptTests(unittest.TestCase):
@@ -104,7 +104,7 @@ class LoadReworkPromptTemplateTests(unittest.TestCase):
 
 class RunPrReworkDryRunTests(unittest.TestCase):
     def test_dry_run_returns_early_without_api_calls(self):
-        with patch("scripts.validation.rework.ValidationGitHubClient") as mock_client_cls:
+        with patch("validation.rework.ValidationGitHubClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client_cls.return_value = mock_client
             mock_client.get_pull_request.return_value = PullRequestInfo(
@@ -132,7 +132,7 @@ class RunPrReworkDryRunTests(unittest.TestCase):
         self.assertIn("rework", result.run_id or "")
 
     def test_merged_pr_returns_skip(self):
-        with patch("scripts.validation.rework.ValidationGitHubClient") as mock_client_cls:
+        with patch("validation.rework.ValidationGitHubClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client_cls.return_value = mock_client
             mock_client.get_pull_request.return_value = PullRequestInfo(
@@ -157,7 +157,7 @@ class RunPrReworkDryRunTests(unittest.TestCase):
         self.assertEqual(result.status, "skip_merged_pr")
 
     def test_nonexistent_pr_returns_not_found(self):
-        with patch("scripts.validation.rework.ValidationGitHubClient") as mock_client_cls:
+        with patch("validation.rework.ValidationGitHubClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client_cls.return_value = mock_client
             mock_client.get_pull_request.return_value = None
@@ -188,7 +188,7 @@ class RunPrReworkConfigGuardTests(unittest.TestCase):
         self.assertEqual(result.error_class, "config")
 
     def test_missing_openrouter_key_triggers_config_error(self):
-        with patch("scripts.validation.rework.ValidationGitHubClient") as mock_client_cls:
+        with patch("validation.rework.ValidationGitHubClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client_cls.return_value = mock_client
             mock_client.get_pull_request.return_value = PullRequestInfo(

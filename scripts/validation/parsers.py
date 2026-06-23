@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from scripts.validation.models import RunReportData
+from validation.models import RunReportData
 
 SUMMARY_STATUS_RE = re.compile(r"^status:\s*(\S+)", re.MULTILINE)
 SUMMARY_ISSUE_RE = re.compile(r"^issue_number:\s*(\d+)", re.MULTILINE)

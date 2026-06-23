@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts.validation.models import RunReportData, ValidationMetrics
+from validation.models import RunReportData, ValidationMetrics
 
 
 DEFAULT_MAX_PR_LOC = 500

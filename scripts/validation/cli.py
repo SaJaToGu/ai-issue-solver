@@ -7,8 +7,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts.validation.github_client import ValidationGitHubClient
-from scripts.validation.metrics import (
+# Make sibling and project-root modules importable when this file is
+# run directly (`python scripts/validation/cli.py`).
+#
+# Two paths are needed because the validation package mixes two
+# import conventions:
+#   - validation.*         (parents[1] = scripts/, the package dir)
+#   - workers.*, solver_*  (parents[2] = project root, the top level)
+#
+# Adding the project root does NOT subsume scripts/ for the
+# validation package — `validation/cli.py` is reached via
+# parents[1] in the sys.modules table when `validation.cli` is
+# imported, so both roots must be on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # project root
+
+from validation.github_client import ValidationGitHubClient
+from validation.metrics import (
     compute_metrics,
     format_cost,
     format_duration,
@@ -17,18 +32,18 @@ from scripts.validation.metrics import (
     persist_validation_run,
     write_validation_report,
 )
-from scripts.validation.models import ValidationConfig, ValidationMetrics
-from scripts.validation.parsers import collect_run_reports
-from scripts.validation.pr_checks import check_pr_statuses
-from scripts.validation.runner import run_solver_for_issue
-from scripts.validation.selection import select_issues_by_label
-from scripts.validation.split import close_parent_with_cross_ref, decompose_pr_to_sub_issues
+from validation.models import ValidationConfig, ValidationMetrics
+from validation.parsers import collect_run_reports
+from validation.pr_checks import check_pr_statuses
+from validation.runner import run_solver_for_issue
+from validation.selection import select_issues_by_label
+from validation.split import close_parent_with_cross_ref, decompose_pr_to_sub_issues
 
 
 def _load_config() -> dict[str, Any]:
     """Load configuration from environment / .env files."""
     try:
-        from scripts.utils import load_env
+        from utils import load_env
         config = load_env()
     except ImportError:
         config = {}
@@ -83,7 +98,7 @@ def cmd_run(args: argparse.Namespace, config: dict[str, Any]) -> int:
         print(f"Error fetching issues: {exc}", file=sys.stderr)
         if args.dry_run:
             print("Dry-run: proceeding with synthetic issues for smoke test.")
-            from scripts.validation.models import ValidationIssue
+            from validation.models import ValidationIssue
             issues = [
                 ValidationIssue(number=n, title=f"Synthetic issue #{n}", body="")
                 for n in range(1, args.issues + 1)
@@ -315,7 +330,7 @@ def cmd_split(args: argparse.Namespace, config: dict[str, Any]) -> int:
     # Wrap the core client in a SplitGitHubClient so split.py can call
     # the file-listing / sub-issue-creation / close-issue helpers without
     # bloating ValidationGitHubClient beyond its line cap.
-    from scripts.validation.split_client import SplitGitHubClient
+    from validation.split_client import SplitGitHubClient
     split_client = SplitGitHubClient(client)
 
     thresholds = load_thresholds(

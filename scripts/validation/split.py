@@ -6,9 +6,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from scripts.validation.git_notes import add_sub_issues_to_note
-from scripts.validation.metrics import is_oversized, load_thresholds
-from scripts.validation.split_client import SplitGitHubClient
+from validation.git_notes import add_sub_issues_to_note
+from validation.metrics import is_oversized, load_thresholds
+from validation.split_client import SplitGitHubClient
 
 
 SUB_ISSUE_LABELS = ["kind/refactor", "priority/2", "area/runs"]

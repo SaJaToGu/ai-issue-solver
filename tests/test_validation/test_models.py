@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.models import (  # noqa: E402
+from validation.models import (  # noqa: E402
     RunReportData,
     ValidationConfig,
     ValidationIssue,

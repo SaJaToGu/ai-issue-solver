@@ -4306,7 +4306,7 @@ def main():
         if args.dry_run:
             print_warn("DRY-RUN: Rework wird simuliert\n")
 
-        from scripts.validation.rework import run_pr_rework
+        from validation.rework import run_pr_rework
         result = run_pr_rework(
             owner=user,
             repo=repo,

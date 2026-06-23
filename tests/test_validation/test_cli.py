@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.cli import (  # noqa: E402
+from validation.cli import (  # noqa: E402
     build_parser,
     cmd_check_prs,
     cmd_list,
@@ -106,8 +106,8 @@ class CmdRunTests(unittest.TestCase):
                 "--model-name", "opencode/deepseek-v4-flash-free",
             ]
         )
-        with patch("scripts.validation.cli.select_issues_by_label") as mock_select:
-            from scripts.validation.models import ValidationIssue
+        with patch("validation.cli.select_issues_by_label") as mock_select:
+            from validation.models import ValidationIssue
             mock_select.return_value = [
                 ValidationIssue(number=1, title="Test", body="body"),
             ]
@@ -123,7 +123,7 @@ class CmdRunTests(unittest.TestCase):
                 "--model-name", "opencode/deepseek-v4-flash-free",
             ]
         )
-        with patch("scripts.validation.cli.select_issues_by_label") as mock_select:
+        with patch("validation.cli.select_issues_by_label") as mock_select:
             mock_select.return_value = []
             exit_code = cmd_run(args, config)
             self.assertEqual(exit_code, 1)
@@ -135,8 +135,8 @@ class CmdRunTests(unittest.TestCase):
         for key in ("OPENCODE_MODEL", "OPENCODE_MODEL_NAME"):
             os.environ.pop(key, None)
         args = parse_args(["run", "--dry-run", "--issues", "1"])
-        with patch("scripts.validation.cli.select_issues_by_label") as mock_select:
-            from scripts.validation.models import ValidationIssue
+        with patch("validation.cli.select_issues_by_label") as mock_select:
+            from validation.models import ValidationIssue
             mock_select.return_value = [
                 ValidationIssue(number=1, title="Test", body="body"),
             ]
@@ -161,7 +161,7 @@ class CmdReportTests(unittest.TestCase):
     def test_cmd_report_no_reports_returns_one(self):
         config = {"GITHUB_OWNER": "test-owner"}
         args = parse_args(["report", "--no-github"])
-        with patch("scripts.validation.cli.collect_run_reports") as mock_collect:
+        with patch("validation.cli.collect_run_reports") as mock_collect:
             mock_collect.return_value = []
             exit_code = cmd_report(args, config)
             self.assertEqual(exit_code, 1)
@@ -173,8 +173,8 @@ class CmdCheckPrsTests(unittest.TestCase):
         the command reports the number and continues."""
         config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
         args = parse_args(["check-prs", "--numbers", "999"])
-        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_request", return_value=None), \
-             patch("scripts.validation.cli.ValidationGitHubClient.get_pull_requests", return_value=[]):
+        with patch("validation.cli.ValidationGitHubClient.get_pull_request", return_value=None), \
+             patch("validation.cli.ValidationGitHubClient.get_pull_requests", return_value=[]):
             exit_code = cmd_check_prs(args, config)
         self.assertEqual(exit_code, 0)
 
@@ -188,9 +188,9 @@ class CmdCheckPrsTests(unittest.TestCase):
             merge_commit_sha="deadbeef", head_sha="abc1234",
         )
         fake_ci = MagicMock(state="success")
-        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_request", return_value=fake_pr) as mock_pr_lookup, \
-             patch("scripts.validation.cli.ValidationGitHubClient.get_pull_requests") as mock_branch_fallback, \
-             patch("scripts.validation.cli.ValidationGitHubClient.get_combined_ci_status", return_value=fake_ci) as mock_ci, \
+        with patch("validation.cli.ValidationGitHubClient.get_pull_request", return_value=fake_pr) as mock_pr_lookup, \
+             patch("validation.cli.ValidationGitHubClient.get_pull_requests") as mock_branch_fallback, \
+             patch("validation.cli.ValidationGitHubClient.get_combined_ci_status", return_value=fake_ci) as mock_ci, \
              patch("builtins.print") as mock_print:
             exit_code = cmd_check_prs(args, config)
         self.assertEqual(exit_code, 0)
@@ -215,8 +215,8 @@ class CmdCheckPrsTests(unittest.TestCase):
             number=99, title="Branch-found PR", merged=False,
             merge_commit_sha=None, head_sha="",
         )
-        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_request", return_value=None), \
-             patch("scripts.validation.cli.ValidationGitHubClient.get_pull_requests", return_value=[fake_pr]) as mock_branch, \
+        with patch("validation.cli.ValidationGitHubClient.get_pull_request", return_value=None), \
+             patch("validation.cli.ValidationGitHubClient.get_pull_requests", return_value=[fake_pr]) as mock_branch, \
              patch("builtins.print") as mock_print:
             exit_code = cmd_check_prs(args, config)
         self.assertEqual(exit_code, 0)
@@ -235,8 +235,8 @@ class CmdCheckPrsTests(unittest.TestCase):
             number=500, title="Open PR", merged=False,
             merge_commit_sha=None, head_sha="opensha",
         )
-        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_request", return_value=fake_pr), \
-             patch("scripts.validation.cli.ValidationGitHubClient.get_combined_ci_status") as mock_ci, \
+        with patch("validation.cli.ValidationGitHubClient.get_pull_request", return_value=fake_pr), \
+             patch("validation.cli.ValidationGitHubClient.get_combined_ci_status") as mock_ci, \
              patch("builtins.print"):
             cmd_check_prs(args, config)
         mock_ci.assert_called_once_with("ai-issue-solver", "opensha")
@@ -246,7 +246,7 @@ class CmdListTests(unittest.TestCase):
     def test_cmd_list_no_issues(self):
         config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
         args = parse_args(["list"])
-        with patch("scripts.validation.cli.select_issues_by_label") as mock_select:
+        with patch("validation.cli.select_issues_by_label") as mock_select:
             mock_select.return_value = []
             exit_code = cmd_list(args, config)
             self.assertEqual(exit_code, 0)
@@ -254,8 +254,8 @@ class CmdListTests(unittest.TestCase):
     def test_cmd_list_shows_issues(self):
         config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
         args = parse_args(["list"])
-        with patch("scripts.validation.cli.select_issues_by_label") as mock_select:
-            from scripts.validation.models import ValidationIssue
+        with patch("validation.cli.select_issues_by_label") as mock_select:
+            from validation.models import ValidationIssue
             mock_select.return_value = [
                 ValidationIssue(number=1, title="Fix", body="", labels=("ai-generated",)),
             ]
@@ -267,7 +267,7 @@ class CmdSplitTests(unittest.TestCase):
     def test_cmd_split_not_oversized(self):
         config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
         args = parse_args(["split", "--pr", "42"])
-        with patch("scripts.validation.cli.decompose_pr_to_sub_issues") as mock_split:
+        with patch("validation.cli.decompose_pr_to_sub_issues") as mock_split:
             mock_split.return_value = {
                 "is_oversized": False,
                 "total_loc": 100,
@@ -280,7 +280,7 @@ class CmdSplitTests(unittest.TestCase):
     def test_cmd_split_oversized_creates_issues(self):
         config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
         args = parse_args(["split", "--pr", "42"])
-        with patch("scripts.validation.cli.decompose_pr_to_sub_issues") as mock_split:
+        with patch("validation.cli.decompose_pr_to_sub_issues") as mock_split:
             mock_split.return_value = {
                 "is_oversized": True,
                 "total_loc": 600,
@@ -303,7 +303,7 @@ class CmdSplitTests(unittest.TestCase):
     def test_cmd_split_pr_not_found(self):
         config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
         args = parse_args(["split", "--pr", "42"])
-        with patch("scripts.validation.cli.decompose_pr_to_sub_issues") as mock_split:
+        with patch("validation.cli.decompose_pr_to_sub_issues") as mock_split:
             mock_split.side_effect = ValueError("PR #42 not found")
             exit_code = cmd_split(args, config)
             self.assertEqual(exit_code, 1)
@@ -325,41 +325,41 @@ class CmdSplitTests(unittest.TestCase):
 
 class MainTests(unittest.TestCase):
     def test_main_handles_argument_error_gracefully(self):
-        with patch("scripts.validation.cli.parse_args") as mock_parse:
+        with patch("validation.cli.parse_args") as mock_parse:
             mock_parse.side_effect = SystemExit(2)
             with self.assertRaises(SystemExit):
                 main(["unknown"])
 
     def test_main_with_run_dry_run(self):
-        with patch("scripts.validation.cli.cmd_run") as mock_run:
+        with patch("validation.cli.cmd_run") as mock_run:
             mock_run.return_value = 0
             exit_code = main(["run", "--dry-run", "--issues", "1"])
             self.assertEqual(exit_code, 0)
             mock_run.assert_called_once()
 
     def test_main_with_report(self):
-        with patch("scripts.validation.cli.cmd_report") as mock_report:
+        with patch("validation.cli.cmd_report") as mock_report:
             mock_report.return_value = 0
             exit_code = main(["report", "--no-github"])
             self.assertEqual(exit_code, 0)
             mock_report.assert_called_once()
 
     def test_main_with_check_prs(self):
-        with patch("scripts.validation.cli.cmd_check_prs") as mock_check:
+        with patch("validation.cli.cmd_check_prs") as mock_check:
             mock_check.return_value = 0
             exit_code = main(["check-prs"])
             self.assertEqual(exit_code, 0)
             mock_check.assert_called_once()
 
     def test_main_with_list(self):
-        with patch("scripts.validation.cli.cmd_list") as mock_list:
+        with patch("validation.cli.cmd_list") as mock_list:
             mock_list.return_value = 0
             exit_code = main(["list"])
             self.assertEqual(exit_code, 0)
             mock_list.assert_called_once()
 
     def test_main_with_split(self):
-        with patch("scripts.validation.cli.cmd_split") as mock_split:
+        with patch("validation.cli.cmd_split") as mock_split:
             mock_split.return_value = 0
             exit_code = main(["split", "--pr", "42"])
             self.assertEqual(exit_code, 0)

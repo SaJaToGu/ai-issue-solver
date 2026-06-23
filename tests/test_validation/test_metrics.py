@@ -9,7 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.metrics import (  # noqa: E402
+from validation.metrics import (  # noqa: E402
     compute_metrics,
     format_cost,
     format_duration,
@@ -19,7 +19,7 @@ from scripts.validation.metrics import (  # noqa: E402
     persist_validation_run,
     write_validation_report,
 )
-from scripts.validation.models import (  # noqa: E402
+from validation.models import (  # noqa: E402
     RunReportData,
     ValidationMetrics,
 )
