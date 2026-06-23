@@ -63,15 +63,14 @@ def _stub_auth(*args, **kwargs):
     """Return a fake (token, user) pair for both `preflight_checks` and
     `require_github_config`. The rework-pr path in main() picks
     `require_github_config` (NOT `preflight_checks`) when `--repo` is unset
-    (see scripts/solve_issues.py around line 4174-4177). The original
-    tests only mocked `preflight_checks`, so in CI without GITHUB_TOKEN
-    the test failed at the auth check with `sys.exit(1)` before any of
-    the test's other mocks could bind.
-    """
+    (see scripts/solve_issues.py around line 4174-4177)."""
     return ("mock-token", "mock-user")
 
 
 class ReworkPrCliHelpTests(unittest.TestCase):
+    """The help test doesn't need auth/runtime mocks — argparse exits
+    before any of that machinery runs."""
+
     def test_help_shows_rework_pr_flag(self):
         with patch.object(sys, "argv", ["solve_issues.py", "--help"]):
             with self.assertRaises(SystemExit) as ctx:
@@ -81,46 +80,81 @@ class ReworkPrCliHelpTests(unittest.TestCase):
 
 class ReworkPrCliDryRunTests(unittest.TestCase):
     """Drives `main()` through the --rework-pr dry-run path with all
-    external dependencies stubbed (closes #428). Each test exercises one
-    assertion on either the exit code, the captured mock_rework call
-    args, or the captured stdout."""
+    external dependencies stubbed via class-level ExitStack (closes #428).
+
+    Why class-level mocks instead of per-test:
+    - `unittest discover -s tests` runs ~1260 tests before this file.
+      Some of those tests import `solve_issues` and may leave
+      cross-references in place. Using setUpClass guarantees the
+      mocks are active for every test method, regardless of
+      discovery order or prior state.
+    - The mock targets are module-level attributes (`solve_issues.requests`,
+      `validation.rework.run_pr_rework`, etc.). Once `solve_issues.main`
+      has been imported elsewhere, rebinding these on the module
+      via `patch()` is what protects each test method from
+      side-effects of prior tests.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._stack = ExitStack()
+        # 1. `solve_issues.requests` must be truthy so the
+        #    `if requests is None: sys.exit(1)` guard at line 4148 passes.
+        cls._stack.enter_context(
+            patch("solve_issues.requests", _types.ModuleType("requests"))
+        )
+        # 2. Mock the actual rework function so main() short-circuits after
+        #    the auth check and we can assert on call args.
+        cls.mock_rework = cls._stack.enter_context(
+            patch("validation.rework.run_pr_rework")
+        )
+        cls.mock_rework.return_value = MagicMock(
+            status="dry_run",
+            pr_url="",
+            run_id="pr-1-rework-test",
+            error_detail=None,
+            error_class=None,
+        )
+        # 3. Both auth paths must be mocked (see _stub_auth docstring).
+        cls._stack.enter_context(
+            patch("solve_issues.require_github_config", _stub_auth)
+        )
+        cls._stack.enter_context(
+            patch("solve_issues.preflight_checks", _stub_auth)
+        )
+        # 4. load_env returns a dict that preflight_checks would normally
+        #    derive from, but with require_github_config mocked we can
+        #    return whatever.
+        mock_env = cls._stack.enter_context(
+            patch("solve_issues.load_env")
+        )
+        mock_env.return_value = {
+            "GITHUB_TOKEN": "mock-token",
+            "GITHUB_USER": "mock-user",
+        }
+        cls._stack.enter_context(
+            patch("solve_issues.run_pre_solver_hygiene_check")
+        )
+        cls._stack.enter_context(
+            patch("solve_issues.GitHubClient")
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._stack.close()
 
     def _run_main(self, argv: list[str], *, capture_stdout: bool = False):
-        """Run main() with all required mocks bound via ExitStack.
-        Returns (exit_code, mock_rework, captured_stdout_or_None)."""
-        with ExitStack() as stack:
-            # `solve_issues.requests` must be truthy so the
-            # `if requests is None: sys.exit(1)` guard at line 4148 passes.
-            stack.enter_context(patch("solve_issues.requests", _types.ModuleType("requests")))
-            mock_rework = stack.enter_context(patch("validation.rework.run_pr_rework"))
-            mock_rework.return_value = MagicMock(
-                status="dry_run",
-                pr_url="",
-                run_id="pr-1-rework-test",
-                error_detail=None,
-                error_class=None,
-            )
-            # Both auth paths must be mocked (see _stub_auth docstring).
-            stack.enter_context(patch("solve_issues.require_github_config", _stub_auth))
-            stack.enter_context(patch("solve_issues.preflight_checks", _stub_auth))
-            mock_env = stack.enter_context(patch("solve_issues.load_env"))
-            mock_env.return_value = {
-                "GITHUB_TOKEN": "mock-token",
-                "GITHUB_USER": "mock-user",
-            }
-            stack.enter_context(patch("solve_issues.run_pre_solver_hygiene_check"))
-            mock_client_cls = stack.enter_context(patch("solve_issues.GitHubClient"))
-            mock_client = MagicMock()
-            mock_client_cls.return_value = mock_client
-            mock_client.get_repo.return_value = {"has_issues": True}
-            stack.enter_context(patch.object(sys, "argv", argv))
-
-            stdout_buffer = io.StringIO() if capture_stdout else None
-            cm = redirect_stdout(stdout_buffer) if capture_stdout else _NullCM()
-            with cm:
+        """Run main() with all class-level mocks still active. Returns
+        (exit_code, mock_rework, captured_stdout_or_None)."""
+        stdout_buffer = io.StringIO() if capture_stdout else None
+        cm = redirect_stdout(stdout_buffer) if capture_stdout else _NullCM()
+        with cm:
+            with patch.object(sys, "argv", argv):
                 with self.assertRaises(SystemExit) as ctx:
                     main()
-            return ctx.exception.code, mock_rework, (stdout_buffer.getvalue() if stdout_buffer else None)
+        return ctx.exception.code, self.mock_rework, (
+            stdout_buffer.getvalue() if stdout_buffer else None
+        )
 
     def test_dry_run_exits_successfully(self):
         code, _, _ = self._run_main([
@@ -146,41 +180,19 @@ class ReworkPrCliDryRunTests(unittest.TestCase):
         `redirect_stdout` (closes #423): `solve_issues.print` does not
         exist as a patchable attribute, so the original
         `patch("solve_issues.print")` was a no-op."""
-        # We need a non-empty pr_url for the status line to be interesting;
-        # the _run_main helper defaults to empty so we override here.
-        with ExitStack() as stack:
-            stack.enter_context(patch("solve_issues.requests", _types.ModuleType("requests")))
-            mock_rework = stack.enter_context(patch("validation.rework.run_pr_rework"))
-            mock_rework.return_value = MagicMock(
-                status="dry_run",
-                pr_url="https://github.com/o/r/pull/1",
-                run_id="pr-1-rework-test",
-                error_detail=None,
-                error_class=None,
-            )
-            stack.enter_context(patch("solve_issues.require_github_config", _stub_auth))
-            stack.enter_context(patch("solve_issues.preflight_checks", _stub_auth))
-            mock_env = stack.enter_context(patch("solve_issues.load_env"))
-            mock_env.return_value = {
-                "GITHUB_TOKEN": "mock-token",
-                "GITHUB_USER": "mock-user",
-            }
-            stack.enter_context(patch("solve_issues.run_pre_solver_hygiene_check"))
-            mock_client_cls = stack.enter_context(patch("solve_issues.GitHubClient"))
-            mock_client = MagicMock()
-            mock_client_cls.return_value = mock_client
-            mock_client.get_repo.return_value = {"has_issues": True}
-
-            stdout_buffer = io.StringIO()
-            with redirect_stdout(stdout_buffer):
-                with patch.object(sys, "argv", [
-                    "solve_issues.py", "--rework-pr", "1", "--model", "openrouter_direct", "--dry-run",
-                ]):
-                    with self.assertRaises(SystemExit):
-                        main()
-
-            printed_text = stdout_buffer.getvalue()
-            self.assertIn("Rework-Status", printed_text)
+        # We need a non-empty pr_url for the status line to be interesting.
+        self.mock_rework.return_value = MagicMock(
+            status="dry_run",
+            pr_url="https://github.com/o/r/pull/1",
+            run_id="pr-1-rework-test",
+            error_detail=None,
+            error_class=None,
+        )
+        code, _, printed_text = self._run_main(
+            ["solve_issues.py", "--rework-pr", "1", "--model", "openrouter_direct", "--dry-run"],
+            capture_stdout=True,
+        )
+        self.assertIn("Rework-Status", printed_text)
 
 
 class _NullCM:
