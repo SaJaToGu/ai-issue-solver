@@ -126,6 +126,19 @@ class ValidationGitHubClientTests(unittest.TestCase):
         status = self.client.get_ci_status("repo", "abc123")
         self.assertEqual(status.state, "missing")
 
+    def test_get_ci_status_normalizes_empty_statuses_to_missing(self):
+        """GitHub returns state='pending' for commits with zero legacy
+        commit statuses (PRs that only use the Check Runs API). The
+        client must normalize that to 'missing' so the combined
+        check correctly attributes CI to Check Runs only."""
+        self.session.get.return_value = self._mock_response(200, {
+            "state": "pending", "total_count": 0, "statuses": [],
+        })
+        status = self.client.get_ci_status("repo", "abc123")
+        self.assertEqual(status.state, "missing")
+        self.assertEqual(status.total_count, 0)
+        self.assertEqual(status.successful_count, 0)
+
     def test_get_check_runs_returns_status(self):
         self.session.get.return_value = self._mock_response(200, {
             "check_runs": [

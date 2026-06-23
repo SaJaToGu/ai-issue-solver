@@ -18,6 +18,7 @@ class PullRequestInfo:
     merged_at: str | None = None
     html_url: str = ""
     head_ref: str = ""
+    head_sha: str = ""
     base_ref: str = ""
     merge_commit_sha: str | None = None
 
@@ -131,6 +132,7 @@ class ValidationGitHubClient:
                 merged_at=pr.get("merged_at"),
                 html_url=pr.get("html_url", ""),
                 head_ref=(pr.get("head") or {}).get("ref", ""),
+                head_sha=(pr.get("head") or {}).get("sha", ""),
                 base_ref=(pr.get("base") or {}).get("ref", ""),
                 merge_commit_sha=(pr.get("merge_commit_sha") or None),
             ))
@@ -150,6 +152,7 @@ class ValidationGitHubClient:
             merged_at=pr.get("merged_at"),
             html_url=pr.get("html_url", ""),
             head_ref=(pr.get("head") or {}).get("ref", ""),
+            head_sha=(pr.get("head") or {}).get("sha", ""),
             base_ref=(pr.get("base") or {}).get("ref", ""),
             merge_commit_sha=(pr.get("merge_commit_sha") or None),
         )
@@ -165,8 +168,16 @@ class ValidationGitHubClient:
         total = data.get("total_count", 0)
         statuses = data.get("statuses", [])
         successful = sum(1 for s in statuses if s.get("state") == "success")
+        # GitHub returns state="pending" for commits with zero legacy
+        # commit statuses (e.g. PRs that only use the Check Runs API).
+        # Normalize: if no statuses exist, treat as "missing" so the
+        # combined check correctly attributes the result to Check Runs.
+        if not statuses:
+            state = "missing"
+        else:
+            state = data.get("state", "unknown")
         return CiStatus(
-            state=data.get("state", "unknown"),
+            state=state,
             conclusion=None,
             total_count=total,
             successful_count=successful,
