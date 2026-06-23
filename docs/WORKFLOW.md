@@ -599,3 +599,85 @@ Checking PRs for up to 3 numbers...
 (deprecated alias für `--numbers`). Bei `--issues <N>` schaut das
 Script nach dem Branch `ai/fix-issue-N` und scheitert für gemergte
 PRs — das war der ursprüngliche Bug, den dieser Workflow-Step fixt.
+
+
+## Issue/PR/Commit Netzwerk (build_graph.py)
+
+`scripts/build_graph.py` baut einen Graph aus Issue↔PR↔Commit-Relations
+über die Backlog-Dateien und Run-Reports. Liest:
+
+- `docs/BACKLOG/open.md` — aktive §-Items, parst §-Nummer + Title +
+  optional `Parent: #N`-Referenz
+- `docs/BACKLOG/done.md` — geschlossene Items, parst §-Nummer + GitHub
+  Issue-Nummer + PR + Commit SHA + LOC-Aufschlüsselung
+- `reports/runs/*/summary.txt` + `metadata.json` — Solver-Run-Metadaten
+  (PR-URL, Model, Cost wo vorhanden)
+
+Output als JSON (default) oder DOT (Graphviz). Node-Typen: `issue`,
+`pr`, `commit`. Edge-Typen: `closes` (issue→pr), `merged_into`
+(pr→commit), `parent_of` (issue→issue).
+
+```bash
+# Default: JSON nach stdout
+python scripts/build_graph.py
+
+# Graphviz DOT für Visualisierung
+python scripts/build_graph.py --format dot > /tmp/issue-network.dot
+dot -Tsvg /tmp/issue-network.dot > /tmp/issue-network.svg
+
+# In Datei schreiben
+python scripts/build_graph.py --output /tmp/graph.json
+```
+
+### Annotations
+
+Cost (USD) und LOC (`+X/-Y across N files`) werden aus den Quellen
+übernommen, Model aus den Run-Reports. Per `--color-by <dimension>`
+werden die Knoten eingefärbt:
+
+| Dimension | Was es zeigt | Farbschema |
+|---|---|---|
+| `model` | Welche Modelle für welche Issue-Typen | Discrete map (opencode=grün, codex=blau, etc.) |
+| `cost` | Teure vs günstige PRs | Grün (günstig) → Rot (teuer) |
+| `loc` | Große vs kleine Refactors | Grün (klein) → Rot (groß) |
+| `time` | Velocity-Trend | Aktuell binär (gemerkt vs nicht) — TODO: gradient |
+| `difficulty` | narrow / medium / broad / unsolved | Heuristik aus LOC + Cost + Run-State |
+
+### Beispiel-Output (gekürzt)
+
+```json
+{
+  "nodes": [
+    {"id": "issue-357", "type": "issue", "title": "Consolidate solver orchestration", "state": "done", "loc_add": 384, "loc_del": -205, "files": 9},
+    {"id": "pr-416", "type": "pr", "title": "PR #416", "head_sha": "f17783f", "color": "#22c55e", "model": "opencode"},
+    {"id": "commit-f17783f", "type": "commit", "title": "f17783f3"}
+  ],
+  "edges": [
+    {"from": "issue-357", "to": "pr-416", "type": "closes"},
+    {"from": "pr-416", "to": "commit-f17783f", "type": "merged_into"}
+  ]
+}
+```
+
+### Einschränkungen
+
+- Cost-Daten hängen davon ab ob der Run-Report `estimated_cost`
+  schreibt (derzeit nicht alle Runs tun das — Memory-noted: 'User-Cost-Cap
+  nicht enforced'). Wenn leer, fehlt die Cost-Annotation stillschweigend.
+- Der Parent-Of-Edge wird nur erkannt wenn `Parent: #N` explizit im
+  Issue-Body steht (wenige Issues haben das aktuell).
+- LOC wird aus den done.md-Einträgen geparst (Format: `+X/-Y across N files`
+  oder `in N files`). Inkonsistente Formate werden übersprungen.
+
+### Future Work (später, nicht in dieser Version)
+
+- **Auto-population der git notes** (`refs/notes/ais`): per Run
+  schreibt ein Hook die parent_pr → sub_issues + rework history in
+  den notes ref. Heute sind die Helpers in `git_notes.py` schon da,
+  werden aber nicht aufgerufen. Mit aktiviertem Hook wäre der Graph
+  100% machine-readable, nicht von done.md-Parsing abhängig.
+- **Dashboard-Tab** in `status_dashboard.py` als Renderer für die
+  JSON-Datei (heute CLI-only — Status-Dashboard hat 3280 Zeilen,
+  Refactor wäre eigenes Stück Arbeit).
+- **Native App View** — JSON ist bereits app-friendly, sobald die
+  App das Format liest.

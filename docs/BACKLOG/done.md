@@ -555,7 +555,9 @@ Original labels: `kind/bug`, `kind/refactor`, `priority/2`, `area/runs`, `theme/
 
 ---
 
-## Done — check-prs handles merged PRs with deleted branches + correct CI status (PR #420)
+## Done — check-prs handles merged PRs with deleted branches + correct CI status (GitHub #420)
+
+Closed via #420 (PR #420, squash-merged into develop at commit `99baa44`).
 
 Surfaced as part of post-#418 follow-up (the user asked "Können wir
 eigentlich das Validierung Skript für solche manuellen Änderungen
