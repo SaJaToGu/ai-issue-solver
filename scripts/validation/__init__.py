@@ -12,9 +12,28 @@ Split from monolithic scripts/validation_run.py (1570 LOC) into modules:
                    validation-run persistence, is_oversized
   git_notes      — read/write refs/notes/ais for parent_pr → sub_issues
   split          — decompose oversized PRs into sub-issues
+  split_client   — SplitGitHubClient for the backward-split flow
   cli            — argparse subcommands + main entry point
 
-The `main` entry point lives in `validation.cli`; `validation_run.py`
-imports it directly to avoid a circular import through this __init__.
+Entry point: ``validation.cli.main``. ``validation_run.py`` (the
+sibling shim in scripts/) imports it directly to avoid the
+circular import that would happen if this __init__ itself pulled
+``from validation.cli import main`` (cli.py imports from sibling
+modules like ``validation.github_client`` which on first load
+re-enters this __init__).
 """
+
+__all__ = [
+    "models",
+    "parsers",
+    "pr_checks",
+    "selection",
+    "github_client",
+    "runner",
+    "metrics",
+    "git_notes",
+    "split",
+    "split_client",
+    "cli",
+]
 

@@ -15,7 +15,7 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 sys.path.insert(0, str(_SCRIPT_DIR))
 
-from scripts.validation.cli import main  # noqa: E402
+from validation.cli import main  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(main())
