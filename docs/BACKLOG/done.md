@@ -616,3 +616,56 @@ to keep older commands working.
 
 ---
 
+## Done — build_graph.py: issue/PR/commit network with cost/LOC/color (PR #421)
+
+Closed via #420 (PR #421, squash-merged into develop at commit `e3b7bbb`).
+
+Surfaced from the user question "Wird der Zusammenhang zwischen Issues,
+PR's und Brunches aufgelöst und wie ein Netzwerk zusammengebaut?" on
+2026-06-23. Answer before this PR was: partial via distributed
+sources, no consolidated graph view. Delivered Option 1 of the four
+proposed (CLI script with cost/LOC + color-by, half day, ~313 LOC).
+
+**Scope delivered:**
+
+- `scripts/build_graph.py` (313 LOC) — reads `docs/BACKLOG/open.md`,
+  `docs/BACKLOG/done.md`, and `reports/runs/*/metadata.json` +
+  `summary.txt`. Builds a graph with `issue` / `pr` / `commit` node
+  types and `closes` / `merged_into` / `parent_of` edge types.
+- Output formats: JSON (default, app-friendly) or DOT (Graphviz).
+- Annotations: cost (USD), model, loc_add / loc_del / files, head_sha.
+- `--color-by <dimension>` for `model` (discrete map),
+  `cost` (green→red gradient), `loc` (green→red gradient),
+  `time` (placeholder), `difficulty` (heuristic matching the
+  WORKFLOW decision matrix: narrow / medium / broad / unsolved).
+- `tests/test_build_graph.py` (24 unit tests, all pass).
+- `docs/WORKFLOW.md` — new "Issue/PR/Commit Netzwerk" section
+  with usage examples, color-by reference, output schema, and
+  limitations called out.
+
+**Parser robustness:**
+
+- Handles backticks around commit SHA: `commit `0a2864b``
+- Accepts done.md headers with or without `§N` prefix
+- Missing files return empty lists, no crash
+- LOC parsing accepts both `across N files` and `in N files`
+  format variants
+
+**Out of scope (deferred):**
+
+- **Git notes auto-population** (`refs/notes/ais`): helpers exist in
+  `scripts/validation/git_notes.py` but are not actively called by
+  the solver pipeline. Could be added to `rework.py` so every
+  solver run writes a note.
+- **status_dashboard.py tab**: 1-1.5 days of refactor in a 3280-line
+  file. JSON output is already dashboard-ready.
+- **Native app view**: JSON is app-friendly; deferred to app timeline.
+
+**Note:** AIS-Review (`scripts/review_pr.py`) was NOT run on this
+PR before opening it — caught by the user post-merge. Going
+forward, AIS-Review is mandatory BEFORE opening a PR.
+
+Original labels: (none — ad-hoc feature, not from a backlog §)
+
+---
+
