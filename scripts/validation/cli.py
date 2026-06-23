@@ -8,8 +8,17 @@ from pathlib import Path
 from typing import Any
 
 # Make sibling and project-root modules importable when this file is
-# run directly (`python scripts/validation/cli.py`). SCRIPT_DIR is
-# scripts/validation/; the project root is parents[2].
+# run directly (`python scripts/validation/cli.py`).
+#
+# Two paths are needed because the validation package mixes two
+# import conventions:
+#   - validation.*         (parents[1] = scripts/, the package dir)
+#   - workers.*, solver_*  (parents[2] = project root, the top level)
+#
+# Adding the project root does NOT subsume scripts/ for the
+# validation package — `validation/cli.py` is reached via
+# parents[1] in the sys.modules table when `validation.cli` is
+# imported, so both roots must be on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # project root
 

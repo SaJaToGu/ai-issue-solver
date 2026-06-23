@@ -31,8 +31,14 @@ try:
 except ModuleNotFoundError:
     requests = None
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Make sibling and project-root modules importable when this file is
+# run directly (`python scripts/status_dashboard.py`).
+#
+# Two paths are needed for the same reason as in validation/cli.py:
+#   - scripts/utils, scripts/solver_*  (parent = scripts/)
+#   - workers.*                        (parents[1] = project root)
+sys.path.insert(0, str(Path(__file__).resolve().parent))        # scripts/
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))    # project root
 from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
 from solver_reporting import (  # noqa: E402
     classify_run_status,
