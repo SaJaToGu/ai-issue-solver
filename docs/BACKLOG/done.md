@@ -507,3 +507,51 @@ Original labels: `agent/solver`, `theme/workflow`, `area/runs`, `priority/2`, `k
 
 ---
 
+## Done — §49 Forward --max-run-cost-usd / --max-run-input-tokens / --max-run-output-tokens in run_overnight.py build_batch_command (GitHub #418)
+
+Closed via #418 (PR #419, squash-merged into develop at commit `0a2864b`).
+
+Closes the `d811692` → `run_overnight.py` gap. All three solver
+entry points (single, batch, overnight) now accept and forward
+`--max-run-cost-usd` / `--max-run-input-tokens` /
+`--max-run-output-tokens` / `--max-post-worker-runtime-seconds` to
+spawned workers.
+
+**Files (+186/-6 across 5):**
+
+- `scripts/run_overnight.py` (+12/-0) — `build_pull_command` and
+  worker spawning both forward all four flags.
+- `scripts/solve_issues_batch.py` (+12/-0) — extra flag forwarding
+  in `build_worker_command`.
+- `scripts/solver_commands.py` (+6/-0) — shared command-spec
+  accepts and emits the runtime flag.
+- `tests/test_cost_limit_forwarding.py` (+67/-6) — test imports
+  updated to the post-#383 structure (no more `build_batch_command`
+  direct import); 6 new tests cover the runtime flag forwarding.
+- `tests/test_run_overnight.py` (+89/-0) — new
+  `OvernightCostLimitForwardingTests` class with 8 tests mirroring
+  the batch-side coverage.
+
+**Pre-flight gate workaround (Huhn-Ei-Pattern):**
+
+The first run with the default pre-flight test gate crashed with
+`exit_code 1`: the 5 pre-existing `test_cost_limit_forwarding`
+failures (`ImportError: cannot import name 'build_batch_command'`)
+tripped the wrapper's "Tests fehlgeschlagen; Batch wird nicht
+gestartet" gate before the worker could even start. Worker could
+not fix the imports because it never ran. Re-run with `--skip-tests`
+bypassed the gate; the worker then fixed the test imports AND
+implemented the forwarding in the same run, producing a clean PR
+with CI green on Python 3.10 + 3.12.
+
+**Lesson for future refactors:** when a refactor removes a function
+that existing tests import, the test suite goes red on the wrapper's
+pre-flight check, which blocks the worker that would fix it. Either
+fix the test imports in a separate small PR first, or pass
+`--skip-tests` to let the worker resolve the Huhn-Ei in a single
+combined PR.
+
+Original labels: `kind/bug`, `kind/refactor`, `priority/2`, `area/runs`, `theme/cost`
+
+---
+
