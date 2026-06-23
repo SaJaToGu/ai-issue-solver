@@ -992,6 +992,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Maximale Output-Tokens fuer einen einzelnen OpenCode-Run",
     )
+    parser.add_argument(
+        "--max-run-runtime-seconds",
+        type=float,
+        default=None,
+        help="Maximale Laufzeit in Sekunden fuer einen einzelnen Run (direkte API-Worker)",
+    )
+    parser.add_argument(
+        "--max-post-worker-runtime-seconds",
+        type=float,
+        default=None,
+        help="Maximale Laufzeit in Sekunden fuer Validierung, Tests, Commit, Push und PR-Erstellung",
+    )
     return parser.parse_args(argv)
 
 

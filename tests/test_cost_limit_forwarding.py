@@ -41,17 +41,19 @@ def _make_batch_args(**overrides) -> argparse.Namespace:
         "dry_run": False,
         "close_issues": False,
         "verbosity": "quiet",
-        # The three flags under test:
+        # Budget/runtime flags under test:
         "max_run_cost_usd": None,
         "max_run_input_tokens": None,
         "max_run_output_tokens": None,
+        "max_run_runtime_seconds": None,
+        "max_post_worker_runtime_seconds": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
 
 def _make_overnight_args(**overrides) -> argparse.Namespace:
-    """Build an argparse.Namespace suitable for run_overnight.build_batch_command."""
+    """Build an argparse.Namespace suitable for solver_commands.build_batch_command."""
     defaults = {
         "model": "opencode",
         "model_name": "",
@@ -69,10 +71,13 @@ def _make_overnight_args(**overrides) -> argparse.Namespace:
         "unhealthy_retries": None,
         "verbosity": None,
         "skip_congestion_check": False,
-        # The three flags under test:
+        "allow_opencode_state_conflict": False,
+        # Budget/runtime flags under test:
         "max_run_cost_usd": None,
         "max_run_input_tokens": None,
         "max_run_output_tokens": None,
+        "max_run_runtime_seconds": None,
+        "max_post_worker_runtime_seconds": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -129,14 +134,27 @@ class SolveIssuesBatchForwardingTests(unittest.TestCase):
         cmd = self._build(max_run_cost_usd=0.0)
         self.assertTrue(_has_pair(cmd, "--max-run-cost-usd", "0.0"))
 
+    def test_forwards_runtime_flags_when_set(self):
+        cmd = self._build(
+            max_run_runtime_seconds=600.0,
+            max_post_worker_runtime_seconds=120.0,
+        )
+        self.assertTrue(_has_pair(cmd, "--max-run-runtime-seconds", "600.0"))
+        self.assertTrue(_has_pair(cmd, "--max-post-worker-runtime-seconds", "120.0"))
 
-# ── run_overnight.build_batch_command ─────────────────────────────────────
+    def test_omits_runtime_flags_when_none(self):
+        cmd = self._build()
+        self.assertNotIn("--max-run-runtime-seconds", cmd)
+        self.assertNotIn("--max-post-worker-runtime-seconds", cmd)
+
+
+# ── solver_commands.build_batch_command (used by run_overnight) ──────────
 
 class RunOvernightForwardingTests(unittest.TestCase):
     """Pin the forwarding contract for overnight → batch → solve_issues.py."""
 
     def _build(self, **overrides) -> list[str]:
-        from run_overnight import build_batch_command
+        from solver_commands import build_batch_command
 
         args = _make_overnight_args(**overrides)
         return build_batch_command(args, Path("scripts/solve_issues_batch.py"))
@@ -170,6 +188,19 @@ class RunOvernightForwardingTests(unittest.TestCase):
         cmd = self._build(max_run_cost_usd=0.0)
         self.assertTrue(_has_pair(cmd, "--max-run-cost-usd", "0.0"))
 
+    def test_forwards_runtime_flags_when_set(self):
+        cmd = self._build(
+            max_run_runtime_seconds=600.0,
+            max_post_worker_runtime_seconds=120.0,
+        )
+        self.assertTrue(_has_pair(cmd, "--max-run-runtime-seconds", "600.0"))
+        self.assertTrue(_has_pair(cmd, "--max-post-worker-runtime-seconds", "120.0"))
+
+    def test_omits_runtime_flags_when_none(self):
+        cmd = self._build()
+        self.assertNotIn("--max-run-runtime-seconds", cmd)
+        self.assertNotIn("--max-post-worker-runtime-seconds", cmd)
+
 
 # ── end-to-end: overnight → batch → worker (command shape) ────────────────
 
@@ -182,7 +213,7 @@ class EndToEndForwardingTests(unittest.TestCase):
     """
 
     def test_overnight_limit_survives_both_forwarding_hops(self):
-        from run_overnight import build_batch_command
+        from solver_commands import build_batch_command
         from solve_issues_batch import IssueJob, build_worker_command
 
         # Simulate `run_overnight.py --max-run-cost-usd 7.5 --max-run-input-tokens 80000`
@@ -217,6 +248,36 @@ class EndToEndForwardingTests(unittest.TestCase):
         # The worker sees the limits too.
         self.assertTrue(_has_pair(worker_cmd, "--max-run-cost-usd", "7.5"))
         self.assertTrue(_has_pair(worker_cmd, "--max-run-input-tokens", "80000"))
+
+    def test_overnight_runtime_limit_survives_both_forwarding_hops(self):
+        from solver_commands import build_batch_command
+        from solve_issues_batch import IssueJob, build_worker_command
+
+        overnight_args = _make_overnight_args(
+            max_run_runtime_seconds=900.0,
+            max_post_worker_runtime_seconds=180.0,
+        )
+        batch_cmd = build_batch_command(
+            overnight_args, Path("scripts/solve_issues_batch.py")
+        )
+
+        self.assertTrue(_has_pair(batch_cmd, "--max-run-runtime-seconds", "900.0"))
+        self.assertTrue(_has_pair(batch_cmd, "--max-post-worker-runtime-seconds", "180.0"))
+
+        batch_parsed_args = _make_batch_args(
+            model=overnight_args.model,
+            label=overnight_args.label,
+            base_branch=overnight_args.base_branch,
+            max_run_runtime_seconds=900.0,
+            max_post_worker_runtime_seconds=180.0,
+        )
+        worker_cmd = build_worker_command(
+            batch_parsed_args,
+            IssueJob(repo="ai-issue-solver", issue_number=1),
+            Path("scripts/solve_issues.py"),
+        )
+        self.assertTrue(_has_pair(worker_cmd, "--max-run-runtime-seconds", "900.0"))
+        self.assertTrue(_has_pair(worker_cmd, "--max-post-worker-runtime-seconds", "180.0"))
 
 
 if __name__ == "__main__":

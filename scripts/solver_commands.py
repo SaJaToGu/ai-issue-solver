@@ -117,6 +117,12 @@ def add_budget_flags(cmd: list[str], args: argparse.Namespace) -> None:
     max_run_output_tokens = getattr(args, "max_run_output_tokens", None)
     if max_run_output_tokens is not None:
         cmd.extend(["--max-run-output-tokens", str(max_run_output_tokens)])
+    max_run_runtime_seconds = getattr(args, "max_run_runtime_seconds", None)
+    if max_run_runtime_seconds is not None:
+        cmd.extend(["--max-run-runtime-seconds", str(max_run_runtime_seconds)])
+    max_post_worker_runtime_seconds = getattr(args, "max_post_worker_runtime_seconds", None)
+    if max_post_worker_runtime_seconds is not None:
+        cmd.extend(["--max-post-worker-runtime-seconds", str(max_post_worker_runtime_seconds)])
 
 
 def add_fallback_flags(cmd: list[str], args: argparse.Namespace) -> None:
