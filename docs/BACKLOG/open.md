@@ -240,3 +240,51 @@ Checks:
 - `python scripts/build_graph.py --format json | python -c "import json, sys; d=json.load(sys.stdin); assert d.get('nodes') and d.get('edges')"`
 
 ---
+
+## 53. Make test_rework_pr_cli.py CI-environment-independent
+
+Labels: `kind/bug`, `theme/tests`, `area/ci`, `priority/2`
+
+Priority: `2`
+
+`tests/test_rework_pr_cli.py` produces 4 failures in CI even after the
+print-mock fix from PR #427 (closes #423). The remaining failures are
+caused by CI-environment differences, not by the original mock bug.
+
+Two distinct CI-env failure modes were observed:
+
+1. **Missing `requests` module** — `solve_issues.py:4148` does
+   `sys.exit(1)` if its top-level `requests` import fell back to `None`.
+   CI's Python 3.10 env had a missing or stale `requests`, causing
+   `validation.rework` to fail to import, which cascaded into
+   `AttributeError: module 'validation' has no attribute 'rework'`
+   when the dotted-string `patch` target tried to bind.
+2. **Missing `GITHUB_TOKEN`** — `solve_issues.py` performs an early
+   GITHUB_TOKEN check that prints "GitHub Token fehlt" and calls
+   `sys.exit(1)` BEFORE the test's mocks for `preflight_checks`,
+   `load_env`, `run_pr_rework`, etc. can bind. Local `.env` has
+   `GITHUB_TOKEN`, CI does not. After stubbing `requests`, this is
+   the dominant failure mode.
+
+Suggested scope:
+- inject a minimal `requests` stub into `sys.modules` at test-file
+  import time (already partially done in PR #427) and force-load
+  `validation.rework` so the dotted-string patch target binds
+- mock `solve_issues.requests` per-test so the
+  `if requests is None: sys.exit(1)` guard at line 4148 is bypassed
+- either inject a dummy `GITHUB_TOKEN` into the test env (so the
+  early token check passes) OR mock the auth-check function itself
+  before main() is called — pick the lower-friction option
+- verify on Python 3.10 AND 3.12 in CI without any secrets or env
+  vars; the test should be 100% self-contained
+
+Touches: `tests/test_rework_pr_cli.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_rework_pr_cli -v`
+- `python -m unittest discover -s tests`
+- All five `ReworkPrCliDryRunTests` pass on Python 3.10 + 3.12 with
+  no `GITHUB_TOKEN` and no `requests` installed
+
+---
