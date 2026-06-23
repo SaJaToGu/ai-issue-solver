@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from scripts.validation.github_client import (
+from validation.github_client import (
     CiStatus,
     PullRequestInfo,
     ValidationGitHubClient,
 )
-from scripts.validation.models import RunReportData
+from validation.models import RunReportData
 
 
 def check_pr_statuses(

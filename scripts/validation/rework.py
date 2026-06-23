@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts.validation.github_client import ValidationGitHubClient, ReviewThread
-from scripts.validation.git_notes import add_rework_to_note
-from scripts.validation.models import RunReportData
+from validation.github_client import ValidationGitHubClient, ReviewThread
+from validation.git_notes import add_rework_to_note
+from validation.models import RunReportData
 from scripts.solver_reporting import (
     RUN_REPORTS_ROOT,
     safe_run_repo_name,

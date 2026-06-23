@@ -8,13 +8,13 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.github_client import (  # noqa: E402
+from validation.github_client import (  # noqa: E402
     CiStatus,
     PullRequestInfo,
     ValidationGitHubClient,
 )
-from scripts.validation.models import RunReportData  # noqa: E402
-from scripts.validation.pr_checks import (  # noqa: E402
+from validation.models import RunReportData  # noqa: E402
+from validation.pr_checks import (  # noqa: E402
     check_pr_statuses,
     is_pr_merged_and_green,
 )

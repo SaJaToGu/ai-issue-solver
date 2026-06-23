@@ -13,7 +13,8 @@ Split from monolithic scripts/validation_run.py (1570 LOC) into modules:
   git_notes      — read/write refs/notes/ais for parent_pr → sub_issues
   split          — decompose oversized PRs into sub-issues
   cli            — argparse subcommands + main entry point
-"""
-from validation.cli import main
 
-__all__ = ["main"]
+The `main` entry point lives in `validation.cli`; `validation_run.py`
+imports it directly to avoid a circular import through this __init__.
+"""
+

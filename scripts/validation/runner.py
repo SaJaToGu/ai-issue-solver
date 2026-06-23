@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts.validation.models import RunReportData
-from scripts.validation.rework import run_pr_rework as _run_pr_rework
+from validation.models import RunReportData
+from validation.rework import run_pr_rework as _run_pr_rework
 
 
 SOLVE_ISSUES_SCRIPT = Path("scripts/solve_issues.py")

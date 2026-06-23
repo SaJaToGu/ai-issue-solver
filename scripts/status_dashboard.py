@@ -31,7 +31,8 @@ try:
 except ModuleNotFoundError:
     requests = None
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
 from solver_reporting import (  # noqa: E402
     classify_run_status,

@@ -22,14 +22,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.solver_reporting import (  # noqa: E402
+from solver_reporting import (  # noqa: E402
     RUN_REPORTS_ROOT,
     RUNNING_STATUSES as _SOLVER_RUNNING_STATUSES,
     TERMINAL_STATUSES,
     read_normalized_run_outcome,
+    latest_datetime,
+    parse_summary_file,
 )
-from scripts.solver_reporting import latest_datetime, parse_summary_file  # noqa: E402
 
 # ── Default paths & thresholds ──────────────────────────────────────────────
 

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.github_client import (  # noqa: E402
+from validation.github_client import (  # noqa: E402
     CiStatus,
     PullRequestInfo,
     ValidationGitHubClient,

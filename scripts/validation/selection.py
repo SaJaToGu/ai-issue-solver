@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from scripts.validation.github_client import ValidationGitHubClient
-from scripts.validation.models import ValidationIssue
+from validation.github_client import ValidationGitHubClient
+from validation.models import ValidationIssue
 
 
 def select_issues_by_label(

@@ -24,13 +24,13 @@ import time
 from pathlib import Path
 from typing import Mapping
 
-from scripts.utils import clean_path_candidate, print_warn
-from scripts.solver_repository import (
+from utils import clean_path_candidate, print_warn
+from solver_repository import (
     branch_has_changes_against_base,
     git_output,
     git_status_porcelain,
 )
-from scripts.repo_profile import filter_secret_paths
+from repo_profile import filter_secret_paths
 
 
 RUN_REPORTS_ROOT = Path("reports") / "runs"

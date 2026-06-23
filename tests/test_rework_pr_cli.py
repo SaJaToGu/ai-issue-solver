@@ -7,8 +7,9 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock
 
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "scripts"))
-sys.path.insert(0, str(ROOT))
+PROJECT_ROOT = ROOT.parent
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.solve_issues import main
 
@@ -29,7 +30,7 @@ class ReworkPrCliHelpTests(unittest.TestCase):
 class ReworkPrCliDryRunTests(unittest.TestCase):
     def _run_with_mocks(self, argv: list[str]):
         """Run main() with all necessary mocks for a rework-pr dry-run."""
-        with patch("scripts.validation.rework.run_pr_rework") as mock_rework:
+        with patch("validation.rework.run_pr_rework") as mock_rework:
             mock_rework.return_value = MagicMock(
                 status="dry_run",
                 pr_url="",
@@ -37,15 +38,15 @@ class ReworkPrCliDryRunTests(unittest.TestCase):
                 error_detail=None,
                 error_class=None,
             )
-            with patch("scripts.solve_issues.preflight_checks") as mock_pre:
+            with patch("solve_issues.preflight_checks") as mock_pre:
                 mock_pre.return_value = ("mock-token", "mock-user")
-                with patch("scripts.solve_issues.load_env") as mock_env:
+                with patch("solve_issues.load_env") as mock_env:
                     mock_env.return_value = {
                         "GITHUB_TOKEN": "mock-token",
                         "GITHUB_USER": "mock-user",
                     }
-                    with patch("scripts.solve_issues.run_pre_solver_hygiene_check"):
-                        with patch("scripts.solve_issues.GitHubClient") as mock_client_cls:
+                    with patch("solve_issues.run_pre_solver_hygiene_check"):
+                        with patch("solve_issues.GitHubClient") as mock_client_cls:
                             mock_client = MagicMock()
                             mock_client_cls.return_value = mock_client
                             mock_client.get_repo.return_value = {"has_issues": True}
@@ -75,7 +76,7 @@ class ReworkPrCliDryRunTests(unittest.TestCase):
         self.assertEqual(call_kwargs.get("pr_number"), 99)
 
     def test_rework_pr_prints_status_in_dry_run(self):
-        with patch("scripts.validation.rework.run_pr_rework") as mock_rework:
+        with patch("validation.rework.run_pr_rework") as mock_rework:
             mock_rework.return_value = MagicMock(
                 status="dry_run",
                 pr_url="https://github.com/o/r/pull/1",
@@ -83,20 +84,20 @@ class ReworkPrCliDryRunTests(unittest.TestCase):
                 error_detail=None,
                 error_class=None,
             )
-            with patch("scripts.solve_issues.preflight_checks") as mock_pre:
+            with patch("solve_issues.preflight_checks") as mock_pre:
                 mock_pre.return_value = ("mock-token", "mock-user")
-                with patch("scripts.solve_issues.load_env") as mock_env:
+                with patch("solve_issues.load_env") as mock_env:
                     mock_env.return_value = {
                         "GITHUB_TOKEN": "mock-token",
                         "GITHUB_USER": "mock-user",
                     }
-                    with patch("scripts.solve_issues.run_pre_solver_hygiene_check"):
-                        with patch("scripts.solve_issues.GitHubClient") as mock_client_cls:
+                    with patch("solve_issues.run_pre_solver_hygiene_check"):
+                        with patch("solve_issues.GitHubClient") as mock_client_cls:
                             mock_client = MagicMock()
                             mock_client_cls.return_value = mock_client
                             mock_client.get_repo.return_value = {"has_issues": True}
 
-                            with patch("scripts.solve_issues.print") as mock_print:
+                            with patch("solve_issues.print") as mock_print:
                                 with patch.object(sys, "argv", [
                                     "solve_issues.py", "--rework-pr", "1", "--model", "openrouter_direct", "--dry-run",
                                 ]):

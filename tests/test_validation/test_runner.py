@@ -8,15 +8,15 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.models import RunReportData  # noqa: E402
-from scripts.validation.runner import (  # noqa: E402
+from validation.models import RunReportData  # noqa: E402
+from validation.runner import (  # noqa: E402
     run_reviewer_for_pr,
     run_solver_for_issue,
 )
 
 
 class RunSolverForIssueTests(unittest.TestCase):
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_dry_run_returns_early(self, mock_run):
         result = run_solver_for_issue(
             repo="test-repo",
@@ -29,7 +29,7 @@ class RunSolverForIssueTests(unittest.TestCase):
         self.assertEqual(result.duration_seconds, 0.0)
         mock_run.assert_not_called()
 
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_successful_run_returns_success(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 0
@@ -47,7 +47,7 @@ class RunSolverForIssueTests(unittest.TestCase):
         self.assertEqual(result.status, "success")
         self.assertIsNone(result.error_class)
 
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_failed_run_sets_error_class(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 1
@@ -65,7 +65,7 @@ class RunSolverForIssueTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertIsNotNone(result.error_class)
 
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_rate_limit_error_detected(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 1
@@ -82,7 +82,7 @@ class RunSolverForIssueTests(unittest.TestCase):
         )
         self.assertEqual(result.error_class, "rate_limit")
 
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_permission_error_detected(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 1
@@ -99,7 +99,7 @@ class RunSolverForIssueTests(unittest.TestCase):
         )
         self.assertEqual(result.error_class, "permission")
 
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_timeout_is_handled(self, mock_run):
         import subprocess
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=30)
@@ -127,7 +127,7 @@ class RunSolverForIssueTests(unittest.TestCase):
 
 
 class RunReviewerForPrTests(unittest.TestCase):
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_dry_run_returns_early(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 0
@@ -136,7 +136,7 @@ class RunReviewerForPrTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         mock_run.assert_called_once()
 
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_successful_review(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 0
@@ -147,7 +147,7 @@ class RunReviewerForPrTests(unittest.TestCase):
         result = run_reviewer_for_pr(pr_number=100, dry_run=False)
         self.assertEqual(result["status"], "success")
 
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_failed_review(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 1
@@ -158,7 +158,7 @@ class RunReviewerForPrTests(unittest.TestCase):
         result = run_reviewer_for_pr(pr_number=100, dry_run=False)
         self.assertEqual(result["status"], "failed")
 
-    @patch("scripts.validation.runner.subprocess.run")
+    @patch("validation.runner.subprocess.run")
     def test_timeout_is_handled(self, mock_run):
         import subprocess
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=30)

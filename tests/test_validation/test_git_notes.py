@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from scripts.validation.git_notes import (  # noqa: E402
+from validation.git_notes import (  # noqa: E402
     NOTES_REF,
     add_sub_issues_to_note,
     ensure_notes_ref,
