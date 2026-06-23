@@ -420,3 +420,49 @@ Original labels: `kind/refactor`, `priority/3`, `theme/workflow`, `area/runs`
 
 ---
 
+## Done — §357 Consolidate solver orchestration across single, batch, overnight, benchmark, and dashboard workflows (GitHub #357)
+
+Closed via #357 (PR #416, squash-merged into develop at commit `f17783f`).
+
+**Scope delivered: Step 1 of the proposed refactor only.** The PR
+introduces `scripts/solver_commands.py` (175 new lines) as the shared
+command-spec module and wires it into seven caller scripts:
+
+- `scripts/solve_issues.py` (+8/-68)
+- `scripts/solve_issues_batch.py` (+27/-19)
+- `scripts/run_overnight.py` (+24/-29)
+- `scripts/solver_supervisor.py` (+2/-22)
+- `scripts/status_dashboard.py` (+4/-23)
+- `scripts/watchdog.py` (+7/-10)
+- `workers/codex_adapter.py` (+2/-2)
+
+Net effect: -168 lines of duplicated command-construction code. New
+test module `tests/test_solver_commands.py` (+135) covers the shared
+spec.
+
+PR diff: +384/-205 across 9 files. CI green on Python 3.10 + 3.12
+(after the opencode WAL/SHM state was clean). Within the §48 size
+thresholds (500 LOC / 10 files).
+
+**Steps 2-5 from the original issue body are still pending:**
+
+- Step 2: provider-specific diagnostics (OpenCode WAL/SQLite,
+  Codex rate-limit, Mistral Vibe log-tail) into adapter-owned modules
+- Step 3: consolidate run-report reading and health classification
+  across solver_reporting / dashboard / supervisor / watchdog /
+  benchmark / overnight
+- Step 4: provider/model catalog and discovery plumbing
+- Step 5: full legacy-helper removal (this is what #383 covers once
+  the shared layers are stable)
+
+The worker solved the broad issue by hitting Step 1 of the proposed
+5-step refactor and stopping there, which produced a PR that fits
+the §48 size envelope. The full scope was originally recognised as
+BROAD by `split_planning.py` (see audit comment on #357) — the
+remaining 4 steps will be picked up via follow-up issues and
+`#383 Retired legacy orchestration helpers`.
+
+Original labels: `agent/solver`, `theme/workflow`, `theme/provider`, `area/runs`, `priority/2`, `kind/refactor`
+
+---
+
