@@ -671,13 +671,16 @@ werden die Knoten eingefärbt:
 
 ### Future Work (später, nicht in dieser Version)
 
-- **Auto-population der git notes** (`refs/notes/ais`): per Run
-  schreibt ein Hook die parent_pr → sub_issues + rework history in
-  den notes ref. Heute sind die Helpers in `git_notes.py` schon da,
-  werden aber nicht aufgerufen. Mit aktiviertem Hook wäre der Graph
-  100% machine-readable, nicht von done.md-Parsing abhängig.
 - **Dashboard-Tab** in `status_dashboard.py` als Renderer für die
   JSON-Datei (heute CLI-only — Status-Dashboard hat 3280 Zeilen,
   Refactor wäre eigenes Stück Arbeit).
 - **Native App View** — JSON ist bereits app-friendly, sobald die
   App das Format liest.
+
+Note: an earlier "Auto-population der git notes" item was here, but
+the underlying approach (custom parser on done.md + machine-readable
+notes ref) is superseded by a GitHub-native rewrite — see backlog §52
+for the replacement plan. Issue↔PR↔Branch↔Commit relationships are
+already first-class in the GitHub API, and per-run cost/model data
+lives in the Actions workflow logs (fetchable via `gh run view`), so
+a parallel text/note layer is no longer the right tool.

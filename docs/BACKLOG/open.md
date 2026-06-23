@@ -153,3 +153,90 @@ Checks:
 - `python -m unittest discover -s tests`
 
 ---
+
+## 51. Fix mock-based output capture in tests/test_rework_pr_cli.py
+
+Labels: `kind/bug`, `theme/tests`, `priority/2`
+
+Priority: `2`
+
+Four out of five tests in `tests/test_rework_pr_cli.py` currently fail
+on Python 3.10 + 3.12 in CI because `patch("solve_issues.print")` does
+not capture the output the assertions expect.
+
+Discovered during the AIS-Review of PR #422 (import-style refactor).
+The fix is intentionally out of scope for #422 — the PR is a pure
+import-style refactor and the mock-bug predates it. PR #422 carries
+a warning-comment acknowledging the red CI status until this is fixed.
+
+Suggested scope:
+- investigate why `patch("solve_issues.print")` doesn't intercept the
+  `print(...)` calls inside `solve_issues.rework_pr_cli` (likely a
+  module-import shadowing issue, since `solve_issues` is imported via
+  `from X import` rather than as a package)
+- replace `patch("solve_issues.print")` with a stable capture
+  mechanism (e.g. `contextlib.redirect_stdout`, or `capsys`/`capfd`
+  pytest fixtures if applicable, or patching the actual symbol the
+  function under test references)
+- ensure all 5 tests in the file pass on Python 3.10 + 3.12
+- after the fix, re-run the full test suite — no other tests should
+  regress
+
+Touches: `tests/test_rework_pr_cli.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_rework_pr_cli -v`
+- `python -m unittest discover -s tests`
+
+---
+
+## 52. Replace build_graph.py done.md-parsing with GitHub-native API + Actions workflow logs
+
+Labels: `kind/refactor`, `theme/workflow`, `area/build-graph`, `priority/2`
+
+Priority: `2`
+
+`scripts/build_graph.py` currently parses `docs/BACKLOG/done.md` as a
+text source to build the Issue↔PR↔Commit relationship graph. This is
+redundant: GitHub already encodes all of these relationships
+natively, and per-run cost/model/runtime data lives in the Actions
+workflow logs (one workflow run per solver-produced PR).
+
+Replace the done.md parser with a GitHub-native data source so the
+graph becomes fully machine-readable without manual backlog-text
+maintenance.
+
+Suggested scope:
+- audit which fields `build_graph.py` reads from done.md today (LOC,
+  cost, model, files, parent-of links) and map each to its GitHub
+  native equivalent:
+  - Issue↔PR links: parse PR body / PR comments for "Closes #N",
+    "Fixes #N", "Part of #N", "Parent: #N"
+  - PR↔branch: `pulls.head.ref` (already in API)
+  - PR↔commit: `pulls.commits` (already in API)
+  - solver-produced flag: PR author + `ai-generated` label
+  - LOC / file count: PR `additions` + `deletions` + `changed_files`
+  - model / cost / runtime: Actions workflow runs + logs via
+    `gh run view <id> --log` or `GET /repos/{o}/{r}/actions/runs/{id}/logs`
+- rewrite `scripts/build_graph.py` to call `gh api` (or `requests`
+  against `api.github.com`) instead of opening `done.md`
+- keep `--format json|dot` and `--color-by {cost,model}` flags; the
+  data source changes, the user-facing CLI does not
+- remove the LOC-parsing caveat in `WORKFLOW.md` §build_graph
+  ("Inkonsistente Formate werden übersprungen") since the GitHub
+  source is always well-formed
+- add a `--since YYYY-MM-DD` filter so historical graphs can be scoped
+- extend `tests/test_build_graph.py` to cover the new GitHub-native
+  data path (mock `gh api` calls, not file fixtures)
+
+Touches: `scripts/build_graph.py`, `tests/test_build_graph.py`,
+         `docs/WORKFLOW.md`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_build_graph -v`
+- `python -m unittest discover -s tests`
+- `python scripts/build_graph.py --format json | python -c "import json, sys; d=json.load(sys.stdin); assert d.get('nodes') and d.get('edges')"`
+
+---
