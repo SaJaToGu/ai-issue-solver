@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -461,6 +463,93 @@ Python-Syntaxpruefung fehlgeschlagen
         self.assertEqual(format_duration(4.4), "4s")
         self.assertEqual(format_duration(64), "1m 4s")
         self.assertEqual(format_duration(3661), "1h 1m 1s")
+
+
+# ── Cost-limit / runtime flag forwarding ──────────────────────────────────
+
+def _has_pair(cmd: list[str], flag: str, value: str) -> bool:
+    for i, token in enumerate(cmd):
+        if token == flag and i + 1 < len(cmd) and cmd[i + 1] == value:
+            return True
+    return False
+
+
+class OvernightCostLimitForwardingTests(unittest.TestCase):
+    """Verify that run_overnight's parse_args accepts budget/runtime limits
+    and forwards them through solver_commands.build_batch_command."""
+
+    def test_parse_args_accepts_budget_flags(self):
+        args = parse_args([
+            "--model", "opencode",
+            "--max-run-cost-usd", "5.0",
+            "--max-run-input-tokens", "100000",
+            "--max-run-output-tokens", "20000",
+            "--skip-pull",
+        ])
+        self.assertEqual(args.max_run_cost_usd, 5.0)
+        self.assertEqual(args.max_run_input_tokens, 100000)
+        self.assertEqual(args.max_run_output_tokens, 20000)
+
+    def test_parse_args_accepts_runtime_flags(self):
+        args = parse_args([
+            "--model", "opencode",
+            "--max-run-runtime-seconds", "600",
+            "--max-post-worker-runtime-seconds", "120",
+            "--skip-pull",
+        ])
+        self.assertEqual(args.max_run_runtime_seconds, 600.0)
+        self.assertEqual(args.max_post_worker_runtime_seconds, 120.0)
+
+    def test_parse_args_omits_budget_flags_by_default(self):
+        args = parse_args(["--model", "opencode", "--skip-pull"])
+        self.assertIsNone(args.max_run_cost_usd)
+        self.assertIsNone(args.max_run_input_tokens)
+        self.assertIsNone(args.max_run_output_tokens)
+
+    def test_parse_args_omits_runtime_flags_by_default(self):
+        args = parse_args(["--model", "opencode", "--skip-pull"])
+        self.assertIsNone(args.max_run_runtime_seconds)
+        self.assertIsNone(args.max_post_worker_runtime_seconds)
+
+    def test_build_batch_command_forwards_budget_flags(self):
+        from solver_commands import build_batch_command
+
+        args = parse_args([
+            "--model", "opencode",
+            "--max-run-cost-usd", "2.5",
+            "--max-run-input-tokens", "50000",
+            "--max-run-output-tokens", "10000",
+            "--skip-pull",
+        ])
+        cmd = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+        self.assertTrue(_has_pair(cmd, "--max-run-cost-usd", "2.5"))
+        self.assertTrue(_has_pair(cmd, "--max-run-input-tokens", "50000"))
+        self.assertTrue(_has_pair(cmd, "--max-run-output-tokens", "10000"))
+
+    def test_build_batch_command_forwards_runtime_flags(self):
+        from solver_commands import build_batch_command
+
+        args = parse_args([
+            "--model", "opencode",
+            "--max-run-runtime-seconds", "900",
+            "--max-post-worker-runtime-seconds", "180",
+            "--skip-pull",
+        ])
+        cmd = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+        self.assertTrue(_has_pair(cmd, "--max-run-runtime-seconds", "900.0"))
+        self.assertTrue(_has_pair(cmd, "--max-post-worker-runtime-seconds", "180.0"))
+
+    def test_build_batch_command_omits_limits_when_not_set(self):
+        from solver_commands import build_batch_command
+
+        args = parse_args(["--model", "opencode", "--skip-pull"])
+        cmd = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+        self.assertNotIn("--max-run-cost-usd", cmd)
+        self.assertNotIn("--max-run-input-tokens", cmd)
+        self.assertNotIn("--max-run-output-tokens", cmd)
+        self.assertNotIn("--max-run-runtime-seconds", cmd)
+        self.assertNotIn("--max-post-worker-runtime-seconds", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()
