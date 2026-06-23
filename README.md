@@ -1,4 +1,4 @@
-# 🤖 AI Issue Solver — Morpheus-Style Workflow
+# 🤖 AI Issue Solver (AIS) — Morpheus-Style Workflow
 
 > Automatisches Analysieren, Erstellen und Lösen von GitHub Issues mit KI-Unterstützung
 > Inspiriert von [TheMorpheus407](https://www.youtube.com/user/TheMorpheus407) / [the-morpheus.de](https://www.the-morpheus.de)
