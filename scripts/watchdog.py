@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.solver_reporting import RUN_REPORTS_ROOT, read_normalized_run_outcome  # noqa: E402
+from scripts.solver_reporting import (  # noqa: E402
+    RUN_REPORTS_ROOT,
+    RUNNING_STATUSES as _SOLVER_RUNNING_STATUSES,
+    TERMINAL_STATUSES,
+    read_normalized_run_outcome,
+)
 from scripts.status_dashboard import parse_summary  # noqa: E402
 
 # ── Default paths & thresholds ──────────────────────────────────────────────
@@ -107,15 +112,7 @@ def _latest_datetime(*values: datetime | None) -> datetime | None:
     return max(parsed) if parsed else None
 
 
-TERMINAL_STATUSES = frozenset({
-    "archived", "cleanup_noop", "cleanup_successful",
-    "clone_failed", "failed", "no_changes",
-    "nonzero_without_changes", "pr_created",
-    "pr_created_from_existing_branch", "pr_created_with_warning",
-    "pr_failed", "push_failed", "rate_limit_deferred",
-    "skip_existing_pr", "skip_merged_pr",
-    "validation_failed", "worker_validation_failed",
-})
+
 
 
 def _active_runs(runs_dir: Path) -> list[WatchdogRun]:

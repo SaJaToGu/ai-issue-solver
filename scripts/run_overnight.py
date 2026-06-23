@@ -30,6 +30,8 @@ from solve_issues import (  # noqa: E402
 )
 from solve_issues_batch import DEFAULT_WORKERS, positive_int  # noqa: E402
 from solver_commands import (  # noqa: E402
+    build_batch_command as _shared_build_batch_command,
+    build_dashboard_command as _shared_build_dashboard_command,
     add_budget_flags,
     add_fallback_flags,
     add_health_flags,
@@ -128,38 +130,31 @@ def build_pull_command(base_branch: str) -> list[str]:
 
 
 def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[str]:
-    command = [
-        sys.executable,
-        str(batch_script),
-    ]
-    add_solver_core_flags(command, args)
-    command.extend(["--workers", str(args.workers)])
-    add_fallback_flags(command, args)
-    if args.repo:
-        command.extend(["--repo", args.repo])
-    for issue_number in args.issue or []:
-        command.extend(["--issue", str(issue_number)])
-    add_health_flags(command, args)
-    if getattr(args, "skip_congestion_check", False):
-        command.append("--skip-congestion-check")
-    if args.model == "opencode" and getattr(args, "allow_opencode_state_conflict", False):
-        command.append("--allow-opencode-state-conflict")
-    add_budget_flags(command, args)
-    return command
+    """Build command for solve_issues_batch.py invocation.
+
+    Delegates to the shared ``solver_commands.build_batch_command`` for
+    canonical flag forwarding; kept as a function here for backward
+    compatibility.
+    """
+    return _shared_build_batch_command(
+        args,
+        batch_script,
+        skip_congestion_check=getattr(args, "skip_congestion_check", False),
+    )
 
 
 def build_dashboard_command(args: argparse.Namespace, dashboard_script: Path) -> list[str]:
-    command = [
-        sys.executable,
-        str(dashboard_script),
-        "--output",
-        str(args.dashboard_output),
-    ]
-    if args.runs_dir:
-        command.extend(["--runs-dir", str(args.runs_dir)])
-    if args.owner:
-        command.extend(["--owner", args.owner])
-    return command
+    """Build command for dashboard invocation.
+
+    Delegates to the shared ``solver_commands.build_dashboard_command`` for
+    canonical flag forwarding.
+    """
+    return _shared_build_dashboard_command(
+        dashboard_script,
+        args.dashboard_output,
+        runs_dir=getattr(args, "runs_dir", None),
+        owner=getattr(args, "owner", None),
+    )
 
 
 def build_caffeinate_command(pid: int | None = None) -> list[str]:

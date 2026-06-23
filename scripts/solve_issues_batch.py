@@ -24,15 +24,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 from solve_issues import (  # noqa: E402
     GitHubClient,
     MODEL_CONFIGS,
-    RUN_REPORTS_ROOT,
-    detect_codex_rate_limit,
-    format_worker_output_tail,
     requests,
-    safe_run_repo_name,
 )
 from solver_commands import (  # noqa: E402
     add_budget_flags,
     add_solver_core_flags,
+    build_single_solver_command as _build_single_solver_command,
+)
+from solver_reporting import (  # noqa: E402
+    RUN_REPORTS_ROOT,
+    format_worker_output_tail,
+    safe_run_repo_name,
+)
+from workers.codex_adapter import (  # noqa: E402
+    detect_codex_rate_limit,
 )
 from workers.execution import (  # noqa: E402
     WorkerHealthConfig,
@@ -196,25 +201,28 @@ def build_worker_command(args: argparse.Namespace, job: IssueJob,
                          run_report_dir: Path | None = None,
                          model: str | None = None,
                          model_name: str | None = None) -> list[str]:
-    selected_model = model or args.model
-    selected_model_name = args.model_name if model_name is None else model_name
-    cmd = [sys.executable, str(solve_script)]
-    add_solver_core_flags(
-        cmd, args,
-        model=selected_model,
-        model_name=selected_model_name,
-        verbosity=getattr(args, "verbosity", "quiet"),
-    )
-    cmd.extend(["--repo", job.repo, "--issue", str(job.issue_number)])
+    """Build a subprocess command for one ``solve_issues.py`` invocation.
 
-    if selected_model == "codex":
-        cmd.append("--defer-codex-rate-limit")
-    if run_report_dir:
-        cmd.extend(["--run-report-dir", str(run_report_dir)])
-    if selected_model == "opencode" and getattr(args, "allow_opencode_state_conflict", False):
-        cmd.append("--allow-opencode-state-conflict")
-    add_budget_flags(cmd, args)
-    return cmd
+    Delegates to the shared ``solver_commands.build_single_solver_command``
+    for canonical flag forwarding; kept as a separate function for backward
+    compatibility.
+    """
+    selected_model = model or args.model
+    return _build_single_solver_command(
+        args,
+        solve_script,
+        repo=job.repo,
+        issue_number=job.issue_number,
+        model=selected_model,
+        model_name=args.model_name if model_name is None else model_name,
+        verbosity=getattr(args, "verbosity", "quiet"),
+        run_report_dir=run_report_dir,
+        defer_codex_rate_limit=(selected_model == "codex"),
+        allow_opencode_state_conflict=(
+            selected_model == "opencode"
+            and getattr(args, "allow_opencode_state_conflict", False)
+        ),
+    )
 
 
 def create_queued_run_report(job: IssueJob, model: str,
