@@ -209,33 +209,70 @@ def cmd_report(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def _resolve_pr_for_number(client, repo: str, owner: str, num: int):
+    """Resolve a PR-or-issue number to a single PullRequestInfo.
+
+    Tries PR-by-number first (works for merged PRs whose branches were
+    deleted by `--delete-branch` on merge). Falls back to the legacy
+    `ai/fix-issue-{N}` branch lookup for issues whose PRs still have
+    the conventional branch name (open PRs).
+
+    Returns None when no PR is associated with the number.
+    """
+    pr = client.get_pull_request(repo, num)
+    if pr is not None:
+        return pr
+    prs = client.get_pull_requests(repo, head=f"{owner}:ai/fix-issue-{num}")
+    return prs[0] if prs else None
+
+
 def cmd_check_prs(args: argparse.Namespace, config: dict[str, Any]) -> int:
-    """Check PR statuses (merge state + CI) for a set of issues."""
+    """Check PR statuses (merge state + CI) for a set of PR or issue numbers.
+
+    Each input number is resolved as a PR first (works for merged PRs
+    with deleted branches). Falls back to the legacy
+    `ai/fix-issue-{N}` branch lookup for issues whose PRs still have
+    the conventional branch name.
+    """
     client, owner = _get_client(config)
     if client is None or owner is None:
         return 1
     repo = args.repo
 
-    if args.issues:
-        issue_numbers = [int(x) for x in args.issues]
+    if args.numbers or args.issues:
+        # Accept both `--numbers` (new) and `--issues` (deprecated
+        # alias). Concatenate and dedupe, preserving order.
+        raw = list(args.numbers or []) + list(args.issues or [])
+        seen: set[int] = set()
+        numbers: list[int] = []
+        for x in raw:
+            n = int(x)
+            if n not in seen:
+                seen.add(n)
+                numbers.append(n)
     else:
         issues = client.get_repo_issues(repo, state="all")
-        issue_numbers = [i.number for i in issues][:args.max]
+        numbers = [i.number for i in issues][:args.max]
 
-    print(f"Checking PRs for up to {len(issue_numbers)} issues...")
+    print(f"Checking PRs for up to {len(numbers)} numbers...")
     checked = 0
-    for num in issue_numbers:
-        prs = client.get_pull_requests(repo, head=f"{owner}:ai/fix-issue-{num}")
-        if not prs:
+    for num in numbers:
+        pr = _resolve_pr_for_number(client, repo, owner, num)
+        if pr is None:
+            print(f"  #{num} [no PR]  (issue may not have a PR yet, or branch was renamed)")
             continue
-        for pr in prs:
-            checked += 1
-            merged = "MERGED" if pr.merged else "open"
-            ci = "-"
-            if pr.merged and pr.merge_commit_sha:
-                ci_status = client.get_combined_ci_status(repo, pr.merge_commit_sha)
-                ci = "GREEN" if ci_status.state == "success" else "RED"
-            print(f"  #{pr.number} [{merged}] CI:{ci}  {pr.title[:60]}")
+        checked += 1
+        merged = "MERGED" if pr.merged else "open"
+        ci = "-"
+        # CI runs on the PR head SHA, not the merge commit. The merge
+        # commit is a brand-new commit that may have no checks or
+        # pending re-runs. The head SHA is what the PR's CI actually
+        # ran against and stays queryable even after --delete-branch.
+        ci_sha = pr.head_sha or pr.merge_commit_sha
+        if ci_sha:
+            ci_status = client.get_combined_ci_status(repo, ci_sha)
+            ci = "GREEN" if ci_status.state == "success" else "RED"
+        print(f"  #{pr.number} [{merged}] CI:{ci}  {pr.title[:60]}")
 
     if checked == 0:
         print("  No PRs found.")
@@ -349,7 +386,14 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--no-github", action="store_true", help="Skip GitHub API enrichment")
 
     check_parser = subparsers.add_parser("check-prs", help="Check PR merge state and CI status")
-    check_parser.add_argument("--issues", nargs="*", default=None, help="Issue numbers to check")
+    check_parser.add_argument(
+        "--numbers", nargs="*", default=None,
+        help="PR or issue numbers to check (accepts both — merged PRs with deleted branches are found by number)",
+    )
+    check_parser.add_argument(
+        "--issues", nargs="*", default=None,
+        help=argparse.SUPPRESS,  # deprecated alias for --numbers
+    )
     check_parser.add_argument("--max", type=int, default=20, help="Max issues to check when no explicit list")
 
     list_parser = subparsers.add_parser("list", help="List issues matching a label")

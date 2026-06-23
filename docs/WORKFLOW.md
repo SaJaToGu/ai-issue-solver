@@ -552,3 +552,50 @@ python scripts/benchmark_issues.py --issue 184 --models opencode/deepseek-v4-fla
 # Planung ohne Änderungen
 python scripts/benchmark_issues.py --issue 184 --dry-run
 ```
+
+
+
+## Validierung gemergter PRs (Manuelle Änderungen & Solver-Runs)
+
+Nach jedem Merge — egal ob aus Mavis-as-dev (manuell) oder aus einem
+Solver-Run — kann der aktuelle Stand der PRs in einer Liste mit
+`validation_run check-prs` geprüft werden. Das ist der schnellste Weg
+zu sehen, ob alle relevanten PRs gemerged sind und CI grün ist.
+
+```bash
+set -a && . config/.env && set +a
+export GITHUB_OWNER=$GITHUB_USER
+export GITHUB_REPO=ai-issue-solver
+
+# Explizit: PR-Nummern prüfen
+python scripts/validation_run.py check-prs --numbers 416 417 419
+
+# Ohne Argumente: scannt offene Issues (bis --max N) und prüft deren PRs
+python scripts/validation_run.py check-prs --max 20
+```
+
+Output:
+
+```
+Checking PRs for up to 3 numbers...
+  #416 [MERGED] CI:GREEN  [AI] Fix: Consolidate solver orchestration across
+  #417 [MERGED] CI:RED     [AI] Fix: Retire legacy orchestration helpers
+  #419 [MERGED] CI:GREEN  [AI] Fix: Forward --max-run-cost-usd
+```
+
+**Was das Script tut:**
+
+- Sucht pro Nummer zuerst als PR (per `get_pull_request` —
+  funktioniert auch für gemergte PRs deren `ai/fix-issue-N`-Branch
+  durch `--delete-branch` schon gelöscht ist).
+- Fallback: PR per Branch-Name `ai/fix-issue-N` (legacy-Pfad für
+  offene PRs deren Branch noch existiert).
+- Fragt den CI-Status auf der **PR-Head-SHA** ab (nicht auf dem
+  Merge-Commit — der ist neu und hat oft noch keine Checks).
+- Kombiniert Legacy-Commit-Statuses und Check-Runs; `GREEN` nur wenn
+  beide grün bzw. fehlend sind.
+
+**Deprecation-Hinweis:** Das frühere `--issues` wird weiter akzeptiert
+(deprecated alias für `--numbers`). Bei `--issues <N>` schaut das
+Script nach dem Branch `ai/fix-issue-N` und scheitert für gemergte
+PRs — das war der ursprüngliche Bug, den dieser Workflow-Step fixt.

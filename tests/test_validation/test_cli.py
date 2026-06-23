@@ -53,9 +53,19 @@ class BuildParserTests(unittest.TestCase):
         self.assertTrue(args.no_github)
 
     def test_check_prs_subcommand(self):
-        args = parse_args(["check-prs", "--issues", "1", "2", "3"])
+        args = parse_args(["check-prs", "--numbers", "1", "2", "3"])
         self.assertEqual(args.command, "check-prs")
-        self.assertEqual(args.issues, ["1", "2", "3"])
+        self.assertEqual(args.numbers, ["1", "2", "3"])
+
+    def test_check_prs_deprecated_issues_alias_still_accepted(self):
+        """`--issues` is a deprecated alias that still populates
+        args.issues. `cmd_check_prs` then merges both `--numbers` and
+        `--issues` into the lookup set."""
+        args = parse_args(["check-prs", "--issues", "9"])
+        # Namespace exposes both — they are separate argparse attributes
+        # that cmd_check_prs reads and merges.
+        self.assertEqual(args.issues, ["9"])
+        self.assertIsNone(args.numbers)
 
     def test_list_subcommand(self):
         args = parse_args(["list", "--label", "bug"])
@@ -158,13 +168,78 @@ class CmdReportTests(unittest.TestCase):
 
 
 class CmdCheckPrsTests(unittest.TestCase):
-    def test_cmd_check_prs_no_issues_found(self):
+    def test_cmd_check_prs_no_pr_found(self):
+        """When neither get_pull_request nor branch lookup finds a PR,
+        the command reports the number and continues."""
         config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
-        args = parse_args(["check-prs", "--issues", "999"])
-        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_requests") as mock_get_prs:
-            mock_get_prs.return_value = []
+        args = parse_args(["check-prs", "--numbers", "999"])
+        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_request", return_value=None), \
+             patch("scripts.validation.cli.ValidationGitHubClient.get_pull_requests", return_value=[]):
             exit_code = cmd_check_prs(args, config)
-            self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, 0)
+
+    def test_cmd_check_prs_resolves_pr_by_number(self):
+        """PR-by-number is the primary lookup path. Works for merged
+        PRs whose branch was deleted by --delete-branch."""
+        config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
+        args = parse_args(["check-prs", "--numbers", "416"])
+        fake_pr = MagicMock(
+            number=416, title="Test PR", merged=True,
+            merge_commit_sha="deadbeef", head_sha="abc1234",
+        )
+        fake_ci = MagicMock(state="success")
+        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_request", return_value=fake_pr) as mock_pr_lookup, \
+             patch("scripts.validation.cli.ValidationGitHubClient.get_pull_requests") as mock_branch_fallback, \
+             patch("scripts.validation.cli.ValidationGitHubClient.get_combined_ci_status", return_value=fake_ci) as mock_ci, \
+             patch("builtins.print") as mock_print:
+            exit_code = cmd_check_prs(args, config)
+        self.assertEqual(exit_code, 0)
+        mock_pr_lookup.assert_called_once_with("ai-issue-solver", 416)
+        # Branch fallback must NOT be called when PR-by-number succeeds
+        mock_branch_fallback.assert_not_called()
+        # CI must be queried on the head_sha (not merge_commit_sha)
+        mock_ci.assert_called_once_with("ai-issue-solver", "abc1234")
+        # Output line must include the PR number + GREEN status
+        printed = "\n".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("#416", printed)
+        self.assertIn("MERGED", printed)
+        self.assertIn("CI:GREEN", printed)
+
+    def test_cmd_check_prs_falls_back_to_branch_lookup(self):
+        """When get_pull_request returns None (e.g. number is a real
+        issue, not a PR), the script falls back to the
+        `ai/fix-issue-{N}` branch lookup for legacy open-PR support."""
+        config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
+        args = parse_args(["check-prs", "--numbers", "42"])
+        fake_pr = MagicMock(
+            number=99, title="Branch-found PR", merged=False,
+            merge_commit_sha=None, head_sha="",
+        )
+        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_request", return_value=None), \
+             patch("scripts.validation.cli.ValidationGitHubClient.get_pull_requests", return_value=[fake_pr]) as mock_branch, \
+             patch("builtins.print") as mock_print:
+            exit_code = cmd_check_prs(args, config)
+        self.assertEqual(exit_code, 0)
+        # Branch lookup was called with the conventional branch name
+        mock_branch.assert_called_once_with("ai-issue-solver", head="test-owner:ai/fix-issue-42")
+        printed = "\n".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("#99", printed)
+        self.assertIn("open", printed)
+
+    def test_cmd_check_prs_open_pr_uses_head_sha_for_ci(self):
+        """For OPEN PRs with no merge_commit_sha, CI is queried on
+        the head_sha (the latest commit, where CI actually ran)."""
+        config = {"GITHUB_OWNER": "test-owner", "GITHUB_TOKEN": "test"}
+        args = parse_args(["check-prs", "--numbers", "500"])
+        fake_pr = MagicMock(
+            number=500, title="Open PR", merged=False,
+            merge_commit_sha=None, head_sha="opensha",
+        )
+        with patch("scripts.validation.cli.ValidationGitHubClient.get_pull_request", return_value=fake_pr), \
+             patch("scripts.validation.cli.ValidationGitHubClient.get_combined_ci_status") as mock_ci, \
+             patch("builtins.print"):
+            cmd_check_prs(args, config)
+        mock_ci.assert_called_once_with("ai-issue-solver", "opensha")
 
 
 class CmdListTests(unittest.TestCase):
