@@ -15,11 +15,8 @@ from run_overnight import (  # noqa: E402
     IssueOutcome,
     StepResult,
     build_caffeinate_command,
-    build_batch_command,
-    build_dashboard_command,
     build_pull_command,
     can_use_caffeinate,
-    classify_status,
     collect_issue_outcomes,
     create_session_dir,
     detect_warning_markers,
@@ -64,65 +61,6 @@ class OvernightRunnerTests(unittest.TestCase):
             ["git", "pull", "--ff-only", "origin", "develop"],
         )
 
-    def test_build_batch_command_forwards_bounded_solver_flags(self):
-        args = self.make_args(
-            model="ollama",
-            model_name="deepseek-coder:6.7b",
-            repo="demo",
-            issue=[7, 8],
-            workers=3,
-            dry_run=True,
-            close_issues=True,
-            fallback_model="mistral",
-            fallback_model_name="magistral-medium-2509",
-        )
-
-        command = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
-
-        self.assertEqual(command[0], sys.executable)
-        self.assertIn("scripts/solve_issues_batch.py", command)
-        self.assertIn("--workers", command)
-        self.assertIn("3", command)
-        self.assertIn("--base-branch", command)
-        self.assertIn("develop", command)
-        self.assertEqual(command.count("--issue"), 2)
-        self.assertIn("--fallback-model", command)
-        self.assertIn("mistral", command)
-        self.assertIn("--fallback-model-name", command)
-        self.assertIn("magistral-medium-2509", command)
-        self.assertIn("--dry-run", command)
-        self.assertIn("--close-issues", command)
-
-    def test_build_batch_command_forwards_health_and_verbosity_flags(self):
-        args = self.make_args(
-            model="opencode",
-            worker_health_timeout_minutes=15,
-            unhealthy_action="stop",
-            unhealthy_retries=2,
-            verbosity="normal",
-        )
-
-        command = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
-
-        self.assertIn("--worker-health-timeout-minutes", command)
-        self.assertIn("15", command)
-        self.assertIn("--unhealthy-action", command)
-        self.assertIn("stop", command)
-        self.assertIn("--unhealthy-retries", command)
-        self.assertIn("2", command)
-        self.assertIn("--verbosity", command)
-        self.assertIn("normal", command)
-
-    def test_build_batch_command_forwards_opencode_state_override(self):
-        args = self.make_args(
-            model="opencode",
-            allow_opencode_state_conflict=True,
-        )
-
-        command = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
-
-        self.assertIn("--allow-opencode-state-conflict", command)
-
     def test_main_uses_shared_opencode_preflight_guard(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             session_dir = Path(tmpdir) / "overnight"
@@ -143,22 +81,6 @@ class OvernightRunnerTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         preflight_guard.assert_called_once_with(allow_conflict=False)
-
-    def test_build_dashboard_command_uses_configured_paths_and_owner(self):
-        args = self.make_args(
-            runs_dir=Path("custom/runs"),
-            dashboard_output=Path("custom/dashboard.html"),
-            owner="test-owner",
-        )
-
-        command = build_dashboard_command(args, Path("scripts/status_dashboard.py"))
-
-        self.assertIn("--runs-dir", command)
-        self.assertIn("custom/runs", command)
-        self.assertIn("--output", command)
-        self.assertIn("custom/dashboard.html", command)
-        self.assertIn("--owner", command)
-        self.assertIn("test-owner", command)
 
     def test_build_caffeinate_command_can_watch_current_process(self):
         self.assertEqual(
@@ -348,15 +270,6 @@ line 2
         self.assertIn("README.md | 1 +", fields["git_diff_stat"])
         self.assertIn("scripts/dashboard.py | 2 +-", fields["git_diff_stat"])
         self.assertEqual(fields["output_tail"], "line 1\nline 2")
-
-    def test_classify_status_groups_known_states(self):
-        self.assertEqual(classify_status(""), "unknown")
-        self.assertEqual(classify_status("queued"), "queued")
-        self.assertEqual(classify_status("started"), "running")
-        self.assertEqual(classify_status("pr_created"), "successful")
-        self.assertEqual(classify_status("no_changes"), "failed")
-        self.assertEqual(classify_status("clone_failed"), "failed")
-        self.assertEqual(classify_status("archived"), "archived")
 
     def test_collect_issue_outcomes_returns_sorted_outcomes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -548,11 +461,6 @@ Python-Syntaxpruefung fehlgeschlagen
         self.assertEqual(format_duration(4.4), "4s")
         self.assertEqual(format_duration(64), "1m 4s")
         self.assertEqual(format_duration(3661), "1h 1m 1s")
-
-    def test_classify_status_treats_no_changes_as_failed(self):
-        self.assertEqual(classify_status("no_changes"), "failed")
-        self.assertEqual(classify_status("nonzero_without_changes"), "failed")
-
 
 if __name__ == "__main__":
     unittest.main()

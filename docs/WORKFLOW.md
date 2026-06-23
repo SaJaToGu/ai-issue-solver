@@ -463,6 +463,63 @@ python scripts/solve_issues.py --model opencode --allow-opencode-state-conflict
 - Alte Benchmark-Branches und gespeicherte Benchmark-JSONs werden noch nicht automatisch bereinigt.
 - Ein erfolgreicher `--skip-pr`-Lauf bedeutet nur: Branch/Änderungen sind für Review verfügbar. Merge-Entscheidung und PR-Erstellung bleiben manuell.
 
+---
+
+## Shared Orchestration Modules
+
+The solver pipeline is built on a shared orchestration layer that eliminates
+duplicate code across entry points. The following modules serve as the single
+source of truth:
+
+### `scripts/solver_commands.py`
+
+Command construction for all solver entry points (`solve_issues.py`,
+`solve_issues_batch.py`, `run_overnight.py`, `benchmark_issues.py`).
+Key functions:
+
+- `build_single_solver_command()` — flags for one `solve_issues.py` invocation
+- `build_batch_command()` — flags for `solve_issues_batch.py`
+- `build_dashboard_command()` — flags for `status_dashboard.py`
+- `add_solver_core_flags()` / `add_budget_flags()` / `add_fallback_flags()` /
+  `add_health_flags()` — reusable flag groups
+
+Callers import from `solver_commands` directly. Previously duplicated wrappers
+in `run_overnight.py` were removed (see [#383](https://github.com/ai-issue-solver/ai-issue-solver/issues/383)).
+
+### `scripts/solver_reporting.py`
+
+Run reporting, diagnostics, health classification, and outcome normalization.
+Key functions:
+
+- `parse_summary_file()` — key/value parser for `summary.txt` (shared by
+  `status_dashboard.py`, `solver_supervisor.py`, `watchdog.py`)
+- `classify_run_status()` — raw status → dashboard category (replaces
+  per-script `classify_status` duplicates)
+- `read_normalized_run_outcome()` — unified read-side view of a run report
+- `build_run_outcome()` — structured outcome schema for benchmarking
+- `parse_datetime_value()` / `parse_created_at()` / `latest_datetime()` —
+  shared datetime parsing
+- `write_run_report()` / `create_run_report()` — report persistence
+- `detect_opencode_runtime_diagnostics()` — WAL/Edit-loop detection
+- `classify_worker_health()` — health classification for monitoring
+
+### `scripts/solver_repository.py`
+
+Git repository operations: `clone_repo()`, `create_branch()`,
+`commit_and_push()`, `git_status_porcelain()`, `branch_has_changes_against_base()`.
+
+### `scripts/solver_run_resources.py`
+
+Resource tracking and locking: `RunResources`, `ResourceLock`,
+`create_run_resources()`, `cleanup_stale_locks()`.
+
+### `workers/execution.py`
+
+Worker subprocess management: `run_worker_subprocess()`,
+`classify_worker_outcome()`, `WorkerHealthConfig`.
+
+---
+
 ### Recovery-Signale
 
 Die wichtigsten `run_outcome`-Felder helfen, Modellqualität und Pipeline-Probleme zu trennen:

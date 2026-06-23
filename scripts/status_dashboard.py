@@ -33,7 +33,14 @@ except ModuleNotFoundError:
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
-from solver_reporting import classify_run_status, read_normalized_run_outcome  # noqa: E402
+from solver_reporting import (  # noqa: E402
+    classify_run_status,
+    parse_summary_file,
+    parse_datetime_value,
+    parse_created_at,
+    latest_datetime,
+    read_normalized_run_outcome,
+)
 from workflow_congestion import (  # noqa: E402
     BacklogEntry,
     WorkflowCongestionFinding,
@@ -421,69 +428,6 @@ class DashboardGitHubClient:
         return [repo for repo in data if not repo.get("archived", False)]
 
 
-def parse_summary(path: Path) -> dict[str, str]:
-    fields: dict[str, str] = {}
-    if not path.exists():
-        return fields
-
-    multiline_keys = {"git_diff_stat", "output_tail"}
-    current_multiline_key = None
-    multiline_parts: list[str] = []
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        key, separator, value = raw_line.partition(":")
-        key = key.strip()
-        value = value.strip()
-        starts_multiline_key = bool(separator and key in multiline_keys)
-
-        if current_multiline_key:
-            if starts_multiline_key:
-                fields[current_multiline_key] = "\n".join(multiline_parts).strip()
-                current_multiline_key = key
-                multiline_parts = [value] if value else []
-                continue
-            multiline_parts.append(raw_line)
-            continue
-
-        if not raw_line.strip():
-            continue
-        if not separator:
-            continue
-        if key in multiline_keys:
-            current_multiline_key = key
-            if value:
-                multiline_parts.append(value)
-            continue
-        fields[key] = value
-
-    if current_multiline_key:
-        fields[current_multiline_key] = "\n".join(multiline_parts).strip()
-    return fields
-
-
-def parse_created_at(run_dir_name: str) -> datetime | None:
-    match = re.match(r"^(\d{8}-\d{6})(?:-(\d{6}))?", run_dir_name)
-    if not match:
-        return None
-    value = "".join(part for part in match.groups(default="") if part)
-    fmt = "%Y%m%d-%H%M%S%f" if match.group(2) else "%Y%m%d-%H%M%S"
-    try:
-        return datetime.strptime(value, fmt)
-    except ValueError:
-        return None
-
-
-def parse_datetime_value(value: str) -> datetime | None:
-    if not value:
-        return None
-    normalized = value.strip()
-    for date_format in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(normalized[:19], date_format)
-        except ValueError:
-            pass
-    return None
-
-
 def read_health_file(run_dir: Path) -> dict[str, str]:
     health_path = run_dir / "health.json"
     if not health_path.exists():
@@ -507,9 +451,6 @@ def codex_rate_limit_wait_until(output_tail: str) -> datetime | None:
     if not match:
         return None
     return parse_codex_reset_datetime(match.group(1).strip())
-
-
-def latest_datetime(*values: datetime | None) -> datetime | None:
     parsed = [value for value in values if value is not None]
     return max(parsed) if parsed else None
 
@@ -655,7 +596,7 @@ def read_runs(runs_dir: Path,
     timeout = timedelta(minutes=health_timeout_minutes)
 
     for run_dir in sorted((path for path in runs_dir.iterdir() if path.is_dir()), reverse=True):
-        fields = parse_summary(run_dir / "summary.txt")
+        fields = parse_summary_file(run_dir / "summary.txt")
         normalized = read_normalized_run_outcome(run_dir)
         health = read_health_file(run_dir)
         status = normalized.status

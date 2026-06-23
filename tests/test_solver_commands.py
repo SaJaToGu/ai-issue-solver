@@ -405,8 +405,6 @@ class CommandStructureIntegrationTest(unittest.TestCase):
             self.assertIn(flag, cmd)
 
     def test_build_batch_command_has_shared_and_specific_flags(self):
-        from run_overnight import build_batch_command
-
         args = argparse.Namespace(**{
             "model": "opencode",
             "model_name": "",

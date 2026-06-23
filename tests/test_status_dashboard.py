@@ -10,11 +10,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from solver_reporting import classify_run_status  # noqa: E402
 from status_dashboard import (  # noqa: E402
     DashboardIssue,
     DashboardRun,
     RepoSummary,
-    classify_status,
     cleanup_stale_runs,
     compute_repo_summaries,
     enrich_runs_with_github,
@@ -89,20 +89,20 @@ class StatusDashboardTests(unittest.TestCase):
         (run_dir / "summary.txt").write_text(content, encoding="utf-8")
 
     def test_classify_status_groups_known_solver_states(self):
-        self.assertEqual(classify_status(""), "unknown")
-        self.assertEqual(classify_status("queued"), "queued")
-        self.assertEqual(classify_status("started"), "running")
-        self.assertEqual(classify_status("pr_created"), "successful")
-        self.assertEqual(classify_status("pr_created_from_existing_branch"), "successful")
-        self.assertEqual(classify_status("no_changes"), "noop")
-        self.assertEqual(classify_status("skip_existing_pr"), "noop")
-        self.assertEqual(classify_status("clone_failed"), "failed")
-        self.assertEqual(classify_status("worker_finished", "2"), "failed")
-        self.assertEqual(classify_status("archived"), "archived")
-        self.assertEqual(classify_status("cleanup_successful"), "successful")
-        self.assertEqual(classify_status("cleanup_noop"), "noop")
-        self.assertEqual(classify_status("rate_limit_deferred"), "failed")
-        self.assertEqual(classify_status("validation_failed"), "failed")
+        self.assertEqual(classify_run_status(""), "unknown")
+        self.assertEqual(classify_run_status("queued"), "queued")
+        self.assertEqual(classify_run_status("started"), "running")
+        self.assertEqual(classify_run_status("pr_created"), "successful")
+        self.assertEqual(classify_run_status("pr_created_from_existing_branch"), "successful")
+        self.assertEqual(classify_run_status("no_changes"), "noop")
+        self.assertEqual(classify_run_status("skip_existing_pr"), "noop")
+        self.assertEqual(classify_run_status("clone_failed"), "failed")
+        self.assertEqual(classify_run_status("worker_finished", "2"), "failed")
+        self.assertEqual(classify_run_status("archived"), "archived")
+        self.assertEqual(classify_run_status("cleanup_successful"), "successful")
+        self.assertEqual(classify_run_status("cleanup_noop"), "noop")
+        self.assertEqual(classify_run_status("rate_limit_deferred"), "failed")
+        self.assertEqual(classify_run_status("validation_failed"), "failed")
 
     def test_legacy_summary_without_status_is_unknown_not_running(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -82,10 +82,7 @@ class TestSkillWorkflow(unittest.TestCase):
             DEFAULT_TEST_COMMAND,
             IssueOutcome,
             StepResult,
-            build_batch_command,
-            build_dashboard_command,
             build_pull_command,
-            classify_status,
             collect_issue_outcomes,
             command_to_text,
             create_session_dir,
@@ -141,27 +138,31 @@ class TestSkillWorkflow(unittest.TestCase):
         self.assertEqual(get_step_badge(failed), "[FAIL]")
 
     def test_classify_status(self) -> None:
-        from run_overnight import classify_status
+        from solver_reporting import classify_run_status
 
-        self.assertEqual(classify_status("pr_created"), "successful")
-        self.assertEqual(classify_status("pr_created_from_existing_branch"), "successful")
-        self.assertEqual(classify_status("cleanup_successful"), "successful")
-        self.assertEqual(classify_status("skip_existing_pr"), "noop")
-        self.assertEqual(classify_status("no_changes"), "failed")
-        self.assertEqual(classify_status("nonzero_without_changes"), "failed")
-        self.assertEqual(classify_status("branch_create_failed"), "failed")
-        self.assertEqual(classify_status("clone_failed"), "failed")
-        self.assertEqual(classify_status("rate_limit_deferred"), "failed")
-        self.assertEqual(classify_status("archived"), "archived")
-        self.assertEqual(classify_status("started"), "running")
-        self.assertEqual(classify_status("queued"), "queued")
+        # classify_run_status hat eine exakte, deterministische Abbildung
+        # von Rohstatus auf Dashboard-Kategorien. Die duplizierte
+        # classify_status-Funktion in run_overnight wurde entfernt
+        # (Issue #383) — alle Caller nutzen nun die geteilte Funktion.
+        self.assertEqual(classify_run_status("pr_created"), "successful")
+        self.assertEqual(classify_run_status("pr_created_from_existing_branch"), "successful")
+        self.assertEqual(classify_run_status("cleanup_successful"), "successful")
+        self.assertEqual(classify_run_status("skip_existing_pr"), "noop")
+        self.assertEqual(classify_run_status("no_changes"), "noop")
+        self.assertEqual(classify_run_status("nonzero_without_changes"), "failed")
+        self.assertEqual(classify_run_status("branch_create_failed"), "failed")
+        self.assertEqual(classify_run_status("clone_failed"), "failed")
+        self.assertEqual(classify_run_status("rate_limit_deferred"), "failed")
+        self.assertEqual(classify_run_status("archived"), "archived")
+        self.assertEqual(classify_run_status("started"), "running")
+        self.assertEqual(classify_run_status("queued"), "queued")
         # Leerer Status und Exit-Code sind beide "unknown" — diese
         # Kombination signalisiert "Run nicht abgeschlossen", nicht "fail".
-        self.assertEqual(classify_status(""), "unknown")
-        self.assertEqual(classify_status("", "1"), "unknown")
+        self.assertEqual(classify_run_status(""), "unknown")
+        self.assertEqual(classify_run_status("", "1"), "unknown")
         # Mit einem Status, der nicht in den oberen Klassen landet, gewinnt
         # der Worker-Exit-Code.
-        self.assertEqual(classify_status("weird_state", "1"), "failed")
+        self.assertEqual(classify_run_status("weird_state", "1"), "failed")
 
     def test_format_duration(self) -> None:
         from run_overnight import format_duration
