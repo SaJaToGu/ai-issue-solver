@@ -99,11 +99,10 @@ class ReworkPrCliDryRunTests(unittest.TestCase):
                             mock_client_cls.return_value = mock_client
                             mock_client.get_repo.return_value = {"has_issues": True}
 
-                            # `solve_issues.print` doesn't exist — `print` is a
-                            # builtin, and `from solve_issues import main` does
-                            # not re-export it. The original test patched a
-                            # non-existent attribute and asserted empty output.
-                            # Capture stdout instead via `redirect_stdout`.
+                            # `solve_issues.print` doesn't exist (print is a
+                            # builtin; `from solve_issues import main` does not
+                            # re-export it). Capture stdout via
+                            # `redirect_stdout` instead.
                             stdout_buffer = io.StringIO()
                             with redirect_stdout(stdout_buffer):
                                 with patch.object(sys, "argv", [
