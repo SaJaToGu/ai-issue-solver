@@ -255,7 +255,19 @@ def _read_json_file(path: Path) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-def _parse_summary_file(path: Path) -> dict[str, str]:
+def parse_summary_file(
+    path: Path,
+    multiline_keys: set[str] | None = None,
+) -> dict[str, str]:
+    """Parse a summary.txt file into a key/value dictionary.
+
+    Args:
+        path: Path to the summary file.
+        multiline_keys: Keys whose values span multiple lines.
+            Defaults to ``{"output_tail", "git_diff_stat", "git_change_summary"}``.
+    """
+    if multiline_keys is None:
+        multiline_keys = {"output_tail", "git_diff_stat", "git_change_summary"}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -264,18 +276,25 @@ def _parse_summary_file(path: Path) -> dict[str, str]:
     fields: dict[str, str] = {}
     current_key: str | None = None
     parts: list[str] = []
-    multiline_keys = {"output_tail", "git_diff_stat", "git_change_summary"}
 
     for raw_line in lines:
         key, separator, value = raw_line.partition(":")
         if current_key:
-            if separator and not raw_line.startswith((" ", "\t")):
+            # A multiline block ends when a new multiline key starts
+            # ("key:" at column 0). Non-multiline lines with separators
+            # (e.g. "Git-Änderungsübersicht:") stay as content.
+            starts_new_multiline = (
+                separator
+                and key.strip() in multiline_keys
+                and not raw_line.startswith((" ", "\t"))
+            )
+            if starts_new_multiline:
                 fields[current_key] = "\n".join(parts).strip()
-                current_key = None
-                parts = []
-            else:
-                parts.append(raw_line)
+                current_key = key.strip()
+                parts = [value.strip()] if value.strip() else []
                 continue
+            parts.append(raw_line)
+            continue
 
         if not raw_line.strip() or not separator:
             continue
@@ -292,7 +311,7 @@ def _parse_summary_file(path: Path) -> dict[str, str]:
     return fields
 
 
-def _parse_datetime_value(value: str) -> datetime | None:
+def parse_datetime_value(value: str) -> datetime | None:
     if not value:
         return None
     for candidate in (value, value.replace("Z", "+00:00")):
@@ -303,17 +322,19 @@ def _parse_datetime_value(value: str) -> datetime | None:
     return None
 
 
-def _parse_created_at(run_name: str) -> datetime | None:
-    match = re.match(r"^(\d{8}-\d{6})", run_name)
+def parse_created_at(run_name: str) -> datetime | None:
+    match = re.match(r"^(\d{8}-\d{6})(?:-(\d{6}))?", run_name)
     if not match:
         return None
+    value = "".join(part for part in match.groups(default="") if part)
+    fmt = "%Y%m%d-%H%M%S%f" if match.group(2) else "%Y%m%d-%H%M%S"
     try:
-        return datetime.strptime(match.group(1), "%Y%m%d-%H%M%S")
+        return datetime.strptime(value, fmt)
     except ValueError:
         return None
 
 
-def _latest_datetime(*values: datetime | None) -> datetime | None:
+def latest_datetime(*values: datetime | None) -> datetime | None:
     parsed = [value for value in values if value is not None]
     return max(parsed) if parsed else None
 
@@ -372,7 +393,7 @@ def read_normalized_run_outcome(
     stale_seconds: int = 15 * 60,
 ) -> NormalizedRunOutcome:
     """Read and normalize status, health, delivery, model, and metadata for one run."""
-    summary = _parse_summary_file(run_dir / "summary.txt")
+    summary = parse_summary_file(run_dir / "summary.txt")
     metadata = _read_json_file(run_dir / "metadata.json")
     health = _read_json_file(run_dir / "health.json")
 
@@ -384,17 +405,17 @@ def read_normalized_run_outcome(
     worker_exit_code = _string_value(metadata, "worker_exit_code") or summary.get("worker_exit_code", "")
     category = classify_run_status(status, worker_exit_code)
     phase = _string_value(health, "phase")
-    last_activity = _parse_datetime_value(
+    last_activity = parse_datetime_value(
         _string_value(health, "last_activity_at")
         or _string_value(metadata, "last_activity_at")
         or summary.get("last_activity_at", "")
     )
-    last_report_update = _parse_datetime_value(
+    last_report_update = parse_datetime_value(
         _string_value(health, "last_report_update_at")
         or _string_value(metadata, "last_report_update_at")
         or summary.get("last_report_update_at", "")
     )
-    last_seen = _latest_datetime(last_activity, last_report_update, _parse_created_at(run_dir.name))
+    last_seen = latest_datetime(last_activity, last_report_update, parse_created_at(run_dir.name))
     worker_health_state, worker_health_reason = classify_worker_health(
         status,
         phase,

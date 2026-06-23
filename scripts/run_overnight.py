@@ -29,14 +29,7 @@ from solve_issues import (  # noqa: E402
     MODEL_CONFIGS,
 )
 from solve_issues_batch import DEFAULT_WORKERS, positive_int  # noqa: E402
-from solver_commands import (  # noqa: E402
-    build_batch_command as _shared_build_batch_command,
-    build_dashboard_command as _shared_build_dashboard_command,
-    add_budget_flags,
-    add_fallback_flags,
-    add_health_flags,
-    add_solver_core_flags,
-)
+import solver_commands  # noqa: E402
 from solver_reporting import read_normalized_run_outcome  # noqa: E402
 from workers.opencode_diagnostics import (  # noqa: E402
     run_opencode_preflight_guard,
@@ -127,34 +120,6 @@ def create_session_dir(root: Path, now_fn=datetime.now) -> Path:
 
 def build_pull_command(base_branch: str) -> list[str]:
     return ["git", "pull", "--ff-only", "origin", base_branch]
-
-
-def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[str]:
-    """Build command for solve_issues_batch.py invocation.
-
-    Delegates to the shared ``solver_commands.build_batch_command`` for
-    canonical flag forwarding; kept as a function here for backward
-    compatibility.
-    """
-    return _shared_build_batch_command(
-        args,
-        batch_script,
-        skip_congestion_check=getattr(args, "skip_congestion_check", False),
-    )
-
-
-def build_dashboard_command(args: argparse.Namespace, dashboard_script: Path) -> list[str]:
-    """Build command for dashboard invocation.
-
-    Delegates to the shared ``solver_commands.build_dashboard_command`` for
-    canonical flag forwarding.
-    """
-    return _shared_build_dashboard_command(
-        dashboard_script,
-        args.dashboard_output,
-        runs_dir=getattr(args, "runs_dir", None),
-        owner=getattr(args, "owner", None),
-    )
 
 
 def build_caffeinate_command(pid: int | None = None) -> list[str]:
@@ -332,36 +297,6 @@ def parse_summary_file(summary_path: Path) -> dict[str, str]:
         fields[current_multiline_key] = "\n".join(multiline_parts).strip()
     return fields
 
-
-def classify_status(status: str, worker_exit_code: str = "") -> str:
-    """Klassifiziert den Status eines Runs (kopiert aus status_dashboard.py)."""
-    if not status:
-        return "unknown"
-    if status == "queued":
-        return "queued"
-    if status == "started":
-        return "running"
-    # Erfolgreiche Staende
-    if status in {"pr_created", "pr_created_from_existing_branch", "cleanup_successful"}:
-        return "successful"
-    # No-op Staende
-    if status in {"skip_existing_pr", "skip_merged_pr", "skip_closed_pr", "cleanup_noop"}:
-        return "noop"
-    if status in {"no_changes", "nonzero_without_changes"}:
-        return "failed"
-    # Fehlgeschlagene Staende
-    if status in {
-        "branch_create_failed", "checkout_failed", "clone_failed",
-        "nonzero_without_changes", "pr_failed", "pr_failed_from_existing_branch",
-        "push_failed", "cleanup_failed", "rate_limit_deferred", "validation_failed",
-    } or status.endswith("_failed"):
-        return "failed"
-    # Archiviert
-    if status in {"archived", "cleanup_archived"}:
-        return "archived"
-    if worker_exit_code and worker_exit_code != "0":
-        return "failed"
-    return "noop"
 
 
 def detect_warning_markers(run_dir: Path) -> str:
@@ -820,7 +755,11 @@ def main(argv: list[str] | None = None) -> int:
             next_step += 1
             batch_result = run_logged_command(
                 "batch",
-                build_batch_command(args, Path("scripts") / "solve_issues_batch.py"),
+                solver_commands.build_batch_command(
+                    args,
+                    Path("scripts") / "solve_issues_batch.py",
+                    skip_congestion_check=args.skip_congestion_check,
+                ),
                 project_root,
                 session_dir / "batch.log",
             )
@@ -832,7 +771,12 @@ def main(argv: list[str] | None = None) -> int:
         next_step += 1
         dashboard_result = run_logged_command(
             "dashboard",
-            build_dashboard_command(args, Path("scripts") / "status_dashboard.py"),
+            solver_commands.build_dashboard_command(
+                Path("scripts") / "status_dashboard.py",
+                args.dashboard_output,
+                runs_dir=args.runs_dir,
+                owner=getattr(args, "owner", None),
+            ),
             project_root,
             session_dir / "dashboard.log",
         )

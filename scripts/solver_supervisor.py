@@ -37,7 +37,7 @@ from solver_reporting import (  # noqa: E402
     preserve_worker_worktree,
     read_normalized_run_outcome,
 )
-from status_dashboard import parse_datetime_value, parse_summary  # noqa: E402
+from solver_reporting import parse_datetime_value, parse_summary_file  # noqa: E402
 from utils import print_banner, print_ok, print_step, print_warn  # noqa: E402
 DEFAULT_STALE_SECONDS = 15 * 60
 DEFAULT_GRACEFUL_TIMEOUT_SECONDS = 10
@@ -92,7 +92,7 @@ def _summary_fields(run_dir: Path) -> dict[str, str]:
     if not summary_path.exists():
         return {}
     try:
-        return parse_summary(summary_path)
+        return parse_summary_file(summary_path)
     except OSError:
         return {}
 

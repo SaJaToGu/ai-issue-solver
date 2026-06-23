@@ -29,7 +29,7 @@ from scripts.solver_reporting import (  # noqa: E402
     TERMINAL_STATUSES,
     read_normalized_run_outcome,
 )
-from scripts.status_dashboard import parse_summary  # noqa: E402
+from scripts.solver_reporting import latest_datetime, parse_summary_file  # noqa: E402
 
 # ── Default paths & thresholds ──────────────────────────────────────────────
 
@@ -107,10 +107,6 @@ def _string_value(data: dict, key: str) -> str:
     return "" if value is None else str(value)
 
 
-def _latest_datetime(*values: datetime | None) -> datetime | None:
-    parsed = [v for v in values if v is not None]
-    return max(parsed) if parsed else None
-
 
 
 
@@ -124,7 +120,7 @@ def _active_runs(runs_dir: Path) -> list[WatchdogRun]:
     for run_dir in sorted(runs_dir.iterdir()):
         if not run_dir.is_dir():
             continue
-        summary = parse_summary(run_dir / "summary.txt")
+        summary = parse_summary_file(run_dir / "summary.txt")
         metadata = _read_json(run_dir / "metadata.json")
         health = _read_json(run_dir / "health.json")
         normalized = read_normalized_run_outcome(run_dir)
@@ -237,7 +233,7 @@ def check_progress(
     findings: list[ProgressFinding] = []
 
     for run in runs:
-        last_seen = _latest_datetime(run.last_activity_at, run.last_report_update_at)
+        last_seen = latest_datetime(run.last_activity_at, run.last_report_update_at)
         if last_seen is None:
             continue
         idle = now - last_seen
@@ -271,7 +267,7 @@ def check_stuck(
     findings: list[ProgressFinding] = []
 
     for run in runs:
-        last_seen = _latest_datetime(run.last_activity_at, run.last_report_update_at)
+        last_seen = latest_datetime(run.last_activity_at, run.last_report_update_at)
         if last_seen is None:
             continue
         idle = now - last_seen
