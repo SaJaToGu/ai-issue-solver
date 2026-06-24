@@ -604,12 +604,16 @@ PRs — das war der ursprüngliche Bug, den dieser Workflow-Step fixt.
 ## Issue/PR/Commit Netzwerk (build_graph.py)
 
 `scripts/build_graph.py` baut einen Graph aus Issue↔PR↔Commit-Relations
-über die Backlog-Dateien und Run-Reports. Liest:
+über die GitHub API (für geschlossene Items) und die lokale
+`open.md` (für aktive Items). Datenquellen:
 
+- **GitHub API** (via `gh api`) — gemergte PRs mit verlinkten Issues,
+  LOC-Daten (`additions`/`deletions`/`changed_files`), Merge-Commit SHA,
+  Branch-Referenz, Labels und Autor. Die Issue↔PR-Verknüpfung erfolgt
+  über `Closes #N` / `Fixes #N` / `Resolves #N` / `Part of #N` /
+  `Parent: #N` im PR-Body und in PR-Kommentaren.
 - `docs/BACKLOG/open.md` — aktive §-Items, parst §-Nummer + Title +
-  optional `Parent: #N`-Referenz
-- `docs/BACKLOG/done.md` — geschlossene Items, parst §-Nummer + GitHub
-  Issue-Nummer + PR + Commit SHA + LOC-Aufschlüsselung
+  optional `Parent: #N`-Referenz (für `parent_of`-Edges)
 - `reports/runs/*/summary.txt` + `metadata.json` — Solver-Run-Metadaten
   (PR-URL, Model, Cost wo vorhanden)
 
@@ -625,15 +629,18 @@ python scripts/build_graph.py
 python scripts/build_graph.py --format dot > /tmp/issue-network.dot
 dot -Tsvg /tmp/issue-network.dot > /tmp/issue-network.svg
 
+# Nur PRs ab einem bestimmten Datum
+python scripts/build_graph.py --since 2026-06-01
+
 # In Datei schreiben
 python scripts/build_graph.py --output /tmp/graph.json
 ```
 
 ### Annotations
 
-Cost (USD) und LOC (`+X/-Y across N files`) werden aus den Quellen
-übernommen, Model aus den Run-Reports. Per `--color-by <dimension>`
-werden die Knoten eingefärbt:
+Cost (USD) und LOC (`additions` + `deletions` + `changed_files`) werden
+aus der GitHub API übernommen, Model aus den Run-Reports. Per
+`--color-by <dimension>` werden die Knoten eingefärbt:
 
 | Dimension | Was es zeigt | Farbschema |
 |---|---|---|
@@ -666,8 +673,9 @@ werden die Knoten eingefärbt:
   nicht enforced'). Wenn leer, fehlt die Cost-Annotation stillschweigend.
 - Der Parent-Of-Edge wird nur erkannt wenn `Parent: #N` explizit im
   Issue-Body steht (wenige Issues haben das aktuell).
-- LOC wird aus den done.md-Einträgen geparst (Format: `+X/-Y across N files`
-  oder `in N files`). Inkonsistente Formate werden übersprungen.
+- Wenn `gh` nicht installiert oder nicht authentifiziert ist,
+  degradiert der Graph gracefully auf "nur offene Issues" (stderr
+  zeigt die Warning, Exit-Code bleibt 0).
 
 ### Future Work (später, nicht in dieser Version)
 
