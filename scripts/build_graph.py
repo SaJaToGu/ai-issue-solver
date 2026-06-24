@@ -3,12 +3,12 @@
 build_graph.py — Build an issue/PR/commit relationship graph for the
 ai-issue-solver repo.
 
-Reads:
+Data sources:
 - ``docs/BACKLOG/open.md`` — active backlog items, parsed for § number,
   title, and (when present) parent-issue reference
-- ``docs/BACKLOG/done.md`` — completed items, parsed for § number, GitHub
-  issue number, PR number, commit SHA, and the +/- LOC + files lines
-  already in the entries
+- GitHub API (via ``gh api``) — closed/merged PRs with their linked
+  issues, LOC stats (additions/deletions/changed_files), merge commit
+  SHA, branch, labels, and author
 - ``reports/runs/<run-id>/metadata.json`` — solver cost data per run
 - ``reports/runs/<run-id>/summary.txt`` — pr_url, merge commit, cost
 
@@ -27,6 +27,7 @@ Usage:
     python scripts/build_graph.py --format dot             # Graphviz
     python scripts/build_graph.py --color-by cost          # color by cost
     python scripts/build_graph.py --color-by model         # color by model
+    python scripts/build_graph.py --since 2026-06-01       # scope to recent
     python scripts/build_graph.py --output /tmp/graph.json # custom path
 """
 
@@ -34,18 +35,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
+import urllib.parse
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BACKLOG_OPEN = REPO_ROOT / "docs" / "BACKLOG" / "open.md"
-DEFAULT_BACKLOG_DONE = REPO_ROOT / "docs" / "BACKLOG" / "done.md"
 DEFAULT_RUNS_DIR = REPO_ROOT / "reports" / "runs"
 
+# Regex patterns for PR body → issue references
+_CLOSES_RE = re.compile(
+    r"(?:Closes|Fixes|Resolves|Closed\s+via)\s+#(\d+)",
+    re.IGNORECASE,
+)
+_PARENT_OF_RE = re.compile(
+    r"(?:Parent|Part\s+of):\s*#(\d+)",
+    re.IGNORECASE,
+)
 
 # --------------------------------------------------------------------------- #
 # Data model                                                                  #
@@ -70,34 +84,14 @@ class Edge:
 
 
 # --------------------------------------------------------------------------- #
-# Backlog parsing                                                             #
+# Backlog parsing (open.md — stays local)                                     #
 # --------------------------------------------------------------------------- #
 
 
 # `## 37. Free OpenCode models full integration and evaluation *(parked)*`
 _OPEN_RE = re.compile(r"^##\s+(\d+)\.\s+(.+?)\s*$", re.MULTILINE)
 # `Parent: #357` inside an open.md section
-_PARENT_RE = re.compile(r"^\s*Parent:\s*#(\d+)\s*$", re.MULTILINE)
-
-# `## Done — §42 0.9.0 Validation Metrics & Run (GitHub #326)`
-# or `## Done — check-prs handles merged PRs (GitHub #420)` (no §N,
-# for ad-hoc fixes not tracked in the backlog)
-_DONE_RE = re.compile(
-    r"^##\s+Done\s+—\s+(?:§\d+\s+)?(.+?)\s+\(GitHub\s+#(\d+)\)\s*$",
-    re.MULTILINE,
-)
-# `Closed via #357 (PR #417, squash-merged into develop at commit 64d28a8ed5).`
-# or `Closed via #418 (PR #419, squash-merged into develop at commit `0a2864b`).`
-# (backticks are optional in done.md)
-_CLOSED_VIA_RE = re.compile(
-    r"Closed\s+via\s+#(\d+)\s+\(PR\s+#(\d+)[^)]*?commit\s+`?([0-9a-f]{7,40})`?",
-    re.IGNORECASE,
-)
-# `+86/-6 across 5 files` or `+186/-6 in 5 files`
-_LOC_RE = re.compile(
-    r"([+-]?\d+)\s*/\s*([+-]?\d+)\s+(?:across|in)\s+(\d+)\s+files?",
-    re.IGNORECASE,
-)
+_PARENT_REF_RE = re.compile(r"^\s*Parent:\s*#(\d+)\s*$", re.MULTILINE)
 
 
 def parse_open_backlog(path: Path) -> list[Node]:
@@ -109,9 +103,8 @@ def parse_open_backlog(path: Path) -> list[Node]:
     for m in _OPEN_RE.finditer(text):
         number = int(m.group(1))
         title = m.group(2).strip()
-        # Look for a `Parent: #N` reference within the section body
         body = text[m.end(): text.find(f"\n## ", m.end()) if text.find(f"\n## ", m.end()) != -1 else len(text)]
-        parent_match = _PARENT_RE.search(body)
+        parent_match = _PARENT_REF_RE.search(body)
         parent = int(parent_match.group(1)) if parent_match else None
         node = Node(
             id=f"issue-{number}",
@@ -123,70 +116,210 @@ def parse_open_backlog(path: Path) -> list[Node]:
     return nodes
 
 
-def parse_done_backlog(path: Path) -> tuple[list[Node], list[Edge]]:
-    """Parse ``docs/BACKLOG/done.md`` for closed items, with PR + commit
-    cross-references. Returns (issue_nodes, edges)."""
-    if not path.exists():
-        return [], []
-    text = path.read_text(encoding="utf-8")
-    issue_nodes: list[Node] = []
-    edges: list[Edge] = []
+# --------------------------------------------------------------------------- #
+# GitHub API helpers                                                          #
+# --------------------------------------------------------------------------- #
 
-    for m in _DONE_RE.finditer(text):
-        title = m.group(1).strip()
-        issue_num = int(m.group(2))
-        issue_node = Node(
-            id=f"issue-{issue_num}",
-            type="issue",
-            title=title,
-            attrs={"state": "done"},
+
+def _gh_api(endpoint: str) -> Any:
+    """Single ``gh api`` call, returns parsed JSON.
+
+    Returns ``None`` on network/auth errors so callers can degrade
+    gracefully (e.g. fall back to local data or produce an empty
+    graph).
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", endpoint],
+            capture_output=True, text=True, check=True, timeout=30,
         )
-        issue_nodes.append(issue_node)
+        return json.loads(result.stdout)
+    except FileNotFoundError:
+        print("Warning: `gh` CLI not found. Install it from https://cli.github.com/ "
+              "and run `gh auth login`.", file=sys.stderr)
+        return None
+    except subprocess.CalledProcessError as exc:
+        print(f"Warning: `gh api {endpoint}` failed: {exc.stderr.strip()[:200]}",
+              file=sys.stderr)
+        return None
+    except (json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        print(f"Warning: `gh api {endpoint}` error: {exc}", file=sys.stderr)
+        return None
 
-        # Look for `Closed via #N (PR #M, ...commit SHA...)` within the
-        # section body (between this match and the next `## ` heading).
-        body_start = m.end()
-        body_end = text.find("\n## ", body_start)
-        if body_end == -1:
-            body_end = len(text)
-        body = text[body_start:body_end]
 
-        cv = _CLOSED_VIA_RE.search(body)
-        if cv:
-            pr_num = int(cv.group(2))
-            commit_sha = cv.group(3)
-            pr_node = Node(
-                id=f"pr-{pr_num}",
-                type="pr",
-                title=f"PR #{pr_num}",
-                attrs={"head_sha": commit_sha},
-            )
-            issue_nodes.append(pr_node)
-            edges.append(Edge(
-                from_id=f"issue-{issue_num}",
-                to_id=f"pr-{pr_num}",
-                type="closes",
-            ))
-            edges.append(Edge(
-                from_id=f"pr-{pr_num}",
-                to_id=f"commit-{commit_sha}",
-                type="merged_into",
-            ))
-            # Add a commit node so the merged_into edge has a target
-            issue_nodes.append(Node(
-                id=f"commit-{commit_sha}",
+def _gh_api_paginate(endpoint: str) -> list[dict[str, Any]]:
+    """Call ``gh api`` with manual pagination.
+
+    Returns a combined list of all pages. Stops on the first empty
+    page or error.
+    """
+    items: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        sep = "&" if "?" in endpoint else "?"
+        url = f"{endpoint}{sep}per_page=100&page={page}"
+        data = _gh_api(url)
+        if data is None or isinstance(data, dict) or (isinstance(data, list) and len(data) == 0):
+            break
+        items.extend(data)
+        if len(data) < 100:
+            break
+        page += 1
+    return items
+
+
+def _detect_github_owner_repo() -> tuple[str, str]:
+    """Detect owner/repo from the local git remote, then env, then defaults."""
+    env_owner = os.environ.get("GITHUB_OWNER", "")
+    env_repo = os.environ.get("GITHUB_REPO", "")
+    if env_owner and env_repo:
+        return env_owner, env_repo
+
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        url = result.stdout.strip()
+        for pattern in (r"git@github\.com:([^/]+)/(.+)\.git$",
+                        r"https://github\.com/([^/]+)/(.+?)\.git$",
+                        r"https://github\.com/([^/]+)/(.+?)$"):
+            m = re.match(pattern, url)
+            if m:
+                return m.group(1), m.group(2).replace(".git", "")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    if env_owner:
+        return env_owner, env_repo or "ai-issue-solver"
+    return "ai-issue-solver", "ai-issue-solver"
+
+
+# --------------------------------------------------------------------------- #
+# GitHub-native graph data (replaces the old done.md parser)                  #
+# --------------------------------------------------------------------------- #
+
+
+def fetch_github_graph_data(
+    owner: str,
+    repo: str,
+    since: str | None = None,
+) -> tuple[list[Node], list[Edge]]:
+    """Fetch merged PRs + linked issues from the GitHub API.
+
+    Returns ``(nodes, edges)`` with issue→pr ``closes`` edges and
+    pr→commit ``merged_into`` edges.  LOC and file-count come from
+    the PR's native ``additions`` / ``deletions`` / ``changed_files``
+    fields so the old LOC-parsing caveat no longer applies.
+    """
+    # Build search query — use ``merged:>=YYYY-MM-DD`` when ``--since``
+    # is given, otherwise all merged PRs.
+    q = f"repo:{owner}/{repo}+type:pr+is:merged"
+    if since:
+        q += f"+merged:>={since}"
+
+    encoded = urllib.parse.quote(q, safe="")
+    endpoint = f"search/issues?q={encoded}&sort=updated&order=desc"
+
+    raw_items = _gh_api_paginate(endpoint)
+    if not raw_items:
+        return [], []
+
+    nodes: list[Node] = []
+    edges: list[Edge] = []
+    seen_issues: dict[int, dict[str, Any] | None] = {}
+
+    for item in raw_items:
+        if "pull_request" not in item:
+            continue
+
+        pr_num: int = item["number"]
+        pr_title: str = item.get("title", "") or ""
+        pr_body: str = item.get("body") or ""
+
+        # Parse issue references from PR body
+        closes = [int(m.group(1)) for m in _CLOSES_RE.finditer(pr_body)]
+
+        # Fetch full PR detail for LOC stats
+        pr_detail = _gh_api(f"repos/{owner}/{repo}/pulls/{pr_num}")
+        if not pr_detail:
+            continue
+
+        head_sha = (pr_detail.get("head") or {}).get("sha", "") or ""
+        merge_commit_sha = (pr_detail.get("merge_commit_sha") or "") or ""
+        commit_sha = merge_commit_sha or head_sha
+        additions = pr_detail.get("additions", 0)
+        deletions = pr_detail.get("deletions", 0)
+        changed_files = pr_detail.get("changed_files", 0)
+        merged_at = pr_detail.get("merged_at")
+        head_ref = (pr_detail.get("head") or {}).get("ref", "") or ""
+        labels = [lb["name"] for lb in (pr_detail.get("labels") or [])]
+        author = (pr_detail.get("user") or {}).get("login", "") or ""
+
+        # Build PR node
+        pr_node = Node(
+            id=f"pr-{pr_num}",
+            type="pr",
+            title=f"PR #{pr_num}: {pr_title[:60]}",
+            attrs={
+                "head_sha": commit_sha[:10],
+                "head_ref": head_ref,
+                "merged_at": merged_at or "",
+                "additions": additions,
+                "deletions": deletions,
+                "changed_files": changed_files,
+                "ai_generated": "ai-generated" in labels,
+                "author": author,
+            },
+        )
+        nodes.append(pr_node)
+
+        # Commit node + merged_into edge
+        if commit_sha:
+            commit_id = f"commit-{commit_sha[:10]}"
+            nodes.append(Node(
+                id=commit_id,
                 type="commit",
                 title=commit_sha[:10],
             ))
+            edges.append(Edge(
+                from_id=f"pr-{pr_num}",
+                to_id=commit_id,
+                type="merged_into",
+            ))
 
-        # LOC + files: look for `+X/-Y across N files` or `+X/-Y in N files`
-        loc = _LOC_RE.search(body)
-        if loc:
-            issue_node.attrs["loc_add"] = int(loc.group(1))
-            issue_node.attrs["loc_del"] = int(loc.group(2))
-            issue_node.attrs["files"] = int(loc.group(3))
+        # Issue nodes + closes edges
+        for issue_num in closes:
+            if issue_num not in seen_issues:
+                issue_data = _gh_api(
+                    f"repos/{owner}/{repo}/issues/{issue_num}",
+                )
+                if issue_data and "pull_request" not in issue_data:
+                    seen_issues[issue_num] = issue_data
+                else:
+                    seen_issues[issue_num] = None
 
-    return issue_nodes, edges
+            issue_data = seen_issues[issue_num]
+            if issue_data is not None:
+                issue_node = Node(
+                    id=f"issue-{issue_num}",
+                    type="issue",
+                    title=issue_data.get("title", "") or "",
+                    attrs={
+                        "state": "done",
+                        "loc_add": additions,
+                        "loc_del": -deletions,
+                        "files": changed_files,
+                    },
+                )
+                nodes.append(issue_node)
+                edges.append(Edge(
+                    from_id=f"issue-{issue_num}",
+                    to_id=f"pr-{pr_num}",
+                    type="closes",
+                ))
+
+    return nodes, edges
 
 
 # --------------------------------------------------------------------------- #
@@ -214,7 +347,6 @@ def enrich_from_runs(runs_dir: Path, nodes: list[Node]) -> None:
         if not summary.exists() or not meta.exists():
             continue
 
-        # Parse pr_url from summary.txt (key: pr_url: <url>)
         pr_url = None
         try:
             for line in summary.read_text(encoding="utf-8").splitlines():
@@ -236,7 +368,6 @@ def enrich_from_runs(runs_dir: Path, nodes: list[Node]) -> None:
         if pr_node is None:
             continue
 
-        # Parse cost + model from metadata.json
         try:
             m = json.loads(meta.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -255,37 +386,30 @@ def enrich_from_runs(runs_dir: Path, nodes: list[Node]) -> None:
 # --------------------------------------------------------------------------- #
 
 
-# Discrete color map for model names. Matches both the high-level
-# provider (what the run-reports record) and the full provider/model
-# slug (what the CLI accepts). The provider-level key is the fallback
-# for any sub-slug we haven't enumerated.
+# Discrete color map for model names.
 _MODEL_COLORS: dict[str, str] = {
-    # Provider-level (used by metadata.json `actual_model`)
-    "opencode": "#22c55e",                          # green
-    "codex": "#3b82f6",                            # blue
-    "claude": "#8b5cf6",                            # purple
-    "mistral": "#ec4899",                          # pink
-    "openai": "#f97316",                            # orange
-    "ollama": "#14b8a6",                            # teal
-    "mistral-vibe": "#d946ef",                      # fuchsia
-    "openrouter": "#eab308",                        # yellow
-    "openrouter_direct": "#06b6d4",                # cyan
-    # Sub-slugs (used by --model arg in run_overnight.py)
-    "opencode/deepseek-v4-flash-free": "#22c55e",   # green (same as opencode)
-    "opencode/minimax-m3-free": "#ef4444",          # red (dead)
-    "opencode/mimo-v2.5-free": "#f59e0b",          # amber
-    "opencode/minimax-m2.5": "#84cc16",             # lime
-    "opencode/nemotron-3-super-free": "#06b6d4",   # cyan
+    "opencode": "#22c55e",
+    "codex": "#3b82f6",
+    "claude": "#8b5cf6",
+    "mistral": "#ec4899",
+    "openai": "#f97316",
+    "ollama": "#14b8a6",
+    "mistral-vibe": "#d946ef",
+    "openrouter": "#eab308",
+    "openrouter_direct": "#06b6d4",
+    "opencode/deepseek-v4-flash-free": "#22c55e",
+    "opencode/minimax-m3-free": "#ef4444",
+    "opencode/mimo-v2.5-free": "#f59e0b",
+    "opencode/minimax-m2.5": "#84cc16",
+    "opencode/nemotron-3-super-free": "#06b6d4",
 }
-_DEFAULT_MODEL_COLOR = "#94a3b8"  # slate
+_DEFAULT_MODEL_COLOR = "#94a3b8"
 
 
 def _color_for_cost(cost: float, max_cost: float) -> str:
-    """Cost: green (low) → red (high)."""
     if max_cost <= 0:
         return "#22c55e"
     pct = min(1.0, max(0.0, cost / max_cost))
-    # interpolate green (34,197,94) to red (239,68,68)
     r = int(34 + (239 - 34) * pct)
     g = int(197 - (197 - 68) * pct)
     b = int(94 - (94 - 68) * pct)
@@ -293,7 +417,6 @@ def _color_for_cost(cost: float, max_cost: float) -> str:
 
 
 def _color_for_loc(loc: int, max_loc: int) -> str:
-    """LOC: green (small) → red (large)."""
     if max_loc <= 0:
         return "#22c55e"
     pct = min(1.0, max(0.0, loc / max_loc))
@@ -304,34 +427,24 @@ def _color_for_loc(loc: int, max_loc: int) -> str:
 
 
 def _color_for_time(merged_at: str | None) -> str:
-    """Time: recent → green, old → amber. Currently maps to a single
-    color since we don't have many runs to make a gradient useful."""
     return "#22c55e" if merged_at else "#94a3b8"
 
 
 def _color_for_difficulty(node: Node) -> str:
-    """Difficulty heuristic (matches the WORKFLOW decision matrix):
-    - unsolved: no PR connected, or `failure_class: interrupted`
-    - broad: large LOC + high cost
-    - medium: small LOC + medium cost
-    - narrow: small LOC + low cost
-    """
     if node.type == "issue":
         loc = node.attrs.get("loc_add", 0) or 0
         cost = node.attrs.get("cost", 0) or 0
         if node.attrs.get("state") != "done":
-            return "#ef4444"  # unsolved
+            return "#ef4444"
         if loc > 500 or cost > 8:
-            return "#f59e0b"  # broad
+            return "#f59e0b"
         if loc > 100 or cost > 2:
-            return "#eab308"  # medium
-        return "#22c55e"  # narrow
+            return "#eab308"
+        return "#22c55e"
     return "#94a3b8"
 
 
 def apply_color_by(nodes: list[Node], color_by: str) -> None:
-    """Annotate each node with a ``color`` attribute based on the
-    chosen dimension. Mutates in-place."""
     if not color_by:
         return
     if color_by == "model":
@@ -388,14 +501,15 @@ def to_json(nodes: list[Node], edges: list[Edge]) -> str:
 
 
 def to_dot(nodes: list[Node], edges: list[Edge]) -> str:
-    """Emit a Graphviz DOT graph with nodes colored by their ``color``
-    attribute (if set by ``--color-by``)."""
-    # Group by type
     issue_nodes = [n for n in nodes if n.type == "issue"]
     pr_nodes = [n for n in nodes if n.type == "pr"]
     commit_nodes = [n for n in nodes if n.type == "commit"]
 
-    lines: list[str] = ["digraph issue_network {", "  rankdir=LR;", "  node [shape=box, style=\"rounded,filled\", fontname=\"Helvetica\"];"]
+    lines: list[str] = [
+        "digraph issue_network {",
+        "  rankdir=LR;",
+        '  node [shape=box, style="rounded,filled", fontname="Helvetica"];',
+    ]
     for n in issue_nodes:
         attrs = [f'label="Issue #{n.id.split("-", 1)[1]}\\n{n.title[:40]}"']
         if "color" in n.attrs:
@@ -424,20 +538,30 @@ def to_dot(nodes: list[Node], edges: list[Edge]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build an issue/PR/commit relationship graph from "
-        "backlog files and run-reports.",
+        description="Build an issue/PR/commit relationship graph. "
+        "Data source: GitHub API (gh api) for merged PR data, "
+        "backlog files for active issue parent references, "
+        "and run-reports for cost/model enrichment.",
     )
     parser.add_argument(
         "--backlog-open", type=Path, default=DEFAULT_BACKLOG_OPEN,
         help="Path to open.md backlog file",
     )
     parser.add_argument(
-        "--backlog-done", type=Path, default=DEFAULT_BACKLOG_DONE,
-        help="Path to done.md backlog file",
-    )
-    parser.add_argument(
         "--runs-dir", type=Path, default=DEFAULT_RUNS_DIR,
         help="Path to reports/runs/ directory",
+    )
+    parser.add_argument(
+        "--github-owner", default="",
+        help="GitHub owner (default: auto-detect from git remote or env)",
+    )
+    parser.add_argument(
+        "--github-repo", default="",
+        help="GitHub repo name (default: auto-detect from git remote or env)",
+    )
+    parser.add_argument(
+        "--since", default=None,
+        help="Only include items merged on or after YYYY-MM-DD",
     )
     parser.add_argument(
         "--format", choices=("json", "dot"), default="json",
@@ -455,13 +579,32 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    nodes: list[Node] = []
-    nodes.extend(parse_open_backlog(args.backlog_open))
-    done_nodes, done_edges = parse_done_backlog(args.backlog_done)
-    nodes.extend(done_nodes)
-    edges: list[Edge] = list(done_edges)
+    collect_err = False
 
-    # Parent-of edges for open issues
+    # Validate --since format
+    if args.since:
+        try:
+            datetime.strptime(args.since, "%Y-%m-%d")
+        except ValueError:
+            print(f"Error: --since must be YYYY-MM-DD, got {args.since!r}",
+                  file=sys.stderr)
+            return 1
+
+    # 1. Open backlog (local, for parent_of edges)
+    nodes: list[Node] = []
+    edges: list[Edge] = []
+    nodes.extend(parse_open_backlog(args.backlog_open))
+
+    # 2. GitHub API (replaces done.md parser)
+    owner = args.github_owner or os.environ.get("GITHUB_OWNER", "")
+    repo = args.github_repo or os.environ.get("GITHUB_REPO", "")
+    if not owner or not repo:
+        owner, repo = _detect_github_owner_repo()
+    gh_nodes, gh_edges = fetch_github_graph_data(owner, repo, since=args.since)
+    nodes.extend(gh_nodes)
+    edges.extend(gh_edges)
+
+    # 3. Parent-of edges for open issues (from open.md)
     for n in nodes:
         parent = n.attrs.get("parent")
         if n.type == "issue" and parent:
@@ -471,26 +614,25 @@ def main(argv: list[str] | None = None) -> int:
                 type="parent_of",
             ))
 
-    # Dedupe nodes by id (same issue can appear in both open and done)
+    # Dedupe nodes by id
     by_id: dict[str, Node] = {}
     for n in nodes:
         if n.id not in by_id:
             by_id[n.id] = n
         else:
-            # Merge attrs (done overrides open)
             for k, v in n.attrs.items():
                 by_id[n.id].attrs.setdefault(k, v)
             if n.title and not by_id[n.id].title:
                 by_id[n.id].title = n.title
     nodes = list(by_id.values())
 
-    # Enrich with cost data
+    # 4. Enrich with cost data from local run-reports
     enrich_from_runs(args.runs_dir, nodes)
 
-    # Apply color-by
+    # 5. Apply color-by
     apply_color_by(nodes, args.color_by)
 
-    # Output
+    # 6. Output
     if args.format == "dot":
         output = to_dot(nodes, edges)
     else:

@@ -604,12 +604,14 @@ PRs — das war der ursprüngliche Bug, den dieser Workflow-Step fixt.
 ## Issue/PR/Commit Netzwerk (build_graph.py)
 
 `scripts/build_graph.py` baut einen Graph aus Issue↔PR↔Commit-Relations
-über die Backlog-Dateien und Run-Reports. Liest:
+über die GitHub API und lokale Run-Reports. Datenquellen:
 
+- **GitHub API** (via `gh api`) — gemergte PRs mit verlinkten Issues,
+  LOC-Daten (`additions`/`deletions`/`changed_files`), Merge-Commit SHA,
+  Branch-Referenz, Labels und Autor. Die Issue↔PR-Verknüpfung erfolgt
+  über ``Closes #N`` / ``Fixes #N`` / ``Resolves #N`` im PR-Body.
 - `docs/BACKLOG/open.md` — aktive §-Items, parst §-Nummer + Title +
-  optional `Parent: #N`-Referenz
-- `docs/BACKLOG/done.md` — geschlossene Items, parst §-Nummer + GitHub
-  Issue-Nummer + PR + Commit SHA + LOC-Aufschlüsselung
+  optional `Parent: #N`-Referenz (für `parent_of`-Edges)
 - `reports/runs/*/summary.txt` + `metadata.json` — Solver-Run-Metadaten
   (PR-URL, Model, Cost wo vorhanden)
 
@@ -625,15 +627,18 @@ python scripts/build_graph.py
 python scripts/build_graph.py --format dot > /tmp/issue-network.dot
 dot -Tsvg /tmp/issue-network.dot > /tmp/issue-network.svg
 
+# Nur PRs ab einem bestimmten Datum
+python scripts/build_graph.py --since 2026-06-01
+
 # In Datei schreiben
 python scripts/build_graph.py --output /tmp/graph.json
 ```
 
 ### Annotations
 
-Cost (USD) und LOC (`+X/-Y across N files`) werden aus den Quellen
-übernommen, Model aus den Run-Reports. Per `--color-by <dimension>`
-werden die Knoten eingefärbt:
+Cost (USD) stammt aus den lokalen Run-Reports, LOC (`additions`/
+`deletions`/`changed_files`) aus der GitHub PR API, Model aus den
+Run-Reports. Per `--color-by <dimension>` werden die Knoten eingefärbt:
 
 | Dimension | Was es zeigt | Farbschema |
 |---|---|---|
@@ -666,8 +671,12 @@ werden die Knoten eingefärbt:
   nicht enforced'). Wenn leer, fehlt die Cost-Annotation stillschweigend.
 - Der Parent-Of-Edge wird nur erkannt wenn `Parent: #N` explizit im
   Issue-Body steht (wenige Issues haben das aktuell).
-- LOC wird aus den done.md-Einträgen geparst (Format: `+X/-Y across N files`
-  oder `in N files`). Inkonsistente Formate werden übersprungen.
+- Die GitHub-API-Daten sind immer wohlgeformt — LOC wird aus den PR-
+  Feldern `additions`/`deletions`/`changed_files` bezogen, nicht aus
+  Textparsing.
+- `gh` muss installiert und authentifiziert sein (`gh auth login`).
+  Fehlt `gh`, gibt das Script eine Warnung aus und erzeugt einen
+  leeren Graph (ohne abzustürzen).
 
 ### Future Work (später, nicht in dieser Version)
 
@@ -676,11 +685,6 @@ werden die Knoten eingefärbt:
   Refactor wäre eigenes Stück Arbeit).
 - **Native App View** — JSON ist bereits app-friendly, sobald die
   App das Format liest.
-
-Note: an earlier "Auto-population der git notes" item was here, but
-the underlying approach (custom parser on done.md + machine-readable
-notes ref) is superseded by a GitHub-native rewrite — see backlog §52
-for the replacement plan. Issue↔PR↔Branch↔Commit relationships are
-already first-class in the GitHub API, and per-run cost/model data
-lives in the Actions workflow logs (fetchable via `gh run view`), so
-a parallel text/note layer is no longer the right tool.
+- **Actions Workflow Logs** — Cost/Model/Runtime-Daten könnten
+  künftig direkt aus den Workflow-Logs statt aus lokalen Run-Reports
+  bezogen werden (`gh run view <id> --log`).
