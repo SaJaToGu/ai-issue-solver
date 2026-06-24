@@ -56,7 +56,15 @@ if "requests" not in sys.modules:
 # this succeeds on every Python version regardless of env state.
 import validation.rework  # noqa: F401
 
-from scripts.solve_issues import main
+# Use `from solve_issues import main` (not `from scripts.solve_issues import main`)
+# to avoid a dual-module registration in sys.modules. When the module is imported
+# as `scripts.solve_issues`, `patch("solve_issues.require_github_config")` triggers
+# a second `import solve_issues` that creates a separate module object — the patch
+# ends up on the wrong object and `require_github_config` stays unpatched in the
+# one `main()` actually uses. All other test files in this repo use the bare
+# `solve_issues` import path, so this keeps the registration consistent.
+import solve_issues  # noqa: E402  # register solve_issues before scripts.solve_issues
+from solve_issues import main  # noqa: E402
 
 
 def _stub_auth(*args, **kwargs):
@@ -172,7 +180,7 @@ class ReworkPrCliDryRunTests(unittest.TestCase):
         code, mock_rework, _ = self._run_main([
             "solve_issues.py", "--rework-pr", "99", "--dry-run",
         ])
-        call_kwargs = mock_rework.call_args.kwargs if mock_rework.call_args else {}
+        call_kwargs = mock_rework.call_args[1] if mock_rework.call_args else {}
         self.assertEqual(call_kwargs.get("pr_number"), 99)
 
     def test_rework_pr_prints_status_in_dry_run(self):
