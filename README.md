@@ -47,6 +47,10 @@ ist als wiederverwendbarer Codex-Skill unter
 verfügbar und kann vom Solver über `--auto-model` oder von eigenen
 Tools über `helpers/recommend_model.sh` aufgerufen werden.
 
+**Sicherheit:** Um Fehler zu vermeiden, führen partielle Patch-Anwendungen
+oder Fehler bei Reject-Artefakten zu einem sofortigen Abbruch (Hard-Stop)
+und erstellen keine Pull Requests.
+
 **Run-Reports auswerten:** Die von Schritt 3 erzeugten Run-Reports,
 Provider-Scorecards und OpenCode-Diagnosen werden durch
 [`.agents/skills/solver-reporting/`](.agents/skills/solver-reporting/SKILL.md)
@@ -165,12 +169,12 @@ Die erste Workflow-Runde ist abgeschlossen: Analyse, Backlog-Issues,
 KI-Bearbeitung, PR-Erstellung, CI und Tests laufen. Als nächstes soll der
 Morpheus-Style Workflow komfortabler werden:
 
-- mehrere Issues parallel mit begrenzter Worker-Zahl lösen
-- laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen
+- mehrere Issues parallel mit begrenzter Worker-Zahl lösen (teilweise implementiert)
+- laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen (Dashboard)
 - offene PRs und Issues nach einem Lauf automatisch zusammenfassen
-- gemergte AI-PRs nach dem Review sicher bereinigen
+- gemergte AI-PRs nach dem Review sicher bereinigen (post_merge_cleanup.py)
 
-Der geplante Backlog dafür liegt in [docs/BACKLOG/open.md](docs/BACKLOG/open.md).
+Die verbleibenden Backlog-Items befinden sich in [docs/BACKLOG/open.md](docs/BACKLOG/open.md).
 
 ---
 
