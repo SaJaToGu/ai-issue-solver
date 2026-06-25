@@ -63,7 +63,13 @@ ROLE_ALIASES: dict[str, str] = {
 }
 
 # Verdicts the reviewer prompts declare (see `.agents/reviewers/reviewer-*.md`).
-VALID_VERDICTS: tuple[str, ...] = ("approve", "request changes", "comment")
+# Both legacy values (approve/request changes/comment) and the new
+# code-reviewer values (ready to merge/needs work/discuss) are accepted
+# by the parser so old PR comments and the new schema coexist.
+VALID_VERDICTS: tuple[str, ...] = (
+    "approve", "request changes", "comment",
+    "ready to merge", "needs work", "discuss",
+)
 
 # The 3 reviewer prompt files this runtime supports. Kept here so we can
 # raise a clear error if a future prompt is added without updating ROLE_ALIASES.
@@ -80,8 +86,10 @@ MAX_DIFF_CHARS = 200_000
 
 # Compile a regex once at import time. Matches the `**Verdict**: <value>`
 # line that all three reviewer prompts declare in their "## Output" sections.
+# Accepts both legacy values and the new code-reviewer values.
 _VERDICT_RE = re.compile(
-    r"\*\*Verdict\*\*\s*:\s*(approve|request\s+changes|comment)",
+    r"\*\*Verdict\*\*\s*:\s*"
+    r"(approve|request\s+changes|comment|ready\s+to\s+merge|needs\s+work|discuss)",
     re.IGNORECASE,
 )
 

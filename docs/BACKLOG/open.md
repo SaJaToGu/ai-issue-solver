@@ -288,3 +288,62 @@ Checks:
   no `GITHUB_TOKEN` and no `requests` installed
 
 ---
+
+## 54. Symbol-whitelist pre-filter for the AIS code reviewer
+
+Labels: `kind/refactor`, `theme/review`, `area/ci`, `priority/3`
+
+Priority: `3`
+
+The AIS code reviewer (`scripts/review_pr.py --role code`) emits
+hallucinated BLOCKERs at a ~100% rate across model + temperature
+combinations — measured 0/10 real across two PR reviews (#433,
+#434), three model variants (deepseek-v4-flash-free, mistral-large,
+gpt-4o-mini, gpt-4o), and three temperatures (0.0, 0.7, 1.2). The
+hallucinated BLOCKERs follow a consistent pattern: the model names
+an import, function, or symbol in its finding that does not exist
+in the diff (or, less often, asserts a Python-version constraint
+that `from __future__ import annotations` already neutralises).
+
+The prompt-only fix in PR #434 (reviewer-code.md schema reframed
+to "Recommendation / Improvements / Concerns / Strengths" + strict
+"do not invent" rules) addresses the *framing* — the model is now
+asked to be constructive instead of finding-bug-shaped. But it
+does not structurally prevent the model from citing symbols that
+do not exist in the diff. A symbol-whitelist pre-filter does.
+
+Suggested scope:
+- in `scripts/review_pr.py`, parse the diff with `re` (or, better,
+  `unified_diff` from `difflib`) before calling the LLM, and
+  extract: every `import X` / `from X import Y`, every `def name(`,
+  every `class name(`, and every top-level variable assignment
+  `name = ` in added lines
+- pass the extracted symbol set as a system-prompt context block,
+  e.g. "Available symbols in this diff: {list}"
+- in the post-processing of the LLM response, drop any
+  `Improvements` / `Concerns` bullet whose `<file:line>` reference
+  names a symbol not in the whitelist, and surface the count of
+  dropped bullets to the user ("3 of 8 findings filtered out —
+  referenced non-existent symbols X, Y, Z")
+- add unit tests in `tests/test_review_pr.py` covering: empty
+  diff, single-symbol diff, multi-symbol diff, false-positive
+  (symbol name in comment but not in code), and the post-filter
+  dropping logic
+
+Expected effect: ~95% reduction in hallucinated BLOCKERs (those
+that name non-existent symbols), at the cost of ~1-2h implementation
+plus tests. This is the structural follow-up to the prompt-only
+fix; do it once the prompt-only fix lands and is verified to
+reduce but not eliminate hallucinated findings.
+
+Touches: `scripts/review_pr.py`, `tests/test_review_pr.py` (new)
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_review_pr -v`
+- `python -m unittest discover -s tests`
+- re-run `scripts/review_pr.py --pr 434 --role code` (already-merged
+  PR, must still produce a sensible review with no hallucinated
+  symbols) and confirm the filtered finding count = 0
+
+---

@@ -191,8 +191,15 @@ class ParseVerdictTests(unittest.TestCase):
         self.assertIsNone(parse_verdict("**Verdict**: maybe"))
 
     def test_all_valid_verdicts_are_in_the_documented_set(self):
+        # Legacy verdicts (approve/request changes/comment) coexist
+        # with the new code-reviewer verdicts (ready to merge/
+        # needs work/discuss) introduced by the prompt-reframe PR.
         self.assertEqual(
-            set(VALID_VERDICTS), {"approve", "request changes", "comment"}
+            set(VALID_VERDICTS),
+            {
+                "approve", "request changes", "comment",
+                "ready to merge", "needs work", "discuss",
+            },
         )
 
 
