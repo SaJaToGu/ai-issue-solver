@@ -738,3 +738,71 @@ Original labels: `kind/bug`, `theme/solver`, `area/validation`,
 
 ---
 
+## Done — §56: Fix the `--rework-pr` workflow in `solve_issues.py`
+
+Closed 2026-06-25 via PR #440 (squash `166f8b2` on develop). 6 files,
++254/-5.
+
+**Bug:** the `--rework-pr` workflow in `solve_issues.py` was broken
+across three distinct failure modes, all reproducible:
+
+- **Mode A — OpenRouter 400 before any token output.** Triggered by
+  4 different models across 2 providers (e.g. `opencode/deepseek-v4-flash-free`
+  via `--model opencode`, `mistral/mistral-large-latest` via
+  `--model openrouter_direct`). Slug-format was valid (same slugs
+  worked in the normal solve path); the issue was the rework code
+  path's request shape (forced `response_format` + `provider.require_parameters=True`).
+- **Mode B — output truncated by 4096-token cap** → `status: no_patches`.
+  Smaller models (e.g. `openai/gpt-4o-mini`) hit the cap mid-JSON.
+- **Mode C — model writes full rewrite-from-scratch diff** that
+  `git apply` rejects against the current branch tip →
+  `status: patches_failed`, `worker_exit_code: 3`. The rework prompt
+  gave the model the PR diff but didn't anchor it to the current
+  branch tip SHA or the existing PR commits.
+
+**Fix:**
+
+- `prompts/rework_pr.md`: now carries current head SHA + PR commit
+  list (`<existing_commits_list>`) + explicit instruction #6
+  "return only an incremental patch for the current branch tip".
+- `scripts/validation/rework.py`: `use_structured_output=False` +
+  `worker.build_patch_prompt(structured=False)` in the rework code
+  path (drops `response_format` + `require_parameters=True` from
+  the OpenRouter payload). New `_rework_max_tokens_from_env()` reads
+  `OPENROUTER_REWORK_MAX_TOKENS` (default 16384, was hardcoded 8192
+  on top of the 4096 cap). New `_format_pr_commits_for_prompt()`
+  helper formats the PR commit list for the prompt.
+- `scripts/validation/github_client.py`: new
+  `get_pull_request_commits(repo, number)` returning commit metadata
+  for the PR (404 returns `[]`).
+
+**Verification:**
+
+- `./.venv/bin/python -m unittest tests.test_validation.test_github_client tests.test_validation.test_rework -v`: 39 OK
+- `./.venv/bin/python -m unittest tests.test_openrouter_worker -v`: 52 OK
+- `./.venv/bin/python -m unittest tests.test_solve_issues -v`: 163 OK
+- `git diff --check`: clean
+- GitHub CI: Python 3.10 + 3.12 both pass
+- User live review: "Sieht gut aus" → squash merge
+
+**Live 3-run rework validation: not executed** (no open PRs were
+available to repro against right now). Tracked as a follow-up —
+verify against the next real rework case (any new PR that needs
+follow-up commits).
+
+**Out of scope (deferred / separate items):**
+
+- §57 (priority/1, now also closed via PR #442): worker must not
+  report `success` on partial patch application — same reporting
+  layer that hid the §56 Mode-C failures.
+- §58 (priority/3): worker-prompt layer hardening against
+  re-introducing recently-removed patterns.
+- Patch-mismatch hardening for the **normal solve path** (the
+  Mode-C fix in §56 only covers `--rework-pr`). The same prompt-
+  anchoring + `git apply --check` discipline should be applied
+  to the normal solve path too. Could become §59.
+
+Original labels: `kind/bug`, `theme/solver`, `area/cost-cap`,
+`priority/2`
+
+---
