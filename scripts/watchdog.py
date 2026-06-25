@@ -41,9 +41,22 @@ BUDGET_TRACKER_PATH = Path("reports") / "budget_tracker.json"
 # Default thresholds
 DEFAULT_PROGRESS_TIMEOUT_MINUTES = 30
 DEFAULT_STUCK_TIMEOUT_MINUTES = 15
-DEFAULT_COST_PER_RUN_USD = 5.0
-DEFAULT_COST_PER_DAY_USD = 20.0
-DEFAULT_COST_BUDGET_RATIO = 0.8  # Warn when 80% of monthly budget reached
+# Cost-per-run and cost-per-day thresholds. Bumped from $5/$20 (the
+# pre-0.9.0 defaults) after Issue #425's first Solver run hit the
+# $20/day limit and self-reported success while producing a no-op
+# diff. $15/$50 give the Solver enough headroom to finish the work
+# while still flagging genuinely runaway costs.
+DEFAULT_COST_PER_RUN_USD = 15.0
+DEFAULT_COST_PER_DAY_USD = 50.0
+# Monthly-budget ratio warning tier — staggered so the operator
+# sees a soft "info" warning at 70% and a hard "critical" at 100%.
+# The legacy single-threshold behaviour was 80% warning / 100%
+# critical; the new ladder keeps 100% as critical but introduces
+# intermediate tiers so an issue like #425 (which ran exactly to
+# the cap and was killed) trips an earlier "info" before the wall.
+DEFAULT_COST_BUDGET_RATIO = 0.8
+DEFAULT_COST_INFO_RATIO = 0.7
+DEFAULT_COST_WARN_RATIO = 0.9
 
 # ── Data classes ────────────────────────────────────────────────────────────
 
@@ -166,8 +179,17 @@ def check_cost(
     per_run_limit: float = DEFAULT_COST_PER_RUN_USD,
     per_day_limit: float = DEFAULT_COST_PER_DAY_USD,
     budget_ratio: float = DEFAULT_COST_BUDGET_RATIO,
+    info_ratio: float = DEFAULT_COST_INFO_RATIO,
+    warn_ratio: float = DEFAULT_COST_WARN_RATIO,
 ) -> list[CostFinding]:
-    """Check costs: per-run, per-day, and budget ratio."""
+    """Check costs: per-run, per-day, and budget ratio.
+
+    Budget-ratio findings use a staggered severity ladder so the
+    operator sees an "info" hint at 70% spent before the legacy
+    80% warning, and a "critical" still fires at 100%. This gives
+    the operator a chance to react before a Solver run is killed at
+    the wall (the failure mode that bit Issue #425).
+    """
     findings: list[CostFinding] = []
 
     # Per-run cost check from provider_scorecard in metadata
@@ -203,18 +225,34 @@ def check_cost(
         if budget > 0 and spent > 0:
             try:
                 ratio = float(spent) / float(budget)
-                if ratio >= budget_ratio:
-                    severity = "critical" if ratio >= 1.0 else "warning"
-                    findings.append(CostFinding(
-                        kind="budget_ratio",
-                        severity=severity,
-                        message=(
-                            f"Role '{role_name}' has spent ${spent:.2f} of "
-                            f"${budget:.2f} budget ({ratio:.0%})"
-                        ),
-                        current=spent,
-                        threshold=budget * budget_ratio,
-                    ))
+                if ratio >= 1.0:
+                    severity = "critical"
+                elif ratio >= warn_ratio:
+                    severity = "warning"
+                elif ratio >= info_ratio:
+                    severity = "info"
+                else:
+                    continue
+                # Threshold = the dollar amount at which this severity
+                # tier fires. Critical uses 100% (the wall); warning uses
+                # the 90% tier; info uses the 70% tier.
+                if severity == "critical":
+                    threshold = budget * 1.0
+                elif severity == "warning":
+                    threshold = budget * warn_ratio
+                else:  # info
+                    threshold = budget * info_ratio
+
+                findings.append(CostFinding(
+                    kind="budget_ratio",
+                    severity=severity,
+                    message=(
+                        f"Role '{role_name}' has spent ${spent:.2f} of "
+                        f"${budget:.2f} budget ({ratio:.0%})"
+                    ),
+                    current=spent,
+                    threshold=threshold,
+                ))
             except (TypeError, ValueError):
                 pass
 
