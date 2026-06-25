@@ -449,6 +449,82 @@ Wenn du Dateien erstellst, achte auf:
 - Sinnvolle Inhalte die zum Projekt passen
 """
 
+RECENTLY_REMOVED_PATTERNS_ENV = "AIS_RECENTLY_REMOVED_PATTERNS_FILE"
+DEFAULT_RECENTLY_REMOVED_PATTERNS_FILE = Path("docs") / "AGENTS.md"
+RECENTLY_REMOVED_PATTERNS_HEADING = "Recently Removed Patterns"
+
+
+def _resolve_recently_removed_patterns_file() -> Path:
+    configured = os.getenv(RECENTLY_REMOVED_PATTERNS_ENV)
+    path = Path(configured) if configured else DEFAULT_RECENTLY_REMOVED_PATTERNS_FILE
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def _extract_recently_removed_patterns_section(text: str) -> str:
+    lines = text.splitlines()
+    start: int | None = None
+    start_level = 0
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        heading_text = stripped.lstrip("#").strip().lower()
+        if heading_text.startswith(RECENTLY_REMOVED_PATTERNS_HEADING.lower()):
+            start = index
+            start_level = len(stripped) - len(stripped.lstrip("#"))
+            break
+
+    if start is None:
+        return ""
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if not stripped.startswith("#"):
+            continue
+        level = len(stripped) - len(stripped.lstrip("#"))
+        if level <= start_level:
+            end = index
+            break
+
+    section_body = "\n".join(lines[start + 1:end]).strip()
+    return section_body
+
+
+def load_recently_removed_patterns_section(path: Path | None = None) -> str:
+    patterns_file = path or _resolve_recently_removed_patterns_file()
+    try:
+        content = patterns_file.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return _extract_recently_removed_patterns_section(content)
+
+
+def build_solve_prompt(number: int, title: str, body: str | None) -> str:
+    prompt = AIDER_PROMPT_TEMPLATE.format(
+        number=number,
+        title=title,
+        body=body or "(kein Beschreibungstext)",
+    )
+    patterns_section = load_recently_removed_patterns_section()
+    if not patterns_section:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        "=== RECENTLY REMOVED PATTERNS (DO NOT RE-INTRODUCE) ===\n"
+        "The project explicitly removed the following patterns in recently "
+        "merged PRs. Do not reintroduce them in this run. If the issue seems "
+        "to require one of them, explain why in the PR description and let "
+        "the reviewer decide. Before introducing a pattern that resembles "
+        "one of these entries, inspect recent merged history with "
+        "`git log develop` when available.\n\n"
+        f"{patterns_section}\n\n"
+        f"(Pattern list sourced from `{_resolve_recently_removed_patterns_file()}`.)\n"
+    )
+
 
 # ─────────────────────────────────────────────────────────────
 # GitHub API Helper
@@ -3189,11 +3265,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         # (siehe oben) und steht fuer alle weiteren Phasen bereit.
 
         # Prompt bauen
-        prompt = AIDER_PROMPT_TEMPLATE.format(
-            number=number,
-            title=title,
-            body=body or "(kein Beschreibungstext)"
-        )
+        prompt = build_solve_prompt(number=number, title=title, body=body)
 
         # Worker-Adapter instanziieren und Umgebung vorbereiten
         adapter = get_worker_adapter(model)
