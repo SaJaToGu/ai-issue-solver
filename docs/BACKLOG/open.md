@@ -443,6 +443,55 @@ more data points move this item from watchlist to active backlog.
 
 ---
 
+## 61. Update README for current solver workflow
+
+Labels: `kind/docs`, `theme/workflow`, `priority/2`
+
+Priority: `2`
+
+GitHub issue: [#446](https://github.com/SaJaToGu/ai-issue-solver/issues/446)
+
+`README.md` should be updated so it reflects the current
+ai-issue-solver workflow and recent pipeline safeguards.
+
+Recent behavior that the README should not contradict:
+
+- OpenCode free models are discovered dynamically instead of relying
+  on stale static lists.
+- Partial patch application and reject-artifact patch failures hard-stop
+  instead of creating PRs.
+- The solve prompt includes a recently-removed-patterns guard from
+  `docs/AGENTS.md`.
+- §56, §57, §58, and §60 are done; §59 remains a parked watchlist item,
+  not an active implementation task.
+
+Suggested scope:
+
+- review `README.md` for outdated setup, model-selection, and workflow
+  descriptions
+- update any references to OpenCode/free models to match live discovery
+  via `scripts/model_catalog.py`
+- mention the current safety behavior at a high level: failed/partial
+  patch runs do not create PRs
+- keep the update concise and user-facing; do not turn the README into
+  a changelog
+
+Acceptance criteria:
+
+- `README.md` accurately describes the current solver workflow
+- no stale static OpenCode free-model list is introduced
+- the README remains concise and readable
+- documentation-only change; no runtime code changes expected
+
+Touches: `README.md`
+
+Checks:
+
+- `git diff --check`
+- documentation review by a human maintainer
+
+---
+
 ## 60. ~~Returncode 5 (Reject-Artefakte) must hard-stop~~ **DONE in PR #445 (squash 2549f0f)**
 
 Resolved 2026-06-26. See `done.md` for the closure summary.
