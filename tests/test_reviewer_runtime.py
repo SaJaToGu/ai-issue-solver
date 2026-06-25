@@ -382,10 +382,11 @@ class RunReviewTests(unittest.TestCase):
             openrouter_call=self._stub_openrouter_call(),
             diff_fetcher=self._stub_diff_fetcher(),
         )
-        self.assertEqual(v.role_name, "reviewer_code")
-        self.assertEqual(v.pr_number, 321)
-        self.assertEqual(v.verdict, "request changes")
-        self.assertIn("blocker", v.raw_text)
+        # run_review now returns a ReviewResult; verdict is nested.
+        self.assertEqual(v.verdict.role_name, "reviewer_code")
+        self.assertEqual(v.verdict.pr_number, 321)
+        self.assertEqual(v.verdict.verdict, "request changes")
+        self.assertIn("blocker", v.verdict.raw_text)
 
     def test_happy_path_architecture_role(self):
         v = run_review(
@@ -398,8 +399,8 @@ class RunReviewTests(unittest.TestCase):
             ),
             diff_fetcher=self._stub_diff_fetcher(),
         )
-        self.assertEqual(v.role_name, "reviewer_architecture")
-        self.assertEqual(v.verdict, "comment")
+        self.assertEqual(v.verdict.role_name, "reviewer_architecture")
+        self.assertEqual(v.verdict.verdict, "comment")
 
     def test_happy_path_documentation_role(self):
         v = run_review(
@@ -412,8 +413,8 @@ class RunReviewTests(unittest.TestCase):
             ),
             diff_fetcher=self._stub_diff_fetcher(),
         )
-        self.assertEqual(v.role_name, "reviewer_documentation")
-        self.assertEqual(v.verdict, "approve")
+        self.assertEqual(v.verdict.role_name, "reviewer_documentation")
+        self.assertEqual(v.verdict.verdict, "approve")
 
     def test_propagates_role_error(self):
         with self.assertRaises(ReviewerRoleError):
@@ -480,7 +481,7 @@ class RunReviewTests(unittest.TestCase):
         )
 
         self.assertEqual(captured["model"], "openai/gpt-4.1-mini")
-        self.assertEqual(verdict.model, "openai/gpt-4.1-mini")
+        self.assertEqual(verdict.verdict.model, "openai/gpt-4.1-mini")
 
 
 # ── CLI surface ───────────────────────────────────────────────────
@@ -544,6 +545,224 @@ class MainCliTests(unittest.TestCase):
 
 
 # ── Output data class ─────────────────────────────────────────────
+
+class ExtractSymbolsFromDiffTests(unittest.TestCase):
+    """Unit tests for the symbol-whitelist pre-filter."""
+
+    SAMPLE_DIFF = (
+        "diff --git a/scripts/build_graph.py b/scripts/build_graph.py\n"
+        "@@ -1,5 +1,8 @@\n"
+        "+import os\n"
+        "+import sys\n"
+        "+from collections import defaultdict\n"
+        "+\n"
+        "+DEFAULT_BACKLOG_OPEN = Path('x')\n"
+        "+\n"
+        "+def _extract_symbols_from_diff(diff: str) -> set[str]:\n"
+        "+    return set()\n"
+        "+\n"
+        "+class GraphBuilder:\n"
+        "+    pass\n"
+    )
+
+    def test_extracts_imports(self):
+        from review_pr import _extract_symbols_from_diff
+        symbols = _extract_symbols_from_diff(self.SAMPLE_DIFF)
+        # 'os', 'sys', 'defaultdict', plus the from-module 'collections'
+        self.assertIn("os", symbols)
+        self.assertIn("sys", symbols)
+        self.assertIn("defaultdict", symbols)
+        self.assertIn("collections", symbols)
+
+    def test_extracts_top_level_defs(self):
+        from review_pr import _extract_symbols_from_diff
+        symbols = _extract_symbols_from_diff(self.SAMPLE_DIFF)
+        self.assertIn("_extract_symbols_from_diff", symbols)
+
+    def test_extracts_class(self):
+        from review_pr import _extract_symbols_from_diff
+        symbols = _extract_symbols_from_diff(self.SAMPLE_DIFF)
+        self.assertIn("GraphBuilder", symbols)
+
+    def test_extracts_uppercase_module_constants(self):
+        from review_pr import _extract_symbols_from_diff
+        symbols = _extract_symbols_from_diff(self.SAMPLE_DIFF)
+        self.assertIn("DEFAULT_BACKLOG_OPEN", symbols)
+
+    def test_skips_context_minus_and_blank_lines(self):
+        from review_pr import _extract_symbols_from_diff
+        # No '+' lines → empty set
+        diff = (
+            "diff --git a/scripts/foo.py b/scripts/foo.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            "-import os\n"
+            "-def foo():\n"
+            "-    pass\n"
+        )
+        symbols = _extract_symbols_from_diff(diff)
+        self.assertEqual(symbols, set())
+
+    def test_skips_diff_file_header_lines(self):
+        """'+++ b/path/to/file' is the unified-diff file header,
+        not an added line. The double-plus must not be parsed."""
+        from review_pr import _extract_symbols_from_diff
+        diff = (
+            "diff --git a/scripts/foo.py b/scripts/foo.py\n"
+            "+++ b/scripts/foo.py\n"
+            "+import os\n"
+        )
+        symbols = _extract_symbols_from_diff(diff)
+        self.assertIn("os", symbols)
+        # The '+++ b/scripts/foo.py' line should NOT add 'b' or
+        # 'scripts' or 'foo' to the symbol set.
+        self.assertNotIn("b", symbols)
+        self.assertNotIn("scripts", symbols)
+
+    def test_empty_diff(self):
+        from review_pr import _extract_symbols_from_diff
+        self.assertEqual(_extract_symbols_from_diff(""), set())
+
+
+class ParseFindingsTests(unittest.TestCase):
+    """Unit tests for the structured finding parser."""
+
+    SAMPLE_REVIEW = """\
+## Code Review
+
+**Verdict**: ready to merge
+
+### Improvements
+- `scripts/build_graph.py:100` — consider extracting helper
+- `scripts/review_pr.py:42` — return type annotation would help
+- just a comment about nothing in particular
+- (none observed)
+- `general` — covers many files at once
+
+### Concerns
+- `scripts/build_graph.py:200` — infinite loop risk
+
+### Strengths
+- `tests/test_build_graph.py:55` — good test coverage
+
+### Open questions
+- should we also check for X?
+"""
+
+    def test_parses_four_sections(self):
+        from review_pr import _parse_findings
+        findings = _parse_findings(self.SAMPLE_REVIEW)
+        sections = [f.section for f in findings]
+        self.assertIn("Improvements", sections)
+        self.assertIn("Concerns", sections)
+        self.assertIn("Strengths", sections)
+        self.assertIn("Open questions", sections)
+
+    def test_extracts_symbol_from_file_ref(self):
+        from review_pr import _parse_findings
+        findings = _parse_findings(self.SAMPLE_REVIEW)
+        # `scripts/build_graph.py:100` → symbol = "build_graph"
+        with_file = [f for f in findings if f.section == "Improvements"
+                     and f.file_ref == "scripts/build_graph.py:100"]
+        self.assertEqual(len(with_file), 1)
+        self.assertEqual(with_file[0].symbol, "build_graph")
+
+    def test_general_finding_has_no_symbol(self):
+        from review_pr import _parse_findings
+        findings = _parse_findings(self.SAMPLE_REVIEW)
+        # Two general Improvements (`just a comment...` and the
+        # `general`-tagged one) plus one general Open question
+        # ("should we also check for X?") = 3 generals total.
+        generals = [f for f in findings if f.file_ref == "general"]
+        self.assertEqual(len(generals), 3)
+        for g in generals:
+            self.assertIsNone(g.symbol)
+
+    def test_none_observed_section_produces_no_findings(self):
+        from review_pr import _parse_findings
+        findings = _parse_findings(self.SAMPLE_REVIEW)
+        # The Improvements section has `(none observed)` as one of
+        # its bullets; that bullet must be filtered out.
+        none_findings = [f for f in findings if "(none observed)" in f.text]
+        self.assertEqual(len(none_findings), 0)
+
+    def test_unquoted_bullet_with_no_file_ref(self):
+        """A bullet like `- just a comment about nothing` (no
+        `file:line`, no `general`) should still parse as a
+        general observation, not be dropped."""
+        from review_pr import _parse_findings
+        findings = _parse_findings(self.SAMPLE_REVIEW)
+        # The 'just a comment about nothing in particular' bullet
+        # must end up as a general finding.
+        comment_findings = [
+            f for f in findings if "just a comment" in f.text
+        ]
+        self.assertEqual(len(comment_findings), 1)
+        self.assertEqual(comment_findings[0].file_ref, "general")
+        self.assertIsNone(comment_findings[0].symbol)
+
+
+class FilterFindingsBySymbolsTests(unittest.TestCase):
+    """Unit tests for the post-filter that drops findings citing
+    symbols not in the diff."""
+
+    def test_keeps_findings_with_symbol_in_whitelist(self):
+        from review_pr import Finding, _filter_findings_by_symbols
+        f = Finding(
+            section="Improvements",
+            file_ref="scripts/build_graph.py:100",
+            symbol="build_graph",
+            text="text",
+        )
+        kept, dropped = _filter_findings_by_symbols([f], {"build_graph"})
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(len(dropped), 0)
+
+    def test_drops_findings_with_symbol_not_in_whitelist(self):
+        from review_pr import Finding, _filter_findings_by_symbols
+        f = Finding(
+            section="Concerns",
+            file_ref="scripts/foo.py:1",
+            symbol="foo",
+            text="text",
+        )
+        kept, dropped = _filter_findings_by_symbols([f], {"bar"})
+        self.assertEqual(len(kept), 0)
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual(dropped[0].symbol, "foo")
+
+    def test_keeps_general_findings_without_symbol(self):
+        from review_pr import Finding, _filter_findings_by_symbols
+        f = Finding(
+            section="Improvements",
+            file_ref="general",
+            symbol=None,
+            text="text",
+        )
+        kept, dropped = _filter_findings_by_symbols([f], set())
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(len(dropped), 0)
+
+    def test_does_not_mutate_input(self):
+        from review_pr import Finding, _filter_findings_by_symbols
+        f1 = Finding("Improvements", "a.py:1", "a", "x")
+        f2 = Finding("Concerns", "b.py:2", "b", "y")
+        findings = [f1, f2]
+        _filter_findings_by_symbols(findings, {"a"})
+        self.assertEqual(len(findings), 2)
+
+
+class ReviewResultDataclassTests(unittest.TestCase):
+    """Smoke tests for the ReviewResult wrapper."""
+
+    def test_default_symbols_set_is_empty(self):
+        from review_pr import ReviewResult, ReviewerVerdict
+        v = ReviewerVerdict(
+            raw_text="", verdict=None, role_name="r", model="m",
+            pr_number=1, pr_repo="o/r",
+        )
+        r = ReviewResult(verdict=v, findings=[], dropped_findings=[])
+        self.assertEqual(r.available_symbols, set())
+
 
 class ReviewerVerdictDataclassTests(unittest.TestCase):
     def test_construction_and_attribute_access(self):
