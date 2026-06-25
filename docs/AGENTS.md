@@ -73,6 +73,21 @@ agent, implemented via issue #312) — see below.
 the issue, the touched files, the relevant skill. Nothing else. Smaller
 context, cheaper model, faster runs.
 
+## Recently Removed Patterns (last 90 days)
+
+Patterns the project explicitly removed in a recently merged PR. The
+solver MUST NOT re-introduce them. If an issue seems to require one of
+these patterns, the solver MUST explain why in the PR description instead
+of silently restoring it.
+
+Maintainers update this list when a PR intentionally removes a pattern
+that future solver runs are likely to rediscover.
+
+| Removed by | Date | Pattern | Why removed |
+|------------|------|---------|-------------|
+| PR #439 | 2026-06-25 | Static `free_models` list in `MODEL_CONFIGS["opencode"]`, including `opencode/minimax-m3-free` | Dynamic discovery via `scripts/model_catalog.py` is the source of truth; static lists drift. |
+| PR #437 | 2026-06-25 | Hard `$20 / $20` cost-cap defaults | Replaced with `$15 / $50` plus staggered budget-ratio warnings. |
+
 ---
 
 ## Reviewer (subtypes)
