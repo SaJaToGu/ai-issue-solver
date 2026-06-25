@@ -442,3 +442,90 @@ solve path, log it here (file, issue, date, error message). Two
 more data points move this item from watchlist to active backlog.
 
 ---
+
+## 60. Returncode 5 (Reject-Artefakte) must hard-stop, not fall through `nonzero_with_changes` (2026-06-26)
+
+Labels: `kind/bug`, `theme/solver`, `area/validation`, `priority/1`
+
+Priority: `1`
+
+Measured 2026-06-26 against Issue #390 (PR #444, gpt-4o via
+`openrouter_direct`):
+
+- Worker produced patches with reject artifacts (`.orig`/`.rej` files
+  left in the working tree) → `OpenRouterWorker` set `returncode = 5`
+  with `VALIDATION-FAILED: Reject-Artifakte wurden erkannt und
+  bereinigt. Der gesamte Lauf gilt als fehlgeschlagen.`
+- `classify_worker_outcome()` in `workers/execution.py` did **not**
+  catch returncode 5 — only `PARTIAL_PATCH_FAILURE_RETURN_CODE = 6`
+  (added in §57 / PR #442) gets the hard-stop treatment
+  (`should_continue=False`).
+- The run fell through to the generic `nonzero_with_changes` branch
+  with `failure_class: success` (`has_changes=True`, no special
+  handling).
+- Worker proceeded to commit + push + open PR #444 — a 5-LOC
+  trivial dummy function (`increment_documentation_run_counter`
+  with `pass`).
+- Post-solve tests did not run (timeout 300s on the partial state),
+  same symptom as the §57 PR #441 episode.
+
+This is the same failure mode as §57, just one returncode class
+later. §57 closed `returncode == 6`; §60 closes `returncode == 5`
+and any other nonzero worker-returncode that indicates a partial /
+contaminated on-disk state. The general principle:
+
+> **Any nonzero worker-returncode that produces partial on-disk
+> changes must be a hard stop.** Commit + push + PR-create must
+> not run.
+
+Suggested scope:
+
+- in `workers/execution.py` `classify_worker_outcome`, map **all**
+  nonzero returncodes (when `has_changes=True`) to
+  `should_continue=False`. Either:
+  - explicit allow-list: only `returncode in {0}` may proceed with
+    `has_changes=True`
+  - or explicit deny-list: extend the §57 check from
+    `PARTIAL_PATCH_FAILURE_RETURN_CODE` to a set including
+    `5 (reject_artifacts)` and any future reject / partial-state
+    code
+- introduce a `WorkerOutcome` invariant test:
+  - for any `WorkerOutcome` with `should_continue=True`,
+    `result.returncode` must be `0`
+  - for any `WorkerOutcome` with `result.returncode != 0`,
+    `should_continue` must be `False`
+- ensure `run_pr_rework()` and the normal solve path in
+  `scripts/solve_issues.py` honor that invariant — i.e. the existing
+  `if worker_status in ("failed", "patches_failed", "partial_patch_failure")`
+  early-return must also include the new reject / partial-state
+  classes
+- add unit tests:
+  - `test_returncode_5_with_changes_does_not_create_pr`
+  - `test_returncode_5_with_changes_classified_as_failed`
+  - `test_classify_worker_outcome_invariant_any_nonzero_blocks_proceed`
+- consider renaming or splitting the existing `nonzero_with_changes`
+  `failure_class` to multiple specific classes
+  (`reject_artifacts`, `partial_state`, etc.) so the run-report
+  tells the reviewer exactly why the run failed
+
+Touches: `workers/execution.py`, `workers/base.py`,
+`workers/openrouter_worker.py`, `scripts/solve_issues.py`,
+tests for `classify_worker_outcome` and the solve-path
+post-worker block.
+
+Checks:
+
+- `git diff --check`
+- `python -m unittest tests.test_worker_execution -v`
+- `python -m unittest tests.test_worker_adapters -v`
+- `python -m unittest tests.test_openrouter_worker -v`
+- `python -m unittest tests.test_solve_issues -v`
+- `python -m unittest discover -s tests`
+- new invariant tests (see above)
+- 3-run reproduction against 3 different real issues that trigger
+  reject artifacts (e.g. touching a file that has had a permission
+  flip, a binary file, or a moved file): all 3 must produce
+  `should_continue=False`, no commit/push/PR, run-report with the
+  specific reject-artifact class.
+
+---
