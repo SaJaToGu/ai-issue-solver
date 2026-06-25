@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
+import time
 from typing import Any, Iterable
 
 
@@ -19,12 +21,198 @@ MODEL_STATUS_STALE = "stale"
 MODEL_STATUS_VERIFIED = "verified"
 MODEL_STATUS_MISSING = "missing"
 
+# Static fallback list, used only when the live `opencode models`
+# call is unavailable (binary missing, network down, etc.). The live
+# discovery path is `fetch_opencode_free_models()` below. The
+# previously-listed `opencode/minimax-m3-free` was removed on
+# 2026-06-25 because it is no longer in the live registry.
 OPENCODE_FREE_MODELS: tuple[str, ...] = (
     "opencode/deepseek-v4-flash-free",
     "opencode/mimo-v2.5-free",
-    "opencode/minimax-m3-free",
+    "opencode/north-mini-code-free",
     "opencode/nemotron-3-ultra-free",
 )
+
+# Cache file for live OpenCode model discovery. One hour TTL — fast
+# enough to pick up new free models in a single Solver-run batch, slow
+# enough to avoid hitting the opencode CLI on every Solver invocation.
+OPENCODE_MODELS_CACHE_TTL_SECONDS = 3600
+OPENCODE_MODELS_CACHE_DIRNAME = "ai-issue-solver"
+OPENCODE_MODELS_CACHE_FILENAME = "opencode_models.json"
+
+
+@dataclass(frozen=True)
+class OpencodeModelCache:
+    """On-disk cache for the live `opencode models` listing.
+
+    Stored as JSON: `{"fetched_at": <iso8601>, "models": [...]}`.
+    Stale entries are detected via `age_seconds()` and trigger a
+    fresh `opencode models` call.
+    """
+    fetched_at: str
+    models: tuple[str, ...]
+    source: str = "live"  # "live" | "cache" | "fallback"
+
+    def age_seconds(self, now_epoch: float | None = None) -> float:
+        try:
+            fetched_epoch = datetime.fromisoformat(
+                self.fetched_at.replace("Z", "+00:00")
+            ).timestamp()
+        except (TypeError, ValueError):
+            return float("inf")
+        return (now_epoch or time.time()) - fetched_epoch
+
+
+def _opencode_cache_path() -> Path:
+    """Resolve the cache path for `opencode models` output.
+
+    Honours `XDG_CACHE_HOME` (matches the rest of the codebase) and
+    falls back to `~/.cache` on systems without it.
+    """
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    cache_dir = base / OPENCODE_MODELS_CACHE_DIRNAME
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / OPENCODE_MODELS_CACHE_FILENAME
+
+
+def _read_cache() -> OpencodeModelCache | None:
+    p = _opencode_cache_path()
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return OpencodeModelCache(
+            fetched_at=str(data.get("fetched_at", "")),
+            models=tuple(data.get("models", [])),
+            source="cache",
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_cache(models: Iterable[str]) -> None:
+    payload = {
+        "fetched_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "models": list(models),
+    }
+    try:
+        _opencode_cache_path().write_text(
+            json.dumps(payload, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        # Cache write failures are non-fatal — fall back to memory-only.
+        pass
+
+
+def _opencode_binary() -> str | None:
+    """Resolve the opencode CLI path. Honours $OPENCODE_BIN."""
+    override = os.environ.get("OPENCODE_BIN")
+    if override and Path(override).is_file():
+        return override
+    default = Path.home() / ".opencode" / "bin" / "opencode"
+    if default.is_file():
+        return str(default)
+    return None
+
+
+def _run_opencode_models() -> list[str]:
+    """Call `opencode models` and parse its line-delimited output."""
+    bin_path = _opencode_binary()
+    if not bin_path:
+        raise RuntimeError(
+            "opencode CLI not found (set $OPENCODE_BIN or install "
+            f"at {Path.home() / '.opencode' / 'bin' / 'opencode'})"
+        )
+    try:
+        proc = subprocess.run(
+            [bin_path, "models"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"`opencode models` failed: {exc}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"`opencode models` exit={proc.returncode}: {proc.stderr.strip()}"
+        )
+    # `opencode models` prints one slug per line on stdout.
+    return [
+        line.strip()
+        for line in proc.stdout.splitlines()
+        if line.strip()
+    ]
+
+
+# Pattern: a model is "free" for our purposes if its slug contains
+# `-free` (e.g. `deepseek-v4-flash-free`) OR matches one of the
+# historically-free provider/model combos we care about
+# (`opencode/minimax-m2.5` is free in the OpenCode registry even
+# though its slug lacks `-free`). The explicit list covers the
+# edge cases that a simple substring match would miss.
+_FREE_SLUG_PATTERNS: tuple[str, ...] = (
+    "-free",            # opencode/deepseek-v4-flash-free, etc.
+    "opencode/gpt-5.1-codex-mini",  # opencode labels these as free-tier
+    "opencode/gpt-5.4-mini",
+)
+_FREE_EXACT_MATCHES: frozenset[str] = frozenset({
+    # Provider-known free models whose slug does not contain "-free".
+    "opencode/minimax-m2.5",
+    "opencode/minimax-m2.7",
+    "opencode/north-mini-code-free",
+})
+
+
+def _is_free_opencode_model(slug: str) -> bool:
+    return (
+        any(p in slug for p in _FREE_SLUG_PATTERNS)
+        or slug in _FREE_EXACT_MATCHES
+    )
+
+
+def fetch_opencode_free_models(
+    *,
+    use_cache: bool = True,
+    ttl_seconds: int = OPENCODE_MODELS_CACHE_TTL_SECONDS,
+    now_epoch: float | None = None,
+) -> OpencodeModelCache:
+    """Return the current free OpenCode model set.
+
+    Strategy:
+    1. If `use_cache` and a fresh cache file exists (< ttl_seconds old),
+       return the cached list with `source="cache"`.
+    2. Otherwise, call `opencode models`, filter to free models,
+       write to cache, return with `source="live"`.
+    3. On any failure (binary missing, subprocess error, etc.),
+       fall back to the static `OPENCODE_FREE_MODELS` tuple with
+       `source="fallback"` so the caller can decide whether to warn.
+
+    The `now_epoch` parameter is injectable for tests.
+    """
+    if use_cache:
+        cached = _read_cache()
+        if cached is not None and cached.age_seconds(now_epoch) < ttl_seconds:
+            return OpencodeModelCache(
+                fetched_at=cached.fetched_at,
+                models=cached.models,
+                source="cache",
+            )
+    try:
+        raw = _run_opencode_models()
+    except RuntimeError:
+        return OpencodeModelCache(
+            fetched_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            models=tuple(OPENCODE_FREE_MODELS),
+            source="fallback",
+        )
+    free = tuple(m for m in raw if _is_free_opencode_model(m))
+    _write_cache(free)
+    return OpencodeModelCache(
+        fetched_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        models=free,
+        source="live",
+    )
 
 OPENCODE_LOW_STRENGTH_MODELS: tuple[str, ...] = OPENCODE_FREE_MODELS[:3]
 OPENCODE_MEDIUM_STRENGTH_MODELS: tuple[str, ...] = (OPENCODE_FREE_MODELS[3],)
@@ -203,20 +391,42 @@ def build_openrouter_catalog(
 def build_opencode_catalog(
     *,
     successful_runs: Counter[str] | None = None,
+    live_models: Iterable[str] | None = None,
 ) -> list[CatalogModel]:
+    """Build the OpenCode catalog.
+
+    `live_models` (optional) — when provided, used directly as the
+    free-model list. When `None`, falls back to
+    `fetch_opencode_free_models()` which uses the cached
+    `opencode models` call (TTL 1h) and falls back to the static
+    `OPENCODE_FREE_MODELS` list if the binary is unavailable.
+
+    The catalog is built from a single model list — the caller
+    decides whether that's a live fetch, a cache read, or a static
+    fallback. Tests inject `live_models` for determinism.
+    """
+    if live_models is None:
+        cache_result = fetch_opencode_free_models()
+        live_models = cache_result.models
+
     run_counts = successful_runs or Counter()
+    default = OPENCODE_DEFAULT_MODEL if OPENCODE_DEFAULT_MODEL in live_models else None
+    source_label = "dynamic/opencode-models-cache"
+    notes = (
+        f"free OpenCode model (live discovery, source={source_label})",
+    )
     return [
         CatalogModel(
             provider="opencode",
             model=model,
-            source="static/free-models",
+            source=source_label,
             status=MODEL_STATUS_KNOWN,
             cost_tier="free",
-            default_for=("opencode",) if model == OPENCODE_DEFAULT_MODEL else (),
-            notes=("known free OpenCode model; live discovery still provider-dependent",),
+            default_for=("opencode",) if model == default else (),
+            notes=notes,
             successful_runs=run_counts.get(model, 0),
         )
-        for model in OPENCODE_FREE_MODELS
+        for model in live_models
     ]
 
 
@@ -246,6 +456,7 @@ def build_model_catalog(
     config: dict[str, Any],
     *,
     live_openrouter_models: Iterable[str] | None = None,
+    live_opencode_models: Iterable[str] | None = None,
     verified_at: str | None = None,
     run_reports_root: Path | str | None = None,
 ) -> ModelCatalog:
@@ -260,7 +471,10 @@ def build_model_catalog(
             verified_at=effective_verified_at,
             successful_runs=run_counts,
         ),
-        *build_opencode_catalog(successful_runs=run_counts),
+        *build_opencode_catalog(
+            successful_runs=run_counts,
+            live_models=live_opencode_models,
+        ),
         *build_codex_catalog(successful_runs=run_counts),
     ]
     return ModelCatalog(tuple(models))
