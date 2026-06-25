@@ -380,3 +380,65 @@ that would also reintroduce a recently-removed pattern should be
 caught earlier.
 
 ---
+
+## 59. Watchlist: Patch-mismatch hardening for the normal solve path (2026-06-25)
+
+Labels: `kind/watchlist`, `theme/solver`, `area/prompt`, `priority/4`
+
+Priority: `4` (parked — **do not activate** without evidence)
+
+**Status: WATCHLIST ONLY.** This item exists so we do not lose
+track of a possible quality follow-up, but it is **not** an active
+backlog commitment. Do not invest in a fix until the activation
+trigger below is met.
+
+**The Mode-C failure mode on the normal solve path** (the same
+patch-mismatch symptom §56 addressed for `--rework-pr`):
+
+- Worker produces a patch JSON
+- The patch references file content that does not match the current
+  working tree (file moved, lines shifted, surrounding code changed
+  since the model's training cutoff)
+- `git apply` rejects the patch
+- Worker reports failure → §57 now correctly stops the run before
+  any PR is created
+
+This used to be a silent regression (PR #441). After §57 + §58 it is
+a clean failure with no PR — acceptable behavior. A §59 fix would
+turn these clean failures into clean successes, but the bar is
+"is this worth the architecture work?", and a single data point is
+not enough to answer that.
+
+**Current data point (1 of ≥3 needed):**
+
+| Run | Date | Repo | Issue | Affected file | Failure | Result |
+|-----|------|------|-------|---------------|---------|--------|
+| #389 re-run | 2026-06-25 | ai-issue-solver | #389 | `scripts/model_selection.py:52` | `git apply` rejected | `nonzero_without_changes`, no PR ✅ |
+
+**Activation trigger:** ≥3 Mode-C patch-mismatch runs on the
+normal solve path, ideally across **different** files (so we know
+it is a systematic prompt/model issue, not a one-off file-specific
+problem). Until that threshold is met, §59 stays parked.
+
+**Non-goal (while parked):** no code changes, no architecture work.
+§57 + §58 are sufficient to keep the pipeline correct.
+
+**Scope when activated:**
+
+- prompt anchoring on the normal solve path (similar to §56's
+  rework-pr fix: explicit file-version context, current branch tip
+  SHA, recently-touched files in the issue scope)
+- per-file `git apply --check` before declaring application success
+- optional targeted re-prompting loop if `git apply --check` fails
+  (model retries with the failure context instead of bailing out
+  entirely)
+
+**Touches (when activated):** `scripts/solve_issues.py`,
+`scripts/validation/rework.py`, `workers/openrouter_worker.py`,
+tests for the patch-mismatch path on the normal solve flow.
+
+**Tracking note:** when a Mode-C failure appears on the normal
+solve path, log it here (file, issue, date, error message). Two
+more data points move this item from watchlist to active backlog.
+
+---
