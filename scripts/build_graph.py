@@ -198,9 +198,13 @@ def parse_open_backlog(path: Path) -> list[Node]:
 
 
 # Match any of: "Closes #N", "Fixes #N", "Resolves #N", "Part of #N",
-# "Parent: #N" — case-insensitive, works in PR body or PR comment.
+# "Refs #N", "Issue #N", "See #N", "Implements #N", "Parent: #N" —
+# case-insensitive, works in PR body or PR comment. The ai-issue-solver
+# solver pipeline writes "Refs #N" (not "Closes #N") in its PR bodies,
+# so missing "Refs" alone would drop ~55% of closes-edges in this repo.
 _ISSUE_REF_RE = re.compile(
-    r"\b(?:Closes|Fixes|Resolves|Part of)\s+#(\d+)\b|^\s*Parent:\s*#(\d+)\s*$",
+    r"\b(?:Closes|Fixes|Resolves|Part of|Refs|Issue|See|Implements):?\s+#(\d+)\b"
+    r"|^\s*Parent:\s*#(\d+)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
