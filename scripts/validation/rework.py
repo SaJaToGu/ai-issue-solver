@@ -33,6 +33,7 @@ from solver_repository import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 REWORK_PROMPT_PATH = _REPO_ROOT / "prompts" / "rework_pr.md"
 REWORK_COMMIT_MESSAGE_PREFIX = "rework: apply review feedback"
+DEFAULT_REWORK_MAX_TOKENS = 16384
 
 
 def _load_rework_prompt_template() -> str:
@@ -55,6 +56,8 @@ def _build_rework_prompt(
     head_branch: str,
     diff: str,
     review_threads: list[ReviewThread],
+    head_sha: str = "",
+    existing_commits_list: str = "",
 ) -> str:
     """Build the final rework prompt by filling in the template."""
     reviewer_usernames = ", ".join(
@@ -73,10 +76,42 @@ def _build_rework_prompt(
         repo=repo,
         base_branch=base_branch,
         head_branch=head_branch,
+        head_sha=head_sha or "(unknown)",
+        existing_commits_list=existing_commits_list or "(commit list unavailable)",
         reviewer_usernames=reviewer_usernames,
         diff=diff,
         review_threads=review_text,
     )
+
+
+def _format_pr_commits_for_prompt(commits: list[dict[str, Any]], *, limit: int = 12) -> str:
+    """Format PR commits for the rework prompt, newest first."""
+    if not commits:
+        return "(no existing PR commits returned by GitHub)"
+
+    lines: list[str] = []
+    for item in reversed(commits[-limit:]):
+        sha = str(item.get("sha") or "")[:12] or "unknown"
+        commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
+        message = str(commit.get("message") or "").splitlines()[0].strip()
+        if not message:
+            message = "(no commit message)"
+        lines.append(f"- {sha} {message}")
+    if len(commits) > limit:
+        lines.append(f"- ... {len(commits) - limit} older commit(s) omitted")
+    return "\n".join(lines)
+
+
+def _rework_max_tokens_from_env(default: int = DEFAULT_REWORK_MAX_TOKENS) -> int:
+    """Return the OpenRouter completion cap for PR rework runs."""
+    raw = os.getenv("OPENROUTER_REWORK_MAX_TOKENS")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _run_worker_via_subprocess(
@@ -104,14 +139,14 @@ def _run_worker_via_subprocess(
         api_key=openrouter_key,
         model=model,
         request_timeout_seconds=timeout_seconds,
-        use_structured_output=True,
+        use_structured_output=False,
     )
 
     try:
         response_text, usage = worker.generate_with_usage(
-            prompt=prompt,
+            prompt=worker.build_patch_prompt(prompt, structured=False),
             temperature=0.3,
-            max_tokens=8192,
+            max_tokens=_rework_max_tokens_from_env(),
             timeout=timeout_seconds,
         )
     except Exception as exc:
@@ -261,6 +296,12 @@ def run_pr_rework(
     except RuntimeError:
         review_threads = []
 
+    try:
+        existing_commits = client.get_pull_request_commits(repo, pr_number)
+    except RuntimeError:
+        existing_commits = []
+    existing_commits_list = _format_pr_commits_for_prompt(existing_commits)
+
     # 3. Build prompt
     try:
         template = _load_rework_prompt_template()
@@ -285,6 +326,8 @@ def run_pr_rework(
         head_branch=head_branch,
         diff=diff,
         review_threads=review_threads,
+        head_sha=pr_info.head_sha,
+        existing_commits_list=existing_commits_list,
     )
 
     # Dry-run: print metadata and prompt, return early

@@ -11,7 +11,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from validation.rework import (
     _build_rework_prompt,
+    _format_pr_commits_for_prompt,
     _load_rework_prompt_template,
+    _rework_max_tokens_from_env,
+    _run_worker_via_subprocess,
     run_pr_rework,
 )
 from validation.github_client import (
@@ -26,6 +29,8 @@ class BuildReworkPromptTests(unittest.TestCase):
         self.template = (
             "PR #{pr_number} in {owner}/{repo}\n"
             "Base: {base_branch}, Head: {head_branch}\n"
+            "Head SHA: {head_sha}\n"
+            "Commits:\n{existing_commits_list}\n"
             "Reviewers: {reviewer_usernames}\n"
             "DIFF:\n{diff}\n"
             "FEEDBACK:\n{review_threads}\n"
@@ -45,6 +50,8 @@ class BuildReworkPromptTests(unittest.TestCase):
             head_branch="ai/fix-issue-1",
             diff="--- a/file.py\n+++ b/file.py\n@@ -1 +1 @@\n-foo\n+bar",
             review_threads=threads,
+            head_sha="abc123",
+            existing_commits_list="- abc123 latest fix",
         )
         self.assertIn("PR #42", prompt)
         self.assertIn("test-owner/test-repo", prompt)
@@ -54,6 +61,8 @@ class BuildReworkPromptTests(unittest.TestCase):
         self.assertIn("Add type hints", prompt)
         self.assertIn("main", prompt)
         self.assertIn("ai/fix-issue-1", prompt)
+        self.assertIn("abc123", prompt)
+        self.assertIn("latest fix", prompt)
 
     def test_empty_review_threads(self):
         prompt = _build_rework_prompt(
@@ -91,6 +100,63 @@ class BuildReworkPromptTests(unittest.TestCase):
         self.assertEqual(reviewers_line.count("bob"), 1)
 
 
+class ReworkCommitContextTests(unittest.TestCase):
+    def test_format_pr_commits_newest_first(self):
+        commits = [
+            {"sha": "111111111111aaaa", "commit": {"message": "old commit\n\nbody"}},
+            {"sha": "222222222222bbbb", "commit": {"message": "new commit"}},
+        ]
+
+        formatted = _format_pr_commits_for_prompt(commits)
+
+        self.assertLess(formatted.index("222222222222"), formatted.index("111111111111"))
+        self.assertIn("new commit", formatted)
+        self.assertIn("old commit", formatted)
+
+    def test_format_pr_commits_handles_empty_list(self):
+        self.assertIn("no existing PR commits", _format_pr_commits_for_prompt([]))
+
+
+class ReworkWorkerInvocationTests(unittest.TestCase):
+    def test_rework_max_tokens_default_and_env_override(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(_rework_max_tokens_from_env(), 16384)
+        with patch.dict("os.environ", {"OPENROUTER_REWORK_MAX_TOKENS": "32768"}):
+            self.assertEqual(_rework_max_tokens_from_env(), 32768)
+        with patch.dict("os.environ", {"OPENROUTER_REWORK_MAX_TOKENS": "not-int"}):
+            self.assertEqual(_rework_max_tokens_from_env(), 16384)
+
+    def test_run_worker_uses_plain_patch_prompt_without_response_format(self):
+        with patch("workers.openrouter_worker.OpenRouterWorker") as worker_cls:
+            worker = MagicMock()
+            worker.build_patch_prompt.return_value = "PATCH PROMPT"
+            worker.generate_with_usage.return_value = (
+                '{"patches":[{"file_path":"x.py","diff":"--- a/x.py\\n+++ b/x.py\\n@@ -1 +1 @@\\n-a\\n+b\\n"}]}',
+                MagicMock(model="test-model", cost_usd=None, total_tokens=10),
+            )
+            worker.extract_patches.return_value = ["--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n"]
+            worker.apply_patches.return_value = [
+                MagicMock(success=True, applied_file="x.py", error=None)
+            ]
+            worker_cls.return_value = worker
+
+            returncode, output = _run_worker_via_subprocess(
+                prompt="Original prompt",
+                repo_dir="/tmp/repo",
+                model="openai/gpt-4o-mini",
+                openrouter_key="key",
+            )
+
+        self.assertEqual(returncode, 0)
+        worker_cls.assert_called_once()
+        self.assertFalse(worker_cls.call_args.kwargs["use_structured_output"])
+        worker.build_patch_prompt.assert_called_once_with("Original prompt", structured=False)
+        worker.generate_with_usage.assert_called_once()
+        self.assertEqual(worker.generate_with_usage.call_args.kwargs["prompt"], "PATCH PROMPT")
+        self.assertEqual(worker.generate_with_usage.call_args.kwargs["max_tokens"], 16384)
+        self.assertIn("Applied patch", output)
+
+
 class LoadReworkPromptTemplateTests(unittest.TestCase):
     def test_template_file_exists(self):
         template_path = ROOT / "prompts" / "rework_pr.md"
@@ -98,7 +164,14 @@ class LoadReworkPromptTemplateTests(unittest.TestCase):
 
     def test_template_contains_required_placeholders(self):
         template = _load_rework_prompt_template()
-        for placeholder in ("{pr_number}", "{diff}", "{review_threads}", "{reviewer_usernames}"):
+        for placeholder in (
+            "{pr_number}",
+            "{diff}",
+            "{review_threads}",
+            "{reviewer_usernames}",
+            "{head_sha}",
+            "{existing_commits_list}",
+        ):
             self.assertIn(placeholder, template)
 
 
@@ -113,9 +186,13 @@ class RunPrReworkDryRunTests(unittest.TestCase):
                 state="open",
                 merged=False,
                 head_ref="ai/fix-issue-1",
+                head_sha="abc123",
                 base_ref="main",
                 html_url="https://github.com/o/r/pull/404",
             )
+            mock_client.get_pull_request_commits.return_value = [
+                {"sha": "abc123", "commit": {"message": "latest commit"}},
+            ]
 
             result = run_pr_rework(
                 owner="o",
@@ -197,9 +274,13 @@ class RunPrReworkConfigGuardTests(unittest.TestCase):
                 state="open",
                 merged=False,
                 head_ref="fix",
+                head_sha="abc123",
                 base_ref="main",
                 html_url="",
             )
+            mock_client.get_pull_request_commits.return_value = [
+                {"sha": "abc123", "commit": {"message": "latest commit"}},
+            ]
 
             result = run_pr_rework(
                 owner="o",
@@ -219,7 +300,8 @@ class ReworkPromptTemplateFormatTests(unittest.TestCase):
         template_path = ROOT / "prompts" / "rework_pr.md"
         content = template_path.read_text(encoding="utf-8")
         required = ["pr_number", "owner", "repo", "base_branch", "head_branch",
-                     "reviewer_usernames", "diff", "review_threads"]
+                     "head_sha", "existing_commits_list", "reviewer_usernames",
+                     "diff", "review_threads"]
         for field in required:
             self.assertIn(f"{{{field}}}", content, f"Missing placeholder {{{field}}} in prompt template")
 

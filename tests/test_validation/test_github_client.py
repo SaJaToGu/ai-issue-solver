@@ -111,6 +111,23 @@ class ValidationGitHubClientTests(unittest.TestCase):
         pr = self.client.get_pull_request("repo", 999)
         self.assertIsNone(pr)
 
+    def test_get_pull_request_commits_returns_list(self):
+        commits = [
+            {"sha": "abc123", "commit": {"message": "first"}},
+            {"sha": "def456", "commit": {"message": "second"}},
+        ]
+        self.session.get.return_value = self._mock_response(200, commits)
+
+        result = self.client.get_pull_request_commits("repo", 10)
+
+        self.assertEqual(result, commits)
+        self.session.get.assert_called_once()
+        self.assertIn("/pulls/10/commits", self.session.get.call_args.args[0])
+
+    def test_get_pull_request_commits_returns_empty_on_404(self):
+        self.session.get.return_value = self._mock_response(404)
+        self.assertEqual(self.client.get_pull_request_commits("repo", 999), [])
+
     def test_get_ci_status_returns_status(self):
         self.session.get.return_value = self._mock_response(200, {
             "state": "success", "total_count": 3, "statuses": [
