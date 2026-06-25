@@ -512,6 +512,17 @@ def build_solve_prompt(number: int, title: str, body: str | None) -> str:
     patterns_section = load_recently_removed_patterns_section()
     if not patterns_section:
         return prompt
+    # Display the patterns-file path relative to PROJECT_ROOT when possible,
+    # so the worker prompt does not leak the operator's local absolute
+    # path (e.g. /Users/.../docs/AGENTS.md). If the configured file lives
+    # outside PROJECT_ROOT (env-var override with an absolute path), show
+    # the absolute path verbatim — that path was explicitly chosen by the
+    # operator and is not a leak from default config.
+    patterns_file = _resolve_recently_removed_patterns_file()
+    try:
+        display_path = patterns_file.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        display_path = str(patterns_file)
     return (
         f"{prompt}\n\n"
         "=== RECENTLY REMOVED PATTERNS (DO NOT RE-INTRODUCE) ===\n"
@@ -522,7 +533,7 @@ def build_solve_prompt(number: int, title: str, body: str | None) -> str:
         "one of these entries, inspect recent merged history with "
         "`git log develop` when available.\n\n"
         f"{patterns_section}\n\n"
-        f"(Pattern list sourced from `{_resolve_recently_removed_patterns_file()}`.)\n"
+        f"(Pattern list sourced from `{display_path}`.)"
     )
 
 

@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from solve_issues import (  # noqa: E402
     GitHubClient,
     POST_SOLVE_TEST_COMMAND,
+    PROJECT_ROOT,
     PostSolveTestResult,
     PullRequestState,
     WorkerAssessment,
@@ -1374,6 +1375,43 @@ class AiderCommandTests(unittest.TestCase):
 
         self.assertNotIn("RECENTLY REMOVED PATTERNS", prompt)
         self.assertIn("=== ISSUE #1: Title ===", prompt)
+
+    def test_solve_prompt_does_not_leak_absolute_project_root_path(self):
+        # Live-review finding (Guido, 2026-06-25): the default
+        # docs/AGENTS.md resolution returns an absolute path under
+        # PROJECT_ROOT, which was being included verbatim in the worker
+        # prompt. The prompt must use the repo-relative path instead
+        # so the operator's local filesystem layout is not exposed.
+        with patch.dict(os.environ, {}, clear=True):
+            prompt = build_solve_prompt(389, "Title", "Body")
+
+        self.assertIn("RECENTLY REMOVED PATTERNS", prompt)
+        self.assertIn("docs/AGENTS.md", prompt)
+        self.assertNotIn(str(PROJECT_ROOT), prompt)
+        self.assertNotIn("/Users/", prompt)
+        self.assertNotIn(tempfile.gettempdir(), prompt)
+
+    def test_solve_prompt_does_not_leak_absolute_path_from_env_var_override(self):
+        # When the operator explicitly sets AIS_RECENTLY_REMOVED_PATTERNS_FILE
+        # to an absolute path that lives outside PROJECT_ROOT, we still
+        # display the absolute path verbatim (it was an explicit choice,
+        # not a leak from default config).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outside_file = Path(tmpdir) / "external-patterns.md"
+            outside_file.write_text(
+                "# External\n\n"
+                "## Recently Removed Patterns\n\n"
+                "- example\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"AIS_RECENTLY_REMOVED_PATTERNS_FILE": str(outside_file)},
+            ):
+                prompt = build_solve_prompt(2, "Title", "Body")
+
+        self.assertIn("RECENTLY REMOVED PATTERNS", prompt)
+        self.assertIn(str(outside_file), prompt)
 
     def test_opencode_command_requires_executable(self):
         with patch("solve_issues.find_opencode_executable", return_value=None):
