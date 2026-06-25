@@ -32,6 +32,7 @@ from workers.execution import (
     run_worker_subprocess,
 )
 from workers.base import (
+    PATCH_VALIDATION_FAILED_RETURN_CODE,
     PARTIAL_PATCH_FAILURE_RETURN_CODE,
     WorkerOutcome,
     WorkerRunResult,
@@ -110,6 +111,18 @@ class ClassifyWorkerOutcomeTests(unittest.TestCase):
             " M scripts/solver.py\n",
         )
         self.assertEqual(outcome.reason, "partial_patch_failure")
+        self.assertFalse(outcome.should_continue)
+        self.assertTrue(outcome.has_changes)
+
+    def test_patch_validation_failed_with_changes_stops(self):
+        outcome = classify_worker_outcome(
+            self._make_result(
+                PATCH_VALIDATION_FAILED_RETURN_CODE,
+                "VALIDATION-FAILED: Reject-Artifakte wurden erkannt",
+            ),
+            " M scripts/solve_issues.py\n",
+        )
+        self.assertEqual(outcome.reason, "patch_validation_failed")
         self.assertFalse(outcome.should_continue)
         self.assertTrue(outcome.has_changes)
 

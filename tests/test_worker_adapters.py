@@ -1019,6 +1019,17 @@ class TestConsistentOutcomeClassification(unittest.TestCase):
             True,
         )
 
+    def test_patch_validation_failed_with_changes_stops(self):
+        """Reject artifacts are a hard stop, even with file changes."""
+        from workers.base import PATCH_VALIDATION_FAILED_RETURN_CODE
+        self._assert_consistent(
+            PATCH_VALIDATION_FAILED_RETURN_CODE,
+            " M scripts/solve_issues.py\n",
+            "patch_validation_failed",
+            False,
+            True,
+        )
+
     def test_aider_side_effects_only_stops(self):
         """Nur Aider-Nebenwirkungen ohne Änderungen → stoppt."""
         self._assert_consistent(1, "?? .aider.chat.history.md\n",

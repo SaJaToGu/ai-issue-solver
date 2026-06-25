@@ -31,6 +31,7 @@ import time
 from typing import Any, Callable
 
 from workers.base import (
+    PATCH_VALIDATION_FAILED_RETURN_CODE,
     PARTIAL_PATCH_FAILURE_RETURN_CODE,
     WorkerOutcome,
     WorkerRunResult,
@@ -309,6 +310,8 @@ def classify_worker_outcome(
 
     if result.returncode == PARTIAL_PATCH_FAILURE_RETURN_CODE:
         return WorkerOutcome(False, has_changes, "partial_patch_failure")
+    if result.returncode == PATCH_VALIDATION_FAILED_RETURN_CODE:
+        return WorkerOutcome(False, has_changes, "patch_validation_failed")
     if result.returncode == 0 and has_changes:
         return WorkerOutcome(True, True, "changed")
     if result.returncode == 0:

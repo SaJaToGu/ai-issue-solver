@@ -27,7 +27,10 @@ from typing import Optional, Dict, Any, List
 import requests
 import json
 
-from workers.base import PARTIAL_PATCH_FAILURE_RETURN_CODE
+from workers.base import (
+    PATCH_VALIDATION_FAILED_RETURN_CODE,
+    PARTIAL_PATCH_FAILURE_RETURN_CODE,
+)
 
 
 # JSON-Schema für strukturierten Output (OpenRouter response_format).
@@ -804,7 +807,8 @@ class OpenRouterWorker:
                  oder API-Fehler.
             2  — Modell hat Prosa ohne auswertbare Diffs zurückgegeben.
             3  — Request-Timeout überschritten.
-            5  — Patch-Anwendung hat Reject-Artifakte (.orig/.rej) erzeugt.
+            5  — Patch-Anwendung hat Reject-Artifakte (.orig/.rej) erzeugt;
+                 der Lauf ist nicht lieferbar und muss als Fehler gelten.
             6  — Nur ein Teil der Patches wurde angewendet; der Lauf ist
                  nicht lieferbar und muss als Fehler gelten.
 
@@ -927,7 +931,7 @@ class OpenRouterWorker:
                 )
 
         if has_rejects:
-            returncode = 5
+            returncode = PATCH_VALIDATION_FAILED_RETURN_CODE
             log_lines.append(
                 f"[openrouter_direct] VALIDATION-FAILED: Reject-Artifakte wurden erkannt "
                 f"und bereinigt. Der gesamte Lauf gilt als fehlgeschlagen."
