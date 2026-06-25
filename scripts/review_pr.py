@@ -36,7 +36,7 @@ import argparse
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -115,6 +115,22 @@ class ReviewerVerdict:
     model: str
     pr_number: int
     pr_repo: str
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    """Full result of `run_review`: the parsed verdict plus the
+    parsed findings (with whitelist-filter applied).
+
+    `dropped_findings` are the entries whose cited symbol was not
+    in the diff — they were stripped before surfacing to the human.
+    `available_symbols` is the whitelist itself, useful for the
+    CLI to print "dropped N findings (symbols not in diff: ...)".
+    """
+    verdict: ReviewerVerdict
+    findings: list[Finding]
+    dropped_findings: list[Finding]
+    available_symbols: set[str] = field(default_factory=set)
 
 
 # ── Role resolution ────────────────────────────────────────────────
@@ -272,6 +288,178 @@ def call_openrouter(
     return content
 
 
+# ── Diff symbol extraction + finding parsing ──────────────────────
+
+
+# Patterns for symbols that appear in an added line of a unified diff.
+# The leading `+` (single, not `+++`) is intentional — `+++ b/path` is
+# the file-header line in a unified diff, not an added line.
+_ADDED_IMPORT_RE = re.compile(
+    r"^\+(?:from\s+([\w.]+)\s+)?import\s+([\w.]+(?:\s+as\s+\w+)?)"
+)
+_ADDED_DEF_RE = re.compile(r"^\+\s*def\s+(\w+)\s*\(")
+_ADDED_CLASS_RE = re.compile(r"^\+\s*class\s+(\w+)")
+_ADDED_ASSIGN_RE = re.compile(r"^\+\s*(\w+)\s*=\s*[^=]")
+
+
+@dataclass(frozen=True)
+class Finding:
+    """A single review finding (Improvement / Concern / Strength / Open Q).
+
+    `file_ref` is the `file:line` portion as it appeared in the
+    reviewer's output, or the literal `general` for entries that
+    don't reference a specific location. `symbol` is the function,
+    class, import, or variable name extracted from the reference —
+    it is `None` for `general` entries and for entries where no
+    Python symbol could be parsed out.
+    """
+
+    section: str  # 'Improvements' | 'Concerns' | 'Strengths' | 'Open questions'
+    file_ref: str
+    symbol: str | None
+    text: str
+
+
+def _extract_symbols_from_diff(diff: str) -> set[str]:
+    """Return the set of Python symbols added in a unified diff.
+
+    Only collects symbols from `+` lines (additions), not from `-`
+    or context lines. Covers:
+    - imports: `import X` / `from Y import Z` (keeps module and name)
+    - top-level `def name(` and `class name(` declarations
+    - top-level variable assignments (`NAME = ...`)
+
+    Symbols that appear in comments, strings, or docstrings are not
+    extracted — the patterns only fire on the first non-whitespace
+    token being a Python keyword.
+    """
+    symbols: set[str] = set()
+    for line in diff.splitlines():
+        if not line.startswith("+"):
+            continue
+        # Skip the file header lines (+++ b/path)
+        if line.startswith("+++"):
+            continue
+        m = _ADDED_IMPORT_RE.match(line)
+        if m:
+            # group(1) is the from-module, group(2) is the imported name
+            from_module = m.group(1)
+            imported = m.group(2).split(" as ")[0].split(".")[0]
+            symbols.add(imported)
+            if from_module:
+                symbols.add(from_module.rstrip("."))
+            continue
+        m = _ADDED_DEF_RE.match(line)
+        if m:
+            symbols.add(m.group(1))
+            continue
+        m = _ADDED_CLASS_RE.match(line)
+        if m:
+            symbols.add(m.group(1))
+            continue
+        m = _ADDED_ASSIGN_RE.match(line)
+        if m:
+            name = m.group(1)
+            # Only collect ALL_CAPS module-level constants — they are
+            # the module-level symbols that other modules import.
+            if name.isupper():
+                symbols.add(name)
+    return symbols
+
+
+# Pattern for a single finding bullet: ``- `file:line` — text`` or
+# ``- `general` — text`` or ``- text — text`` (no file_ref).
+_FINDING_BULLET_RE = re.compile(
+    r"^-\s+"
+    r"(?P<ref>`?(?P<file>[^`:]+?):?(?P<line>\d+)?`?|\"?(?P<file2>general)\"?)"  # noqa: E501
+    r"\s*[—\-]\s*"
+    r"(?P<text>.+?)$"
+)
+
+
+def _parse_findings(text: str) -> list[Finding]:
+    """Parse the four findings sections from a reviewer's output.
+
+    Returns findings in the order they appear in the text. Sections
+    with `(none observed)` produce no findings. Unknown section
+    names are tolerated (logged-as-empty).
+    """
+    section_re = re.compile(
+        r"^###\s+(Improvements|Concerns|Strengths|Open questions)\s*$",
+        re.MULTILINE,
+    )
+    findings: list[Finding] = []
+    sections = list(section_re.finditer(text))
+    for i, m in enumerate(sections):
+        section_name = m.group(1)
+        start = m.end()
+        end = sections[i + 1].start() if i + 1 < len(sections) else len(text)
+        body = text[start:end]
+        for line in body.splitlines():
+            line = line.strip()
+            if not line.startswith("- "):
+                continue
+            bm = _FINDING_BULLET_RE.match(line)
+            if not bm:
+                # Bullet without recognised file_ref — treat the
+                # whole thing as text and keep it (no symbol to
+                # filter on). This is the "general" path for
+                # observations that don't cite a location.
+                text_only = line[2:].strip()
+                if text_only.lower() == "(none observed)":
+                    continue
+                findings.append(Finding(
+                    section=section_name,
+                    file_ref="general",
+                    symbol=None,
+                    text=text_only,
+                ))
+                continue
+            file_ref = bm.group("ref").strip("`")
+            text_part = bm.group("text").strip()
+            # Extract the symbol name from `file:line` — the symbol
+            # is the basename without `.py`. For "general" or
+            # file references without a clean symbol, set symbol=None.
+            symbol = None
+            if ":" in file_ref and file_ref != "general":
+                path_part = file_ref.split(":")[0]
+                base = path_part.rsplit("/", 1)[-1]
+                if base.endswith(".py"):
+                    symbol = base[:-3]
+                else:
+                    symbol = base
+            findings.append(Finding(
+                section=section_name,
+                file_ref=file_ref,
+                symbol=symbol,
+                text=text_part,
+            ))
+    return findings
+
+
+def _filter_findings_by_symbols(
+    findings: list[Finding],
+    symbols: set[str],
+) -> tuple[list[Finding], list[Finding]]:
+    """Drop findings that cite symbols absent from the diff.
+
+    A finding is kept if:
+    - its `symbol` is `None` (general observation), or
+    - its `symbol` is in `symbols`.
+
+    Findings whose symbol is not in the set are dropped. Returns
+    `(kept, dropped)` lists — neither is mutated.
+    """
+    kept: list[Finding] = []
+    dropped: list[Finding] = []
+    for f in findings:
+        if f.symbol is None or f.symbol in symbols:
+            kept.append(f)
+        else:
+            dropped.append(f)
+    return kept, dropped
+
+
 # ── Verdict parsing ───────────────────────────────────────────────
 
 def parse_verdict(text: str) -> str | None:
@@ -334,15 +522,34 @@ def run_review(
     openrouter_call: Callable[..., str] = call_openrouter,
     diff_fetcher: Callable[..., str] = fetch_pull_request_diff,
     project_root: Path = PROJECT_ROOT,
-) -> ReviewerVerdict:
+) -> ReviewResult:
     """
-    End-to-end: resolve role, load prompt, fetch diff, call model, parse verdict.
+    End-to-end: resolve role, load prompt, fetch diff, extract the
+    symbol whitelist, augment the prompt with it, call the model,
+    parse the verdict, parse findings, and apply the post-filter
+    that drops findings whose cited symbol is not in the diff.
+
+    The symbol whitelist is sent to the model as part of the
+    system prompt context so the model can cite real symbols
+    directly. The post-filter is a safety net for the case where
+    the model still emits a name that is not in the diff.
 
     `openrouter_call` and `diff_fetcher` are injectable for tests.
     """
     role = resolve_role(role_arg, config)
-    system_prompt = load_prompt(role, project_root)
+    base_system_prompt = load_prompt(role, project_root)
     pr_diff = diff_fetcher(owner, repo, pr_number, token=github_token)
+    available_symbols = _extract_symbols_from_diff(pr_diff)
+
+    symbol_block = (
+        "\n\n## Available symbols in this diff\n\n"
+        "Cite only these symbols in your findings. Each was added "
+        "by the diff; any other name is either pre-existing code or "
+        "hallucinated.\n\n"
+        f"```\n{', '.join(sorted(available_symbols))}\n```"
+    ) if available_symbols else ""
+    system_prompt = base_system_prompt + symbol_block
+
     model = model_override or role["model"]
     user_prompt = (
         f"PR #{pr_number} in {owner}/{repo}\n\n"
@@ -354,13 +561,23 @@ def run_review(
         model=model,
         token=openrouter_token,
     )
-    return ReviewerVerdict(
+    verdict = ReviewerVerdict(
         raw_text=response_text,
         verdict=parse_verdict(response_text),
         role_name=role["_name"],
         model=model,
         pr_number=pr_number,
         pr_repo=f"{owner}/{repo}",
+    )
+    all_findings = _parse_findings(response_text)
+    findings, dropped = _filter_findings_by_symbols(
+        all_findings, available_symbols,
+    )
+    return ReviewResult(
+        verdict=verdict,
+        findings=findings,
+        dropped_findings=dropped,
+        available_symbols=available_symbols,
     )
 
 
@@ -424,21 +641,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: cannot load role_routing.yaml: {exc}", file=sys.stderr)
         return 1
 
-    # 2. Resolve role
+    # 2. Resolve role (for the dry-run branch's metadata print)
     try:
         role = resolve_role(args.role, config)
     except ReviewerRoleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    # 3. Load prompt
+    # 3. Load prompt (dry-run needs it for prompt_chars)
     try:
         system_prompt = load_prompt(role)
     except ReviewerRoleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    # 4. Fetch PR diff
+    # 4. Fetch PR diff (dry-run needs it for diff_chars)
     github_token = os.getenv("GITHUB_TOKEN")
     try:
         pr_diff = fetch_pull_request_diff(
@@ -454,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
     # 5. Either dry-run report or actual LLM call
     if args.dry_run:
         model = args.model_override or role["model"]
+        symbols = _extract_symbols_from_diff(pr_diff)
         print("=== DRY RUN ===")
         print(f"role:         {role['_name']}")
         print(f"model:        {model}")
@@ -465,6 +683,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"prompt_chars: {len(system_prompt)}")
         print(f"pr:           {args.owner}/{args.repo}#{args.pr}")
         print(f"diff_chars:   {len(pr_diff)}")
+        print(f"available_symbols: {len(symbols)}")
         return 0
 
     openrouter_token = os.getenv("OPENROUTER_API_KEY")
@@ -472,13 +691,18 @@ def main(argv: list[str] | None = None) -> int:
         print("error: OPENROUTER_API_KEY is not set", file=sys.stderr)
         return 1
 
+    # 6. Run end-to-end via run_review (handles diff fetch, prompt
+    #    augmentation, LLM call, verdict + findings parse, post-filter).
     try:
-        model = args.model_override or role["model"]
-        response_text = call_openrouter(
-            system_prompt=system_prompt,
-            user_prompt=f"PR #{args.pr} in {args.owner}/{args.repo}\n\n{pr_diff}\n",
-            model=model,
-            token=openrouter_token,
+        result = run_review(
+            pr_number=args.pr,
+            role_arg=args.role,
+            owner=args.owner,
+            repo=args.repo,
+            github_token=github_token,
+            openrouter_token=openrouter_token,
+            config=config,
+            model_override=args.model_override,
         )
     except requests.HTTPError as exc:
         print(f"error: OpenRouter call failed: {exc}", file=sys.stderr)
@@ -487,10 +711,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: OpenRouter call failed: {exc}", file=sys.stderr)
         return 1
 
-    # 6. Emit verdict
-    verdict = parse_verdict(response_text)
-    print(response_text)
-    if verdict is None:
+    # 7. Emit verdict + findings summary
+    print(result.verdict.raw_text)
+    if result.dropped_findings:
+        dropped_symbols = sorted({
+            f.symbol for f in result.dropped_findings if f.symbol
+        })
+        print(
+            f"\n[whitelist-filter] dropped {len(result.dropped_findings)} "
+            f"findings citing symbols not in diff: {dropped_symbols}",
+            file=sys.stderr,
+        )
+    if result.verdict.verdict is None:
         print(
             "\nwarning: no '**Verdict**: <value>' line found in output",
             file=sys.stderr,
