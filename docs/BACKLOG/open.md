@@ -364,36 +364,19 @@ follow-up item §58 below depends on this fix and remains open.
 
 ---
 
-## 58. PR-review 'static free_models regression' anti-pattern (2026-06-25)
+## 58. ~~PR-review 'static free_models regression' anti-pattern~~ **DONE in PR #443 (squash 11eafc1)**
 
-Labels: `kind/process`, `theme/review`, `priority/3`
+Resolved 2026-06-25. See `done.md` for the closure summary, including
+the user-found path-leak fix (live-review finding by Guido).
 
-Priority: `3`
+The `docs/AGENTS.md` "Recently Removed Patterns" list is now
+maintainer-pflegbar; future PRs that intentionally remove a pattern
+should add a row to that table in the same PR.
 
-The PR #441 episode revealed that the AIS solver can re-introduce
-patterns the project explicitly removed in a recent merged PR
-(`#439` removed the static `free_models` list; #441 added a near-
-identical one back in `scripts/solve_issues.py`). The review loop
-caught it, but only after the PR was already opened and pushed.
-
-This is a small follow-up to §57 and the worker-prompt layer:
-
-- document in the worker prompt (e.g. `prompts/solve_issue.md` or
-  the system prompt for `--model openrouter_direct`) that the
-  solver must check recent merged PRs in `git log develop` for
-  patterns the issue may be re-introducing, and explicitly avoid
-  them
-- add a "recently removed patterns" list to `AGENTS.md` or
-  `.agents/solver/recently-removed-patterns.md` so the solver can
-  cross-check before editing
-
-Touches: `prompts/solve_issue.md`, `AGENTS.md` (or a new file),
-`scripts/solve_issues.py` if a CLI flag for the pattern list is
-wanted
-
-Checks:
-- manual: re-run Issue #389 against the updated worker prompt;
-  the solver should not produce a static `free_models` list in
-  the diff
+The still-open follow-up item — patch-mismatch hardening for the
+normal solve path (potential §59) — is now even more relevant: with
+the §57 reporting fix + §58 prompt guard in place, a partial-fix PR
+that would also reintroduce a recently-removed pattern should be
+caught earlier.
 
 ---

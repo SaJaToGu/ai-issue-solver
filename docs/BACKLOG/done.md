@@ -806,3 +806,71 @@ Original labels: `kind/bug`, `theme/solver`, `area/cost-cap`,
 `priority/2`
 
 ---
+
+## Done — §58: PR-review 'static free_models regression' anti-pattern
+
+Closed 2026-06-25 via PR #443 (squash `11eafc1` on develop). 3 files,
++179/-5 (includes the user-found path-leak fix from live review).
+
+**Problem:** the AIS solver can re-introduce patterns the project
+explicitly removed in a recently merged PR. The PR #441 episode was
+the canonical example: PR #439 had just removed the static
+`free_models` list (incl. `opencode/minimax-m3-free`), and the solver
+for Issue #389 re-introduced a near-identical list. §57 (PR #442) stops
+the resulting partial-patch PR from being opened; §58 stops the
+regression at the **source** — the solver's prompt now sees the
+recently-removed pattern list and avoids it explicitly.
+
+**Fix:**
+
+- **`docs/AGENTS.md`**: new "Recently Removed Patterns (last 90 days)"
+  section with a maintainer-pflegbare Markdown-Tabelle. Initial
+  entries: PR #439 (static `free_models` list), PR #437 (hard
+  `$20/$20` cost-cap defaults).
+- **`scripts/solve_issues.py`**: new `build_solve_prompt(number, title,
+  body)` function that appends a "=== RECENTLY REMOVED PATTERNS ===
+  (DO NOT RE-INTRODUCE)" section to the normal solve prompt when the
+  pattern list is non-empty. Includes the `git log develop` cross-
+  check hint and the "explain in PR description if you think you
+  need to restore one" rule.
+- **`tests/test_solve_issues.py`**: 5 new tests (3 for the pattern-
+  file cases, 2 for the path-leak fix from live review).
+
+**Live-review finding (Guido):** the initial implementation included
+the local absolute path of `docs/AGENTS.md` in the worker prompt
+(leaking the operator's filesystem layout into the LLM context).
+Fixed in a follow-up commit on the same branch before merge —
+`build_solve_prompt` now displays the pattern-file path as
+repo-relative when it lives under `PROJECT_ROOT` (and preserves the
+absolute path verbatim when the operator explicitly sets
+`AIS_RECENTLY_REMOVED_PATTERNS_FILE` to an out-of-tree path).
+
+**Verification:**
+
+- `./.venv/bin/python -m unittest tests.test_solve_issues -v`: 168 OK
+  (was 163 before §58; +3 for pattern cases, +2 for path-leak fix)
+- `git diff --check develop..HEAD` (PR branch): clean
+- Manual probe of `build_solve_prompt(389, "Test", "Test body")`:
+  contains `RECENTLY REMOVED PATTERNS`, `opencode/minimax-m3-free`,
+  `PR #439`, `git log develop`, `DO NOT RE-INTRODUCE` markers; does
+  NOT contain `PROJECT_ROOT`, `/Users/`, or `tempfile.gettempdir()`.
+- GitHub CI: Python 3.10 + 3.12 both pass
+- User live review: "Keine neuen Findings. squash merge + delete branch."
+
+**Maintainer obligation going forward:** when a PR intentionally
+removes a pattern that future solver runs are likely to rediscover,
+add a row to the `Recently Removed Patterns` table in `docs/AGENTS.md`
+in the same PR (or a follow-up). Without this, the §58 guard loses
+its memory.
+
+**Out of scope (deferred / separate items):**
+
+- §59 (potential): patch-mismatch hardening for the normal solve
+  path. With §57 + §58 in place, the failure mode that triggered
+  PR #441 should now be caught earlier (no partial PR, no pattern
+  re-introduction), but the underlying patch-mismatch itself is
+  still possible. A separate item can be filed if/when desired.
+
+Original labels: `kind/process`, `theme/review`, `priority/3`
+
+---
