@@ -8,7 +8,18 @@ provided that must be addressed by making additional changes on the same branch.
 - **PR #{pr_number}** in `{owner}/{repo}`
 - **Base branch:** `{base_branch}`
 - **Head branch:** `{head_branch}` (the branch you will modify)
+- **Current head commit:** `{head_sha}`
 - **Reviewers:** {reviewer_usernames}
+
+## Current Branch State
+
+The PR branch already contains the following commits, newest first:
+
+{existing_commits_list}
+
+Your patch MUST be a minimal incremental diff that applies cleanly on top of
+commit `{head_sha}`. Do not rewrite files from scratch against older PR or base
+branch content. Reference files by their current post-`{head_sha}` content.
 
 ## PR Diff (current state vs base)
 
@@ -29,6 +40,7 @@ The following review comments must be addressed:
 3. Preserve the existing branch name — push follow-up commits to `{head_branch}`.
 4. If a reviewer comment is unclear, use your best judgment to resolve it.
 5. After applying changes, verify the code is syntactically correct.
+6. Return only an incremental patch for the current branch tip `{head_sha}`.
 
 ## Constraints
 

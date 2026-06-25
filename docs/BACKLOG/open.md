@@ -347,3 +347,86 @@ Checks:
   symbols) and confirm the filtered finding count = 0
 
 ---
+
+## 56. Fix the `--rework-pr` workflow in `solve_issues.py`
+
+Labels: `kind/bug`, `theme/solver`, `area/cost-cap`, `priority/2`
+
+Priority: `2`
+
+The `--rework-pr` workflow in `solve_issues.py` is broken for
+follow-up-edits. Measured across this session (2026-06-24/25):
+
+- **Run 1** (PR #425, `opencode/deepseek-v4-flash-free` via
+  `--model opencode`): OpenRouter 400 Bad Request. opencode-serve
+  1.14.28 rejects the slug in this code path (the same model
+  worked in the normal solve path for the same PR's first push).
+- **Run 2** (PR #425, `mistral/mistral-large-latest` via
+  `--model openrouter_direct`): same 400. Not the model — the
+  request shape.
+- **Run 3** (PR #425, `openai/gpt-4o-mini` via
+  `--model openrouter_direct`): no 400, model produced valid
+  patch JSON, but output truncated mid-JSON by the 4096-token
+  output cap. Worker reports `status: no_patches`.
+- **Run 4** (PR #425, `openai/gpt-4o` via
+  `--model openrouter_direct`): no 400, full patch JSON produced,
+  but the worker-patcher (likely `git apply`) rejected it 25x with
+  "Keine gueltigen Patches in der Eingabe". Most likely cause:
+  the model wrote a diff against the pre-PR-433 code, but the
+  worker-patcher applies against the current branch tip (which
+  already has PR #433's commits). Mismatch.
+- **Run 5** (PR #437, `openai/gpt-4o` via
+  `--model openrouter_direct`): same `patches_failed` /
+  `worker_exit_code: 3` pattern. Confirms the failure is not
+  PR-specific.
+
+`/tmp/compare_temperatures.py` (still on disk in this session)
+can reproduce the 400 / no_patches / patches_failed modes
+deterministically.
+
+**Most likely root cause for Run 4/5 (the patches_failed case):**
+the rework-pr prompt gives the model the PR diff as "what to fix"
+but does not anchor the model to "your diff must apply cleanly on
+top of the current branch tip". The model writes a
+rewrite-from-scratch diff and the patcher rejects it. Fix would
+need to change the rework prompt in `solve_issues.py` (out of
+scope for the §54 review_pr.py work).
+
+**Secondary root cause for Runs 1/2 (the OpenRouter 400):**
+unknown — both `deepseek-v4-flash-free` and `mistral-large-latest`
+are listed as valid OpenRouter slugs. Could be a request-shape
+mismatch in `_gh_api`-equivalent call inside `solve_issues.py`,
+or could be a transient OpenRouter API issue. Needs a 3-run
+reproduction in a controlled environment before any fix is
+designed.
+
+Suggested scope:
+- run a deterministic reproduction with the existing
+  `/tmp/compare_temperatures.py` against 3 different PRs to
+  characterise the failure surface
+- read the rework-pr prompt construction in `solve_issues.py`
+  and identify the anchoring gap (model doesn't know about the
+  current branch tip's existing commits)
+- design a fix that:
+  - explicitly passes the current branch tip SHA + the
+    already-existing commits on the PR branch to the model
+  - asks the model for an **incremental** diff against that
+    base, not a full rewrite
+  - verifies each produced patch with `git apply --check`
+    *before* the worker marks the run as successful
+- add unit tests in `tests/test_solve_issues.py` for the
+  rework-pr prompt shape (mock at the openrouter-call boundary)
+
+Touches: `scripts/solve_issues.py`, `tests/test_solve_issues.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_solve_issues -v`
+- `python -m unittest discover -s tests`
+- new unit test that exercises the rework-pr prompt shape with a
+  realistic PR-diff + current-branch-tip context
+- 3-run reproduction against 3 different real PRs from this repo:
+  all 3 should now succeed or fail with a clear, actionable error
+  (not the current opaque `patches_failed` 25x retry loop)
+
+---

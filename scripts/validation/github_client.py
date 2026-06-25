@@ -157,6 +157,18 @@ class ValidationGitHubClient:
             merge_commit_sha=(pr.get("merge_commit_sha") or None),
         )
 
+    def get_pull_request_commits(self, repo: str, number: int) -> list[dict[str, Any]]:
+        """Return commit metadata for a pull request, newest commit last."""
+        resp = self.session.get(
+            f"{self.BASE}/repos/{self.owner}/{repo}/pulls/{number}/commits",
+            params={"per_page": 100},
+        )
+        if resp.status_code == 404:
+            return []
+        self._raise_for_status(resp, f"get PR commits: {repo}#{number}")
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
     def get_ci_status(self, repo: str, ref: str) -> CiStatus:
         resp = self.session.get(
             f"{self.BASE}/repos/{self.owner}/{repo}/commits/{ref}/status",
