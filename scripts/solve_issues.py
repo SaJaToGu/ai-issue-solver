@@ -1953,6 +1953,7 @@ def run_openrouter_direct_worker(
         0  — Alle gefundenen Patches erfolgreich angewendet.
         1  — Patches gefunden, aber alle fehlgeschlagen oder API-Fehler.
         2  — Modell hat Prosa ohne auswertbare Diffs zurueckgegeben.
+        5  — Patch-Anwendung hat Reject-Artefakte erzeugt; harter Fehler.
         6  — Nur ein Teil der Patches wurde angewendet; harter Fehler.
 
     Args:
