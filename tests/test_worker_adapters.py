@@ -1008,6 +1008,17 @@ class TestConsistentOutcomeClassification(unittest.TestCase):
         self._assert_consistent(2, " M scripts/solver.py\n",
                                 "nonzero_with_changes", True, True)
 
+    def test_partial_patch_failure_with_changes_stops(self):
+        """Partial patch application is a hard stop, even with file changes."""
+        from workers.base import PARTIAL_PATCH_FAILURE_RETURN_CODE
+        self._assert_consistent(
+            PARTIAL_PATCH_FAILURE_RETURN_CODE,
+            " M scripts/solver.py\n",
+            "partial_patch_failure",
+            False,
+            True,
+        )
+
     def test_aider_side_effects_only_stops(self):
         """Nur Aider-Nebenwirkungen ohne Änderungen → stoppt."""
         self._assert_consistent(1, "?? .aider.chat.history.md\n",

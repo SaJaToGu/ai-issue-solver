@@ -15,6 +15,7 @@ Gemeinsame Ergebnis-Klassifizierung:
     no_changes              → Worker erfolgreich, keine Änderungen
     nonzero_with_changes    → Worker mit Fehlercode, aber Änderungen vorhanden
     nonzero_without_changes → Worker mit Fehlercode, keine Änderungen
+    partial_patch_failure   → Worker hat nur einen Teil der Patches angewendet
     rate_limit_deferred     → Codex Rate-Limit, kein sofortiger Retry
     failed_worker           → Worker nicht gefunden oder nicht startbar
 """
@@ -25,6 +26,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+
+# Return code for workers that applied only part of a generated patch set.
+# This must be treated as a hard failure even when the working tree changed.
+PARTIAL_PATCH_FAILURE_RETURN_CODE = 6
 
 
 # ─────────────────────────────────────────────────────────────

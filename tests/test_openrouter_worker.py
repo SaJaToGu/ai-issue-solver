@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import tempfile
 
+from workers.base import PARTIAL_PATCH_FAILURE_RETURN_CODE
 from workers.openrouter_worker import OpenRouterWorker, PatchResult, DirectRunResult
 
 
@@ -596,6 +597,37 @@ class TestRunDirect(unittest.TestCase):
         # Datei wurde tatsächlich geändert
         content = (Path(self.tmpdir) / "bar.py").read_text(encoding="utf-8")
         self.assertEqual(content, "y = 20\n")
+
+    @patch("requests.post")
+    def test_run_direct_partial_patch_application_is_failure(self, mock_post):
+        """1/2 angewendete Patches sind ein harter Fehler, kein Erfolg."""
+        good_diff = _make_valid_diff("bar.py", "y = 10", "y = 20")
+        bad_diff = _make_valid_diff("baz.py", "z = 10", "z = 20")
+        model_response = f"```diff\n{good_diff}```\n\n```diff\n{bad_diff}```"
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": model_response}}]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        with patch.object(
+            self.worker,
+            "apply_patches",
+            return_value=[
+                PatchResult(1, True, applied_file="bar.py"),
+                PatchResult(2, False, applied_file="baz.py", error="patch mismatch"),
+            ],
+        ):
+            result = self.worker.run_direct("fix bar.py and baz.py", self.tmpdir)
+
+        self.assertEqual(result.returncode, PARTIAL_PATCH_FAILURE_RETURN_CODE)
+        self.assertEqual(len(result.patch_results), 2)
+        self.assertTrue(result.patch_results[0].success)
+        self.assertFalse(result.patch_results[1].success)
+        self.assertIn("PARTIAL-PATCH-FAILURE", result.output)
+        self.assertIn("1/2 Patch(es) angewendet", result.output)
 
     @patch("requests.post")
     def test_run_direct_sends_patch_prompt_to_model(self, mock_post):

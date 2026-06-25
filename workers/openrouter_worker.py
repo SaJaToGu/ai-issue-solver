@@ -27,6 +27,8 @@ from typing import Optional, Dict, Any, List
 import requests
 import json
 
+from workers.base import PARTIAL_PATCH_FAILURE_RETURN_CODE
+
 
 # JSON-Schema für strukturierten Output (OpenRouter response_format).
 # Erzwingt eine JSON-Antwort mit einem Array von Patches, die jeweils
@@ -797,12 +799,14 @@ class OpenRouterWorker:
            Usage-Metriken zurück.
 
         Returncode-Semantik:
-            0  — Mindestens ein Patch erfolgreich angewendet.
+            0  — Alle Patches erfolgreich angewendet.
             1  — Patches gefunden, aber alle fehlgeschlagen (oder kein Patch erkannt)
                  oder API-Fehler.
             2  — Modell hat Prosa ohne auswertbare Diffs zurückgegeben.
             3  — Request-Timeout überschritten.
             5  — Patch-Anwendung hat Reject-Artifakte (.orig/.rej) erzeugt.
+            6  — Nur ein Teil der Patches wurde angewendet; der Lauf ist
+                 nicht lieferbar und muss als Fehler gelten.
 
         Args:
             prompt: Eingabe-Prompt für das Modell.
@@ -928,11 +932,24 @@ class OpenRouterWorker:
                 f"[openrouter_direct] VALIDATION-FAILED: Reject-Artifakte wurden erkannt "
                 f"und bereinigt. Der gesamte Lauf gilt als fehlgeschlagen."
             )
-        elif successful:
+        elif len(successful) == len(patch_results):
             returncode = 0
             log_lines.append(
                 f"[openrouter_direct] {len(successful)}/{len(patch_results)} Patch(es) angewendet."
             )
+        elif successful:
+            returncode = PARTIAL_PATCH_FAILURE_RETURN_CODE
+            log_lines.append(
+                f"[openrouter_direct] PARTIAL-PATCH-FAILURE: "
+                f"{len(successful)}/{len(patch_results)} Patch(es) angewendet, "
+                f"{len(failed)} fehlgeschlagen. Der gesamte Lauf gilt als fehlgeschlagen."
+            )
+            for fp in failed:
+                log_lines.append(
+                    f"[openrouter_direct]   - Failed Patch {fp.patch_index}"
+                    + (f" ({fp.applied_file})" if fp.applied_file else "")
+                    + (f": {fp.error}" if fp.error else "")
+                )
         else:
             returncode = 1
             log_lines.append(
