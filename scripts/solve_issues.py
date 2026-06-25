@@ -1863,9 +1863,10 @@ def run_openrouter_direct_worker(
     aus der Modellantwort und wendet sie im Repository-Verzeichnis an.
 
     Returncode-Semantik (aus DirectRunResult):
-        0  — Mindestens ein Patch erfolgreich angewendet.
+        0  — Alle gefundenen Patches erfolgreich angewendet.
         1  — Patches gefunden, aber alle fehlgeschlagen oder API-Fehler.
         2  — Modell hat Prosa ohne auswertbare Diffs zurueckgegeben.
+        6  — Nur ein Teil der Patches wurde angewendet; harter Fehler.
 
     Args:
         prompt: Eingabe-Prompt fuer das Modell (bereits sanitiert).

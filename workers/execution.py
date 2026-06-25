@@ -30,7 +30,11 @@ import threading
 import time
 from typing import Any, Callable
 
-from workers.base import WorkerRunResult, WorkerOutcome
+from workers.base import (
+    PARTIAL_PATCH_FAILURE_RETURN_CODE,
+    WorkerOutcome,
+    WorkerRunResult,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -303,6 +307,8 @@ def classify_worker_outcome(
     has_changes = bool(changed_paths)
     has_meaningful_changes = bool(meaningful_paths)
 
+    if result.returncode == PARTIAL_PATCH_FAILURE_RETURN_CODE:
+        return WorkerOutcome(False, has_changes, "partial_patch_failure")
     if result.returncode == 0 and has_changes:
         return WorkerOutcome(True, True, "changed")
     if result.returncode == 0:

@@ -31,7 +31,11 @@ from workers.execution import (
     classify_worker_outcome,
     run_worker_subprocess,
 )
-from workers.base import WorkerRunResult, WorkerOutcome
+from workers.base import (
+    PARTIAL_PATCH_FAILURE_RETURN_CODE,
+    WorkerOutcome,
+    WorkerRunResult,
+)
 
 
 class WorkerHealthConfigTests(unittest.TestCase):
@@ -95,6 +99,18 @@ class ClassifyWorkerOutcomeTests(unittest.TestCase):
         )
         self.assertEqual(outcome.reason, "nonzero_with_changes")
         self.assertTrue(outcome.should_continue)
+        self.assertTrue(outcome.has_changes)
+
+    def test_partial_patch_failure_with_changes_stops(self):
+        outcome = classify_worker_outcome(
+            self._make_result(
+                PARTIAL_PATCH_FAILURE_RETURN_CODE,
+                "PARTIAL-PATCH-FAILURE: 1/2 Patch(es) angewendet",
+            ),
+            " M scripts/solver.py\n",
+        )
+        self.assertEqual(outcome.reason, "partial_patch_failure")
+        self.assertFalse(outcome.should_continue)
         self.assertTrue(outcome.has_changes)
 
     def test_nonzero_without_changes_stops(self):
