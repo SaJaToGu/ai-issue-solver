@@ -874,3 +874,99 @@ its memory.
 Original labels: `kind/process`, `theme/review`, `priority/3`
 
 ---
+
+## Done — §60: Returncode 5 (Reject-Artefakte) must hard-stop
+
+Closed 2026-06-26 via PR #445 (squash `2549f0f` on develop). 6 files,
++39/-5.
+
+**Bug:** `workers/execution.py` `classify_worker_outcome` only
+hardened against `PARTIAL_PATCH_FAILURE_RETURN_CODE = 6` (PR #442 /
+§57). It did **not** generalize to "any nonzero worker-returncode
+that produces partial on-disk changes must be a hard stop".
+
+`returncode = 5` (reject artifacts in `OpenRouterWorker`, i.e.
+`.orig`/`.rej` files left in the working tree after a partial
+`git apply`) still fell through to the generic `nonzero_with_changes`
+branch with `failure_class: success`. The run then proceeded to
+commit + push + open a PR with whatever changes had been partially
+applied.
+
+**Repro (PR #444):** Issue #390 validation run, 2026-06-26, gpt-4o
+via `openrouter_direct`:
+
+- `worker_exit_code: 5` (Reject-Artefakte)
+- `run_outcome_worker_status: failed`
+- `run_outcome_has_changes: True`
+- `run_outcome_failure_class: success` (lie classification)
+- `run_outcome_delivery_status: pr_created`
+- PR #444 was a 5-LOC trivial dummy function
+  (`increment_documentation_run_counter` with `pass`)
+- `provider_scorecard_test_result: not_run` (timeout 300s on
+  partial state)
+
+Run report: `reports/runs/20260625-233528-360515-ai-issue-solver-issue-390/summary.txt`.
+Closed PR #444 + deleted branch `ai/fix-issue-390`.
+
+**Fix:**
+
+- **`workers/base.py`**: new shared constant
+  `PATCH_VALIDATION_FAILED_RETURN_CODE = 5`. Reason
+  `patch_validation_failed` documented in the outcome taxonomy.
+- **`workers/execution.py`** `classify_worker_outcome`: new branch
+  **between** `partial_patch_failure` and `changed` —
+  `returncode == PATCH_VALIDATION_FAILED_RETURN_CODE` →
+  `WorkerOutcome(False, has_changes, "patch_validation_failed")`.
+  Returns before the generic `nonzero_with_changes` branch.
+- **`workers/openrouter_worker.py`**: uses the shared constant
+  instead of the magic `5` literal. Doc-string for the
+  returncode semantics updated.
+- **`scripts/solve_issues.py`**: doc-string for
+  `run_openrouter_direct_worker` returncode semantics updated.
+
+**Scope discipline:** user explicitly forbade refactoring the
+generic `nonzero_with_changes` semantics for other workers — it
+may exist intentionally to let some workers proceed for further
+review despite nonzero exit. Only Returncode 5 is now an explicit
+hard-stop. Other returncodes (e.g. 3 for timeout) would need a
+separate item if the same problem recurs.
+
+**Verification:**
+
+- `./.venv/bin/python -m unittest tests.test_worker_execution -v`: 22 OK (was 21, +1)
+- `./.venv/bin/python -m unittest tests.test_worker_adapters -v`: 96 OK (was 95, +1)
+- `./.venv/bin/python -m unittest tests.test_openrouter_worker -v`: 53 OK
+- `./.venv/bin/python -m unittest tests.test_solve_issues -v`: 168 OK (no regression)
+- `git diff --check develop..HEAD`: clean
+- GitHub CI: Python 3.10 + 3.12 both pass
+- User live review: "Mein OK: squash merge + delete branch"
+
+**General principle (documented for future returncode classes):**
+
+> Any nonzero worker-returncode that produces partial on-disk
+> changes must be a hard stop. Commit + push + PR-create must not
+> run.
+
+§57 (returncode 6) and §60 (returncode 5) both implement this rule.
+If a future returncode (e.g. 3 for timeout) shows the same
+behavior, apply the same treatment: explicit hard-stop branch in
+`classify_worker_outcome` + shared constant in `workers/base.py` +
+doc-string updates.
+
+**Out of scope (deferred / separate items):**
+
+- Splitting `nonzero_with_changes` into specific classes
+  (`reject_artifacts`, `partial_state`, etc.). Would be a larger
+  refactor of the classification taxonomy. Worth doing eventually
+  if the run-report starts carrying too many partial-state
+  classes; not urgent.
+- General `WorkerOutcome` invariant test
+  ("`should_continue=True` implies `returncode == 0`"). Would
+  prevent this entire class of bug by construction. A good
+  follow-up; not urgent because the explicit per-class checks
+  (§57, §60) already cover the known cases.
+
+Original labels: `kind/bug`, `theme/solver`, `area/validation`,
+`priority/1`
+
+---
