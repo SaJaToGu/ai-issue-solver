@@ -243,6 +243,11 @@ def prepare_opencode_worker_environment(base_env: dict[str, str] | None = None) 
     return env
 
 
+def increment_documentation_run_counter():
+    # Dummy implementation for incrementing documentation run counter
+    # In a real implementation, this function would update a persistent counter
+    pass
+
 # ─────────────────────────────────────────────────────────────
 # Modell-Konfigurationen
 # ─────────────────────────────────────────────────────────────
