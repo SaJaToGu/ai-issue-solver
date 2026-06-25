@@ -169,6 +169,41 @@ class WatchdogCostCheckTests(unittest.TestCase):
         from watchdog import DEFAULT_COST_PER_DAY_USD
         self.assertEqual(DEFAULT_COST_PER_DAY_USD, 50.0)
 
+    def test_default_per_run_headroom_includes_normal_run(self):
+        """The $15 default per-run cap is meant to give the Solver
+        real headroom for a non-trivial refactor (e.g. the build_graph
+        rewrite hit ~$20 before being killed). Verify that a $12 run —
+        above the old $5 limit but well within the new $15 — is now
+        silent under the default threshold."""
+        self._write_run_with_cost("run-normal", 12.0)
+        runs = self._active_runs_from_tmp()
+        from watchdog import DEFAULT_COST_PER_RUN_USD
+        findings = check_cost(
+            runs, budget_tracker_path=self.budget_path,
+            per_run_limit=DEFAULT_COST_PER_RUN_USD,
+        )
+        self.assertEqual(
+            len(findings), 0,
+            f"$12 run should be silent under $15 default cap, "
+            f"got findings: {[f.message for f in findings]}",
+        )
+
+    def test_default_per_run_headroom_still_flags_runaway(self):
+        """Even with the higher $15 cap, a genuinely runaway $50
+        run should still trip a warning — we are not removing
+        the per-run guardrail, just widening the headroom."""
+        self._write_run_with_cost("run-runaway", 50.0)
+        runs = self._active_runs_from_tmp()
+        from watchdog import DEFAULT_COST_PER_RUN_USD
+        findings = check_cost(
+            runs, budget_tracker_path=self.budget_path,
+            per_run_limit=DEFAULT_COST_PER_RUN_USD,
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].severity, "warning")
+        self.assertIn("$50.00", findings[0].message)
+        self.assertIn("$15.00", findings[0].message)
+
 
 class WatchdogProgressCheckTests(unittest.TestCase):
     def setUp(self):

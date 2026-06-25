@@ -233,6 +233,16 @@ def check_cost(
                     severity = "info"
                 else:
                     continue
+                # Threshold = the dollar amount at which this severity
+                # tier fires. Critical uses 100% (the wall); warning uses
+                # the 90% tier; info uses the 70% tier.
+                if severity == "critical":
+                    threshold = budget * 1.0
+                elif severity == "warning":
+                    threshold = budget * warn_ratio
+                else:  # info
+                    threshold = budget * info_ratio
+
                 findings.append(CostFinding(
                     kind="budget_ratio",
                     severity=severity,
@@ -241,9 +251,7 @@ def check_cost(
                         f"${budget:.2f} budget ({ratio:.0%})"
                     ),
                     current=spent,
-                    threshold=budget * (1.0 if severity == "critical" else (
-                        warn_ratio if severity == "warning" else info_ratio
-                    )),
+                    threshold=threshold,
                 ))
             except (TypeError, ValueError):
                 pass
