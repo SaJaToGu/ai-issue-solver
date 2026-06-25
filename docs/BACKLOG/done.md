@@ -669,3 +669,72 @@ Original labels: (none — ad-hoc feature, not from a backlog §)
 
 ---
 
+## Done — §57: Worker must not report `success` on partial patch application
+
+Closed 2026-06-25 via PR #442 (squash `8d68b50` on develop). 7 files,
++94/-5.
+
+**Bug:** `workers/openrouter_worker.py` returned `returncode: 0`
+whenever at least one generated patch applied successfully, regardless
+of how many other patches failed. Run-report then recorded
+`status: pr_created` and `failure_class: success`, and the worker
+proceeded to commit + push + open a PR with a partial diff.
+
+**Repro that triggered the fix:** Issue #389 / PR #441 (closed
+2026-06-25, gpt-4o via `--model openrouter_direct`). 2 patches
+produced, 1 applied, 1 failed (`scripts/benchmark_issues.py:90`
+patch-mismatch — same Mode-C symptom as §56 Rework-pr). PR #441
+opened anyway. Reviewer (Guido) caught the regression against
+PR #439 only after push (the applied patch reintroduced a stale
+static `free_models` list).
+
+**Fix:**
+
+- `workers/base.py`: new `PARTIAL_PATCH_FAILURE_RETURN_CODE = 6`.
+- `workers/openrouter_worker.py`: `returncode` semantics reordered —
+  `0 = ALL patches applied`, `6 = partial`. Decision tree now
+  distinguishes `len(successful) == len(patch_results)` (full success),
+  `0 < len(successful) < len(patch_results)` (partial → 6 with
+  `PARTIAL-PATCH-FAILURE` log line + per-failed-patch detail), and
+  `len(successful) == 0` (all-failed → 1).
+- `workers/execution.py` `classify_worker_outcome`: `returncode == 6`
+  maps to `WorkerOutcome(should_continue=False, has_changes=True,
+  failure_class="partial_patch_failure")`. **Hard stop even when
+  files changed** — no commit, no push, no PR-create.
+- `scripts/solve_issues.py` docstring updated to match the new
+  returncode semantics.
+
+**Acceptance test (User-specified, now codified in tests):**
+
+- Simulated worker with `total_patches=2`, `applied=1`, `failed=1`
+- Returns `returncode: 6`, `failure_class: partial_patch_failure`.
+- `should_continue: False` even though `has_changes=True`.
+- No commit, no push, no PR-create.
+- Run-report records non-empty `failed_patches: [{file, error}]`.
+
+**Verification:**
+
+- `./.venv/bin/python -m unittest tests.test_openrouter_worker -v`: 53 OK
+- `./.venv/bin/python -m unittest tests.test_worker_execution -v`: 21 OK
+- `./.venv/bin/python -m unittest tests.test_worker_adapters -v`: 95 OK
+- `./.venv/bin/python -m unittest tests.test_solve_issues -v`: 163 OK
+- `git diff --check develop..HEAD` (PR branch): clean
+- GitHub CI: Python 3.10 + 3.12 both pass
+- User live review: "Keine Findings. PR #442 ist mergebereit."
+
+**Out of scope (deferred / separate items):**
+
+- §58 (priority/3): worker-prompt layer hardening against
+  re-introducing recently-removed patterns (e.g. the static
+  `free_models` list). Tracked separately in `open.md`.
+- Patch-mismatch hardening for the normal solve path (the
+  Mode-C fix §56 introduced only for `--rework-pr`). Suggested
+  in the original §57 body and still relevant — would prevent
+  the partial-patch failure mode from being triggered in the
+  first place. Could become §59 once §58 is closed.
+
+Original labels: `kind/bug`, `theme/solver`, `area/validation`,
+`priority/1`
+
+---
+

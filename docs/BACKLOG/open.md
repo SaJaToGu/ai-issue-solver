@@ -430,3 +430,44 @@ Checks:
   (not the current opaque `patches_failed` 25x retry loop)
 
 ---
+
+## 57. ~~Worker must not report `success` on partial patch application~~ **DONE in PR #442 (squash 8d68b50)**
+
+Resolved 2026-06-25. See `done.md` for the closure summary. The
+follow-up item §58 below depends on this fix and remains open.
+
+---
+
+## 58. PR-review 'static free_models regression' anti-pattern (2026-06-25)
+
+Labels: `kind/process`, `theme/review`, `priority/3`
+
+Priority: `3`
+
+The PR #441 episode revealed that the AIS solver can re-introduce
+patterns the project explicitly removed in a recent merged PR
+(`#439` removed the static `free_models` list; #441 added a near-
+identical one back in `scripts/solve_issues.py`). The review loop
+caught it, but only after the PR was already opened and pushed.
+
+This is a small follow-up to §57 and the worker-prompt layer:
+
+- document in the worker prompt (e.g. `prompts/solve_issue.md` or
+  the system prompt for `--model openrouter_direct`) that the
+  solver must check recent merged PRs in `git log develop` for
+  patterns the issue may be re-introducing, and explicitly avoid
+  them
+- add a "recently removed patterns" list to `AGENTS.md` or
+  `.agents/solver/recently-removed-patterns.md` so the solver can
+  cross-check before editing
+
+Touches: `prompts/solve_issue.md`, `AGENTS.md` (or a new file),
+`scripts/solve_issues.py` if a CLI flag for the pattern list is
+wanted
+
+Checks:
+- manual: re-run Issue #389 against the updated worker prompt;
+  the solver should not produce a static `free_models` list in
+  the diff
+
+---
