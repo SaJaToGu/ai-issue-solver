@@ -294,6 +294,12 @@ MODEL_CONFIGS = {
     },
     "opencode": {
         "display_name": "OpenCode CLI",
+        "free_models": [
+            "opencode/deepseek-v4-flash-free",
+            "opencode/mimo-v2.5-free",
+            "opencode/minimax-m3-free",
+            "opencode/nemotron-3-ultra-free",
+        ],
         "env_key": None,
         "env_var": None,
         "default_model_name": OPENCODE_DEFAULT_MODEL,
