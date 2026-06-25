@@ -259,6 +259,21 @@ class TestExtractIssueRefs(unittest.TestCase):
     def test_resolves_keyword(self):
         self.assertEqual(_extract_issue_refs("resolves #7"), [7])
 
+    def test_refs_keyword(self):
+        # "Refs #N" is the ai-issue-solver solver-PR pattern. Without
+        # this, ~55% of closes-edges in this repo are dropped.
+        self.assertEqual(_extract_issue_refs("Refs #425: build_graph.py"), [425])
+
+    def test_issue_keyword(self):
+        # "Issue #N" appears in older PR bodies (label / URL form).
+        self.assertEqual(_extract_issue_refs("Issue: #318 — see also issue #320"), [318, 320])
+
+    def test_see_keyword(self):
+        self.assertEqual(_extract_issue_refs("See #55 for context"), [55])
+
+    def test_implements_keyword(self):
+        self.assertEqual(_extract_issue_refs("Implements #100"), [100])
+
     def test_no_match(self):
         self.assertEqual(_extract_issue_refs("Just a regular PR body."), [])
 
@@ -266,6 +281,15 @@ class TestExtractIssueRefs(unittest.TestCase):
         self.assertEqual(
             _extract_issue_refs("Closes #1, fixes #2, part of #3"),
             [1, 2, 3],
+        )
+
+    def test_refs_with_other_refs(self):
+        # Mixed patterns in one body — the common ai-issue-solver case
+        # where a PR refs an issue and closes another. The output is
+        # sorted numerically, so order in the input does not matter.
+        self.assertEqual(
+            sorted(_extract_issue_refs("Refs #425: build_graph. Closes #1.")),
+            [1, 425],
         )
 
     def test_parent_line(self):
