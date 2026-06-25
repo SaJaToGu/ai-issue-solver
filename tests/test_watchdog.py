@@ -117,6 +117,58 @@ class WatchdogCostCheckTests(unittest.TestCase):
         )
         self.assertEqual(len(findings), 0)
 
+    def test_budget_ratio_info_at_70(self):
+        """At 70% spent (staggered info threshold) the operator
+        gets a heads-up before the wall — the failure mode that
+        bit Issue #425's Solver run."""
+        tracker = {"solver": {"spent": 14.0, "budget": 20.0}}
+        (self.runs_dir / "budget_tracker.json").write_text(
+            json.dumps(tracker), encoding="utf-8"
+        )
+        self._write_run_with_cost("run-001", 1.0)
+        runs = self._active_runs_from_tmp()
+        findings = check_cost(
+            runs, budget_tracker_path=self.budget_path,
+            budget_ratio=0.8, info_ratio=0.7, warn_ratio=0.9,
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].kind, "budget_ratio")
+        self.assertEqual(findings[0].severity, "info")
+        self.assertIn("70%", findings[0].message)
+
+    def test_budget_ratio_no_info_below_70(self):
+        """Below 70% the staggered ladder emits no finding at all."""
+        tracker = {"solver": {"spent": 13.0, "budget": 20.0}}
+        (self.runs_dir / "budget_tracker.json").write_text(
+            json.dumps(tracker), encoding="utf-8"
+        )
+        self._write_run_with_cost("run-001", 1.0)
+        runs = self._active_runs_from_tmp()
+        findings = check_cost(
+            runs, budget_tracker_path=self.budget_path,
+            budget_ratio=0.8, info_ratio=0.7, warn_ratio=0.9,
+        )
+        self.assertEqual(len(findings), 0)
+
+    def test_default_cost_per_run_uses_higher_headroom(self):
+        """The new DEFAULT_COST_PER_RUN_USD is $15 (was $5). Verify
+        a $10 run stays silent under default thresholds so that
+        ordinary Solver runs no longer trip a per-run warning."""
+        from watchdog import DEFAULT_COST_PER_RUN_USD
+        self.assertEqual(DEFAULT_COST_PER_RUN_USD, 15.0)
+        # $10 should be under the new $15 default
+        self._write_run_with_cost("run-001", 10.0)
+        runs = self._active_runs_from_tmp()
+        findings = check_cost(
+            runs, budget_tracker_path=self.budget_path,
+            per_run_limit=DEFAULT_COST_PER_RUN_USD,
+        )
+        self.assertEqual(len(findings), 0)
+
+    def test_default_cost_per_day_uses_higher_headroom(self):
+        from watchdog import DEFAULT_COST_PER_DAY_USD
+        self.assertEqual(DEFAULT_COST_PER_DAY_USD, 50.0)
+
 
 class WatchdogProgressCheckTests(unittest.TestCase):
     def setUp(self):
