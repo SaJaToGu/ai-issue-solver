@@ -1036,3 +1036,73 @@ safety-behavior section were either missing or incorrect.
 Original labels: `kind/docs`, `theme/workflow`, `priority/2`
 
 ---
+
+
+## Done — §62: Fix benchmark/open-PR workflow methodology
+
+Closed 2026-06-26 via PR #448 (squash `0d08679` on develop). 6 files,
++204/-4 across three commits on the PR branch (Codex's main fix
+`e145a54` + Mavis portability fix `da02e17` + the squash itself).
+
+**Bug:** `scripts/solve_issues.py:3866` called
+`client.get_open_pull_requests(repo)`, but that method did not
+exist on `GitHubClient` (the real name was `get_pull_requests`).
+Result: every run that hit the workflow-congestion check raised
+`AttributeError: GitHubClient object has no attribute
+'get_open_pull_requests'`. Even worse: in benchmark sweeps
+(`scripts/benchmark_free_models.py`), the open-PR guard
+correctly aborted subsequent runs after the first successful PR
+opened. The 31-model Free-Models-Benchmark-Sweep on 2026-06-26
+saw 24 of 31 runs aborted as `Issue #446 hat bereits offene
+PRs; ueberspringe (--retry zum Erzwingen)` without ever
+attempting the solve.
+
+**Fix:**
+
+- **`scripts/validation/github_client.py`**: added backwards-
+  compatible alias `get_open_pull_requests(repo, head=None)`
+  → `get_pull_requests(repo, state="open", head=None)`. New code
+  should call `get_pull_requests` directly.
+- **`scripts/solve_issues.py`**: added CLI flag `--benchmark`
+  (requires `--skip-pr` together; if `--benchmark` is set without
+  `--skip-pr`, the solver refuses to commit/push/PR-create with
+  a clear error message). The open-PR guard now respects
+  `--benchmark` (or `--skip-pr`) and only blocks when an
+  *open foreign* PR exists for the issue.
+- **`scripts/benchmark_free_models.py`**: every solver-call
+  inside the sweep now passes `--benchmark --skip-pr` so the
+  sweep can compare all N models on the same issue without
+  being aborted by the first PR.
+- **`scripts/benchmark_free_models.py`** (Mavis portability
+  fix `da02e17`): `REPO` was hardcoded to
+  `/Users/Guido/Documents/GitHub/ai-issue-solver`, which made
+  the test `test_run_one_uses_benchmark_skip_pr_flags` pass
+  locally but fail on CI (where that path does not exist). Fixed
+  with `REPO = Path(__file__).resolve().parent.parent`, the same
+  pattern as `SCRIPT_DIR` / `PROJECT_ROOT` in `solve_issues.py`.
+
+**Verification:**
+
+- `./.venv/bin/python -m unittest tests.test_benchmark_free_models`: 1 OK
+- `./.venv/bin/python -m unittest tests.test_solve_issues`: 173 OK (+5 from §62's own tests)
+- `./.venv/bin/python -m unittest tests.test_validation.test_github_client`: 25 OK (+1 from §62's `test_get_open_pull_requests_*`)
+- `git diff --check develop..HEAD`: clean
+- GitHub CI: Python 3.10 + 3.12 both pass (after the Mavis
+  portability fix; the first CI run failed on the hardcoded path)
+- User live review: "PR #448 nach grünem CI als merge-ready"
+  (after the path-leak fix was confirmed)
+
+**Scope discipline (per User directive):** this PR is **only**
+the methodology fix. Free-Model-Qualitätsbewertung (§64) and
+§59-Prompt-Hardening are explicitly NOT touched. The
+`--benchmark` flag is the enabler for §64's planned re-run of
+the benchmark sweep with valid data.
+
+**Unblocked:** §64 (Free-Models-Robustheit-Studie, priority/4,
+parked) can now be activated — the open-PR guard no longer
+corrupts the sweep data.
+
+Original labels: `kind/bug`, `theme/solver`, `area/methodology`,
+`priority/2`
+
+---

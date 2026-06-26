@@ -476,37 +476,25 @@ and §60 (returncode 5) implement.
 
 ---
 
-## 62. Fix benchmark/open-PR workflow methodology (2026-06-26)
+## 62. ~~Fix benchmark/open-PR workflow methodology~~ **DONE in PR #448 (squash 0d08679)**
 
-Labels: `kind/bug`, `theme/solver`, `area/methodology`, `priority/2`
+Resolved 2026-06-26. See `done.md` for the closure summary.
 
-Priority: `2` — active. This item corrupts the Free-Models-Benchmark-Sweep data (§64 depends on it).
+Three commits on the PR branch (squashed):
+- `e145a54` — Codex's main fix: `get_open_pull_requests` alias +
+  `--benchmark` CLI flag + benchmark-mode handling in
+  `scripts/benchmark_free_models.py` + tests.
+- `da02e17` — Mavis portability fix: derive `REPO` from `__file__`
+  instead of hardcoded `/Users/Guido/...` (CI was failing with
+  `FileNotFoundError` for the missing local path).
+- merge → `0d08679` on develop.
 
-Measured 2026-06-26 during the 31-model sweep on Issue #446:
+Scope discipline: §62 was kept strictly to the methodology fix.
+No Free-Model-Qualitätsbewertung (§64) and no §59-Prompt-Hardening
+was mixed into this PR.
 
-- Run 5 (liquid/lfm-2.5-1.2b-instruct:free) successfully opened PR #447.
-- Runs 6–30 (24 of 31) were silently aborted with `Issue #446 hat bereits offene PRs; ueberspringe (--retry zum Erzwingen)`. **24 of 31 runs were never actually attempted.**
-- Plus: `Workflow-Congestion-Check fehlgeschlagen: GitHubClient object has no attribute 'get_open_pull_requests'` — the check itself is broken.
-
-Suggested scope:
-
-- introduce a `--benchmark` (or `--allow-issue-with-open-prs`) CLI flag for `scripts/solve_issues.py` that bypasses the open-PR guard, but only when combined with `--skip-pr` (no PR from a benchmark run)
-- add `GitHubClient.get_pull_requests(repo, state="open")` method in `scripts/validation/github_client.py` and wire it through the workflow-congestion-check
-- distinguish "open PR is mine (this solver run)" from "open PR is somebody else's" — the guard should only block the latter
-- update `scripts/benchmark_free_models.py` (and any future benchmark script) to use the new flag
-- add unit tests:
-  - `test_get_pull_requests_returns_open_prs`
-  - `test_workflow_congestion_check_passes_when_no_foreign_open_prs`
-  - `test_benchmark_mode_bypasses_open_pr_guard_with_skip_pr`
-
-Touches: `scripts/solve_issues.py`, `scripts/validation/github_client.py`, `scripts/benchmark_free_models.py`, tests.
-
-Checks:
-
-- `git diff --check`
-- `python -m unittest tests.test_solve_issues -v`
-- `python -m unittest tests.test_validation.test_github_client -v`
-- 1-run reproduction with `--benchmark --skip-pr`: same issue used for two consecutive runs; both should attempt the solve.
+Next: §64 (Free-Models-Robustheit-Studie, priority/4) is now
+unblocked for proper data collection.
 
 ---
 
