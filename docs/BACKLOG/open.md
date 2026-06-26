@@ -640,7 +640,7 @@ Checks:
 
 ---
 
-## 66. Dynamic OpenRouter free-model discovery for benchmark sweeps (2026-06-26)
+## 66. ~~Dynamic OpenRouter free-model discovery for benchmark sweeps~~ **DONE in PR #449 (squash e38c1f4)**
 
 Labels: `kind/tooling`, `theme/openrouter`, `area/model-catalog`, `priority/2`
 

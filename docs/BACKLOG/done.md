@@ -1106,3 +1106,103 @@ Original labels: `kind/bug`, `theme/solver`, `area/methodology`,
 `priority/2`
 
 ---
+
+## Done — §66: Dynamic OpenRouter free-model discovery for benchmark sweeps
+
+Closed 2026-06-26 via PR #449 (squash `e38c1f4` on develop). 5 files,
++338/-51, single Codex commit `cbf8bd6` on
+`codex/openrouter-dynamic-discovery`.
+
+**Background:** OpenCode free-model discovery was already dynamic
+(PR #439, via `fetch_opencode_free_models()` in
+`scripts/model_catalog.py`), but OpenRouter free-model benchmark
+selection was still backed by a static list in
+`scripts/benchmark_free_models.py`. The 2026-06-26 smoke benchmark
+on Issue #390 surfaced the cost of that: `deepseek/deepseek-chat-v3.1:free`
+returned `404 Not Found` (provider slug drift) and we had no
+automated way to detect missing slugs before starting a sweep.
+
+**Fix:**
+
+- **`scripts/model_catalog.py`** (Codex `cbf8bd6`):
+  - New `fetch_openrouter_free_models(*, use_cache, ttl_seconds,
+    now_epoch, api_key) -> OpenrouterModelCache` (analog to
+    `fetch_opencode_free_models()`). Reuses
+    `verify_openrouter_slugs.fetch_openrouter_models` + the existing
+    dual-import `try scripts.X / except ModuleNotFoundError: X`
+    pattern from `load_default_catalog()`.
+  - Free-filter is **pricing-based** via `_is_free_openrouter_model()`:
+    `pricing.prompt == "0"` AND `pricing.completion == "0"`
+    (using `_price_is_zero` helper). The `:free` suffix is **not**
+    a fallback signal — only pricing-metadata counts.
+  - Cache: 1h TTL, `XDG_CACHE_HOME`-aware, file
+    `~/.cache/ai-issue-solver/openrouter_models.json`.
+    `OpenrouterModelCache` dataclass mirrors `OpencodeModelCache`
+    (`fetched_at`, `models`, `source`, `age_seconds()`).
+  - Static fallback tuple `OPENROUTER_FALLBACK_FREE_MODELS` is the
+    single source of truth (was previously duplicated as a list in
+    `benchmark_free_models.py`).
+  - On any API/network/import failure → return
+    `OpenrouterModelCache(source="fallback", models=OPENROUTER_FALLBACK_FREE_MODELS)`.
+- **`scripts/benchmark_free_models.py`**:
+  - Removed old `OPENROUTER_FREE_MODELS` and `OPENCODE_FREE_MODELS`
+    module-level lists (now in `model_catalog.py` as
+    `OPENROUTER_FALLBACK_FREE_MODELS` and the existing
+    `OPENCODE_FREE_MODELS` tuple).
+  - New helpers `explicit_model_specs(raw_models)` and
+    `default_model_specs() -> (models, source_label)`. Default path
+    now calls `fetch_openrouter_free_models()` +
+    `fetch_opencode_free_models()` and prepends
+    `openrouter_direct:` / `opencode:` accordingly. Source label
+    (`openrouter:live|cache|fallback/opencode:...`) is logged at
+    sweep start and persisted into the aggregate JSON as
+    `model_source`.
+  - `--models` flag unchanged in behaviour: explicit lists still
+    bypass dynamic discovery and are passed through verbatim.
+- **`README.md`**: new block "OpenRouter Free Models (dynamisch für
+  Benchmarks)" between the OpenCode-block and the App-State-Conflict
+  block. Documents the pricing-based filter and that explicit
+  `--models` is unaffected.
+- **`tests/test_model_catalog.py`**: 3 new tests in
+  `FetchOpenrouterFreeModelsTests`:
+  - `test_live_catalog_filters_via_pricing_metadata` — mixed
+    free/paid/fake-free model fixtures, asserts only true-free pass.
+  - `test_fallback_when_openrouter_api_unavailable` — mocked
+    `RuntimeError` from `fetch_openrouter_models` → `source="fallback"`.
+  - `test_cache_used_when_fresh` — fresh cache file → no API call,
+    `source="cache"`.
+- **`tests/test_benchmark_free_models.py`**: 2 new tests:
+  - `test_default_model_specs_uses_dynamic_discovery` — patches
+    both catalog functions, asserts the dynamic source label and
+    the composed `[(provider, model), ...]` list.
+  - `test_explicit_models_bypass_dynamic_discovery` —
+    `explicit_model_specs()` does not call `default_model_specs()`.
+
+**Verification:**
+
+- `./.venv/bin/python -m unittest tests.test_model_catalog.FetchOpenrouterFreeModelsTests
+  tests.test_benchmark_free_models.BenchmarkFreeModelsTests`: 6 OK
+- Live API call:
+  `fetch_openrouter_free_models()` returns
+  `source="live", count=26` (matches fallback list size after
+  pricing filter; cache TTL=3600s, file
+  `~/.cache/ai-issue-solver/openrouter_models.json`)
+- `git diff --check origin/develop...origin/codex/openrouter-dynamic-discovery`: clean
+- GitHub CI: Python 3.10 + 3.12 both pass
+- User live review: "Ja kannst du mergen, habe ich reviewed"
+  (after Mavis post-PR review verdict APPROVE).
+
+**Scope discipline (per User directive):** the PR is **only** the
+methodology fix. §59 (Mode-C watchlist), §63/§65 (OpenCode-App-State),
+and the strategic production default (`gpt-4o` via paid OpenRouter)
+are explicitly NOT touched.
+
+**Unblocked:** future Free-Model-Benchmark-Sweeps no longer
+silently waste runs on stale slugs; slugs missing from the live
+catalog are excluded from the default list unless the user
+explicitly passes `--models`.
+
+Original labels: `kind/tooling`, `theme/openrouter`,
+`area/model-catalog`, `priority/2`
+
+---
