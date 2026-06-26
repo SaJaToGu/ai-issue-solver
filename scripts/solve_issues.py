@@ -670,6 +670,41 @@ class GitHubClient:
             )
         return pull_requests
 
+    def get_pull_requests(self, repo: str, state: str = "all",
+                          head: str | None = None) -> list[dict]:
+        """List pull requests for workflow-congestion checks."""
+        params = {"state": state, "per_page": 100}
+        if head:
+            params["head"] = head
+        try:
+            resp = self.session.get(
+                f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
+                params=params,
+            )
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"PRs prüfen: {repo}")
+        if resp.status_code == 404:
+            return []
+        raise_for_github_response(resp, f"PRs prüfen: {repo}")
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
+    def get_open_pull_requests(self, repo: str, head: str | None = None) -> list[dict]:
+        """Backward-compatible alias for open pull-request listings."""
+        return self.get_pull_requests(repo, state="open", head=head)
+
+    def get_pull_request(self, repo: str, number: int) -> dict | None:
+        """Return detailed pull-request metadata for workflow congestion checks."""
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/pulls/{number}")
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"PR prüfen: {repo}#{number}")
+        if resp.status_code == 404:
+            return None
+        raise_for_github_response(resp, f"PR prüfen: {repo}#{number}")
+        data = resp.json()
+        return data if isinstance(data, dict) else None
+
     def resolve_base_branch(self, repo: str, requested_base: str | None = None) -> str | None:
         """Ermittelt den Zielbranch und nutzt ohne Vorgabe den GitHub-Default-Branch."""
         if requested_base:
@@ -3913,6 +3948,17 @@ def check_and_warn_on_congestion(
         return True
 
 
+def should_check_existing_open_pr(args: argparse.Namespace, issue_number: int) -> bool:
+    """Return whether the normal per-issue open-PR guard should run."""
+    return bool(
+        issue_number
+        and not args.retry
+        and not args.compare_models
+        and not args.rework
+        and not args.benchmark
+    )
+
+
 def print_solver_directories() -> None:
     """
     Dokumentiert die solver-lokalen Verzeichnisstrukturen und Umgebungsvariablen.
@@ -4043,6 +4089,14 @@ def main():
         "--skip-pr",
         action="store_true",
         help="Benchmark-Modus: Commit & Push ausführen aber keinen PR erstellen",
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help=(
+            "Benchmark-Modus: umgeht Open-PR-Guards für Sweeps. "
+            "Nur zusammen mit --skip-pr erlaubt."
+        ),
     )
     parser.add_argument(
         "--branch-suffix",
@@ -4186,6 +4240,9 @@ def main():
         help="Maximale Laufzeit in Sekunden fuer Validierung, Tests, Commit, Push und PR-Erstellung",
     )
     args = parser.parse_args()
+
+    if args.benchmark and not args.skip_pr:
+        parser.error("--benchmark erfordert --skip-pr, damit Benchmark-Runs keine PRs erstellen")
 
     if args.cleanup_preserved_worktrees:
         stale_paths = cleanup_preserved_worktrees(
@@ -4439,7 +4496,7 @@ def main():
                 repo_name,
                 issue_number=args.issue,
                 pr_threshold=args.pr_threshold,
-                skip_congestion_check=args.skip_congestion_check,
+                skip_congestion_check=args.skip_congestion_check or args.benchmark,
             )
             if not can_proceed and args.issue:
                 print_err(f"Workflow-Congestion blockiert Issue #{args.issue} in {repo_name}")
@@ -4477,8 +4534,8 @@ def main():
             issue_number = issue.get("number", 0)
 
             # Workflow-Congestion-Check: Issues mit offenen PRs ueberspringen
-            # (ausser --retry, --compare-models oder --rework ist gesetzt)
-            if not args.retry and not args.compare_models and not args.rework and issue_number:
+            # (ausser --retry, --compare-models, --rework oder --benchmark ist gesetzt)
+            if should_check_existing_open_pr(args, issue_number):
                 try:
                     open_prs_for_issue = client.get_pull_requests_for_branch(
                         repo_name,

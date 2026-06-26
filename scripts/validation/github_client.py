@@ -138,6 +138,10 @@ class ValidationGitHubClient:
             ))
         return prs
 
+    def get_open_pull_requests(self, repo: str, head: str | None = None) -> list[PullRequestInfo]:
+        """Backward-compatible alias for get_pull_requests(state="open")."""
+        return self.get_pull_requests(repo, state="open", head=head)
+
     def get_pull_request(self, repo: str, number: int) -> PullRequestInfo | None:
         resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/pulls/{number}")
         if resp.status_code == 404:
