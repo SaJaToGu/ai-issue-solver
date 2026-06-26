@@ -61,6 +61,18 @@ nicht mehr verfügbare Slugs als `missing` oder `stale`. Die Solver-Hilfen
 `--verify-opencode` und `--list-opencode-free-models` verwenden denselben
 Mechanismus.
 
+**Free-Models Status (Stand 2026-06-26):** Free-Models (sowohl über
+OpenRouter als auch über OpenCode) sind **experimentell und
+supervised-only**. Sie sind nützlich für Smoke-Tests, kosten­günstige
+Exploration und Low-Risk-Arbeit (Docs, einfache Textänderungen),
+aber **nicht als Default für strategische Issues, deren PR wir
+ernsthaft mergen wollen**. Für strategische Issues bleibt
+`--model openrouter_direct --model-name openai/gpt-4o` der
+Standard. Eine belastbare Statistik, welche Free-Models für welche
+Issue-Klassen taugen, sammelt die Free-Models-Robustheit-Studie
+(Backlog §64, parked — abhängig von §62). Bis dahin gilt: jedes
+Free-Model-PR braucht Guido-Live-Review, bevor es gemerged wird.
+
 **Recently-Removed-Patterns-Guard:** Damit der Solver nicht versehentlich
 ein Pattern re-introduziert, das in einem kürzlich gemergten PR explizit
 entfernt wurde, liest der Solve-Prompt die Maintainer-Tabelle in

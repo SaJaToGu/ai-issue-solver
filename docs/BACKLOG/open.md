@@ -472,3 +472,107 @@ problem): "Any nonzero worker-returncode that produces partial
 on-disk changes must be a hard stop. Commit + push + PR-create
 must not run." That is the underlying rule both §57 (returncode 6)
 and §60 (returncode 5) implement.
+
+
+---
+
+## 62. Fix benchmark/open-PR workflow methodology (2026-06-26)
+
+Labels: `kind/bug`, `theme/solver`, `area/methodology`, `priority/2`
+
+Priority: `2` — active. This item corrupts the Free-Models-Benchmark-Sweep data (§64 depends on it).
+
+Measured 2026-06-26 during the 31-model sweep on Issue #446:
+
+- Run 5 (liquid/lfm-2.5-1.2b-instruct:free) successfully opened PR #447.
+- Runs 6–30 (24 of 31) were silently aborted with `Issue #446 hat bereits offene PRs; ueberspringe (--retry zum Erzwingen)`. **24 of 31 runs were never actually attempted.**
+- Plus: `Workflow-Congestion-Check fehlgeschlagen: GitHubClient object has no attribute 'get_open_pull_requests'` — the check itself is broken.
+
+Suggested scope:
+
+- introduce a `--benchmark` (or `--allow-issue-with-open-prs`) CLI flag for `scripts/solve_issues.py` that bypasses the open-PR guard, but only when combined with `--skip-pr` (no PR from a benchmark run)
+- add `GitHubClient.get_pull_requests(repo, state="open")` method in `scripts/validation/github_client.py` and wire it through the workflow-congestion-check
+- distinguish "open PR is mine (this solver run)" from "open PR is somebody else's" — the guard should only block the latter
+- update `scripts/benchmark_free_models.py` (and any future benchmark script) to use the new flag
+- add unit tests:
+  - `test_get_pull_requests_returns_open_prs`
+  - `test_workflow_congestion_check_passes_when_no_foreign_open_prs`
+  - `test_benchmark_mode_bypasses_open_pr_guard_with_skip_pr`
+
+Touches: `scripts/solve_issues.py`, `scripts/validation/github_client.py`, `scripts/benchmark_free_models.py`, tests.
+
+Checks:
+
+- `git diff --check`
+- `python -m unittest tests.test_solve_issues -v`
+- `python -m unittest tests.test_validation.test_github_client -v`
+- 1-run reproduction with `--benchmark --skip-pr`: same issue used for two consecutive runs; both should attempt the solve.
+
+---
+
+## 63. OpenCode app-state conflict resolution (2026-06-26)
+
+Labels: `kind/bug`, `theme/opencode`, `area/runtime`, `priority/3`
+
+Priority: `3` — active, but not 0.9.0-blocking.
+
+Observed on Mavis's macOS environment (2026-06-26):
+
+- `~/.opencode/bin/opencode` (CLI): version `1.15.13`
+- `/Applications/MiniMax Code.app/Contents/Resources/resources/opencode/opencode` (app-bundled): version `1.14.28`
+- Killing the opencode-serve process triggers an app-launchd respawn that re-launches the OLD version, so the conflict is permanent until either the app bundle or the launchd config changes
+
+**Impact:** the 5 OpenCode Free-Models (`opencode/big-pickle`, `opencode/deepseek-v4-flash-free`, `opencode/mimo-v2.5-free`, `opencode/nemotron-3-ultra-free`, `opencode/north-mini-code-free`) are untestable on this machine. The OpenCode Free-Model production-readiness question cannot be answered empirically until the conflict is resolved.
+
+The current workaround (`--allow-opencode-state-conflict`) is a **diagnostic** tool, not a production-ready path.
+
+Suggested scope:
+
+- produce `scripts/opencode_state_diagnostic.py` that prints: which opencode binaries are on PATH and their versions; which opencode-serve process is running and which binary it uses; which app-bundle owns the launchd respawn
+- document a clean resolution in `docs/OPENCODE_APP_STATE.md`, covering at least:
+  - option A: update MiniMax Code.app bundle to match the user's CLI (preferred)
+  - option B: remove or rename the app-bundled binary
+  - option C: configure the opencode adapter to **always** use `~/.opencode/bin/opencode` (or `$OPENCODE_BIN`) regardless of what app-launchd does — the most defensive project-side option
+- the `--allow-opencode-state-conflict` flag should remain as a diagnostic tool but get a stronger warning in `--help` output
+
+Touches: `scripts/opencode_state_diagnostic.py` (new), the opencode pre-flight guard in `scripts/solve_issues.py`, `docs/OPENCODE_APP_STATE.md` (new).
+
+Checks:
+
+- `python scripts/opencode_state_diagnostic.py` prints a clear status report
+- `git diff --check`
+- 1-run reproduction with `--model opencode --model-name opencode/deepseek-v4-flash-free` after applying option C (always use configured `OPENCODE_BIN`): the worker should start successfully
+
+---
+
+## 64. Free-model robustness study (2026-06-26)
+
+Labels: `kind/study`, `theme/benchmark`, `area/free-models`, `priority/4`
+
+Priority: `4` — parked/experimental. Depends on §62 being merged first; otherwise data will be invalid again.
+
+**Goal:** turn "Free-Models-Produktivität ist ein Einzeldatenpunkt" into a "belastbare Statistik". For each Free-Model candidate: collect (model, issue-class, success-rate, patch-quality, token-cost) over multiple runs and multiple issues.
+
+Pre-conditions:
+
+- §62 merged (benchmark sweeps not aborted by the open-PR guard)
+- §63 merged (OpenCode Free-Models testable on developer machines)
+- 5–10 representative issues per Free-Model candidate (mix of docs-only / simple-text-change / small-feature-class)
+
+Scope when activated:
+
+- pick 5 representative OpenRouter Free-Models (e.g. `deepseek-v3.1:free`, `qwen3-coder:free`, `meta-llama/llama-3.3-70b-instruct:free`, `liquid/lfm-2.5-1.2b-instruct:free`, `nvidia/nemotron-3-super-120b-a12b:free`) and 5 OpenCode Free-Models
+- run each model against 5 representative issues with the new benchmark-mode flag from §62 enabled
+- collect per-run: success / clean-diff / patch-quality, exit code, token-cost, wall-clock, whether the patch applied cleanly
+- produce a recommendation table: "OK for docs-only" / "OK for simple text changes" / "needs review for features" / "do not use"
+- update README "Free-Models" section with the recommendation table and explicit `experimental / supervised / docs-only` labels. **No production-ready claim** until the data is in.
+
+Touches: `scripts/benchmark_free_models.py`, possibly new `scripts/benchmark_aggregate.py`, README "Free-Models" section.
+
+Checks:
+
+- re-run of `scripts/benchmark_free_models.py --issue 446 --models <list>` produces N independent PR attempts per model (each on its own `bench/{time}/{slug}` branch)
+- aggregation script produces the recommendation table
+- README "Free-Models" section gains the recommendation table with explicit `experimental / supervised / docs-only` labels
+
+---
