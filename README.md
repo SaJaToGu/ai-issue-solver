@@ -226,10 +226,6 @@ Die verbleibenden Backlog-Items befinden sich in [docs/BACKLOG/open.md](docs/BAC
 
 ---
 
-
-
----
-
 ## Verzeichnisstruktur
 
 ```
@@ -237,56 +233,68 @@ ai-issue-solver/
 ├── .github/
 │   ├── settings.yml             # Repo-Beschreibung und Topics als Referenz
 │   └── workflows/
-│       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
+│       ├── ci.yml               # GitHub-Actions-Smoke- und Testlauf
+│       └── benchmark.yml        # Periodischer Free-Model-Dokubenchmark
 ├── .agents/
-│   └── skills/
-│       ├── git-cleanup/         # Branch- und PR-Bereinigung nach Merge
-│       ├── model-selection/     # Codex-Skill für die automatische Modellauswahl
-│       ├── plan-issue-batches/  # Konfliktarme Issue-Wellen planen
-│       ├── recovery/            # Recovery bei abgebrochenen Solver-Runs
-│       ├── rework/              # Gezielte Nacharbeit an generierten PRs
-│       ├── run-overnight/       # Unbeaufsichtigter Batch-Betrieb
-│       ├── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
-│       └── solver-reporting/    # Codex-Skill für Run-Reports, Metriken & Provider-Scorecards
-├── README.md                    # Diese Datei
-├── requirements.txt             # Python-Dependencies
-├── requirements-aider.txt       # Optionale Aider-Dependencies
-├── .gitignore                   # Schützt .env und Secrets
+│   └── skills/                  # Codex-Skills (git-cleanup, model-selection, ...)
 ├── config/
-│   └── config.example.env       # Vorlage für deine .env
+│   ├── config.example.env       # Vorlage für deine .env
+│   ├── lifecycle_rules.yaml     # Issue-State-Machine
+│   └── role_routing.yaml        # Modellrollen pro Workflow
 ├── scripts/
+│   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
+│   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
+│   ├── run_overnight.py         # Unbeaufsichtigter Batch mit Preflight
 │   ├── analyze_repos.py         # Schritt 1: Repos analysieren
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
-│   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
+│   ├── model_catalog.py         # Shared model discovery (OpenCode + OpenRouter)
+│   ├── benchmark_free_models.py # Free-Model-Sweep-Runner
+│   ├── verify_openrouter_slugs.py # OpenRouter-Slug-Live-Verifikation
+│   ├── opencode_state_diagnostic.py # OpenCode App-State-Diagnose
+│   ├── model_selection.py       # Automatische Modellauswahl (Heuristik)
 │   ├── plan_issue_batches.py    # Konfliktarme Issue-Wellen planen
 │   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
-│   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
+│   ├── review_pr.py             # AIS-Code-Reviewer (architecture / code / docs)
+│   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
 │   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
-│   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
-│   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
-│   ├── run_overnight.py         # Unbeaufsichtigter Batch mit Preflight und Logs
-│   ├── model_selection.py       # Automatische Modellauswahl (Heuristik)
-│   └── utils.py                 # Gemeinsame Hilfsfunktionen
+│   └── ...                      # Weitere Hilfsskripte (build_graph, watchdog, ...)
+├── workers/                     # Worker-Adapter für die verschiedenen Solver-Backends
+│   ├── base.py                  # WorkerRunResult + WorkerOutcome-Shared-Contracts
+│   ├── opencode_adapter.py      # OpenCode-CLI-Worker
+│   ├── codex_adapter.py         # Codex-CLI-Worker
+│   ├── aider_adapter.py         # Aider-Worker
+│   ├── mistral_vibe_adapter.py  # Mistral-Vibe-Worker
+│   ├── openrouter_worker.py     # OpenRouter-API-Worker
+│   └── execution.py             # Worker-Outcome-Klassifikation (Hard-Stop-Logik)
+├── prompts/
+│   └── rework_pr.md             # Reviewer-Prompt für Rework-PR-Runs
 ├── templates/
 │   └── issue_body               # Issue-Text-Vorlage
-├── reports/                     # Generierte Analyse-Reports (gitignored)
-│   └── .gitkeep
+├── benchmarks/                  # Lokale Benchmark-Artefakte (R-Skripte, JSON-Reports)
+├── reports/                     # Generierte Analyse- und Run-Reports (gitignored)
 ├── docs/
-│   ├── BACKLOG.md               # Erster Projekt-Backlog
-│   ├── docs/BACKLOG/open.md          # Nächste Ausbaustufe
+│   ├── AGENTS.md                # Worker-Anweisungen + Recently Removed Patterns
+│   ├── BACKLOG/
+│   │   ├── open.md              # Aktive Backlog-Items
+│   │   └── done.md              # Abgeschlossene Items mit Repro
+│   ├── OPENCODE_APP_STATE.md    # OpenCode-App-State-Konflikt + Resolution
+│   ├── MODEL_OVERRIDE_POLICY.md # Regeln für Modell-Defaults und per-run Overrides
+│   ├── PRODUCT_VISION_1.0.md    # 1.0-Produktvision
+│   ├── ROADMAP.md               # Langfristige Richtung
 │   ├── WORKFLOW.md              # Detaillierter Workflow
 │   ├── SETUP_AIDER.md           # Aider-Einrichtung
-│   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
 │   ├── REPO_PROFILE_PROVIDER.md # GitHub-first Repo-Profil mit lokalem Fallback
-│   └── LANGUAGE_POLICY.md        # Sprachrichtlinie / Language Policy
+│   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
+│   └── LANGUAGE_POLICY.md       # Sprachrichtlinie / Language Policy
 └── tests/
-    ├── test_analyze_repos.py    # Analyzer-Tests
-    ├── test_github_summary.py   # GitHub-Übersichts-Tests
-    ├── test_post_merge_cleanup.py # Post-Merge-Cleanup-Tests
-    ├── test_status_dashboard.py # Dashboard-Tests
-    ├── test_solve_issues_batch.py # Batch-Runner-Tests
-    └── test_solve_issues.py     # Solver- und Worker-Tests
+    ├── test_solve_issues.py     # Solver- und Worker-Tests
+    ├── test_model_catalog.py    # Model-Discovery-Tests (OpenCode + OpenRouter)
+    ├── test_benchmark_free_models.py # Benchmark-Sweep-Tests
+    ├── test_opencode_state_diagnostic.py # OpenCode-Diagnostic-Tests
+    ├── test_rework_pr_cli.py    # Rework-PR-CLI-Tests
+    ├── test_validation/         # Subtests je Validator-Skript
+    └── ...                      # Weitere Test-Suites (siehe tests/)
 ```
 
 ---
