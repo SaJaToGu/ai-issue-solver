@@ -970,3 +970,69 @@ Original labels: `kind/bug`, `theme/solver`, `area/validation`,
 `priority/1`
 
 ---
+
+
+## Done — §61: Update README for current solver workflow
+
+Closed 2026-06-26 via PR #447 (squash `9b85570` on develop). 1 file
+(README.md), +30/-6 total across three commits on the PR branch
+(initial AI-generated fix from liquid/lfm-2.5-1.2b-instruct:free,
+then a manual extension by Mavis to add the dynamic-discovery and
+recently-removed-patterns sections, then a small correction removing
+an inaccurate claim about the reviewer's use of `model_catalog.py`).
+
+**Problem:** the README had drifted behind the actual solver
+workflow after several pipeline safeguards landed (PR #439 dynamic
+OpenCode free-model discovery, PR #437 cost-cap update, §56 rework-
+pr fix, §57 partial-patch-failure fix, §58 anti-pattern-doc fix,
+§60 reject-artifact fix). The README's free-model references and
+safety-behavior section were either missing or incorrect.
+
+**Fix (three commits on the PR branch):**
+
+1. Initial AI-generated fix (commit `57352f2`): adds a Hard-Stop
+   paragraph to the README noting that partial-patch and reject-
+   artifact runs do not create PRs. Updates the Backlog-Status
+   block at the bottom of the README to reflect the current
+   pipeline state.
+2. Mavis extension (commit `83e414a`): adds two new README blocks
+   covering the OpenCode-free-model dynamic discovery
+   (`scripts/model_catalog.py`) and the recently-removed-patterns
+   guard (`docs/AGENTS.md`) with the two current entries
+   (PR #439 static `free_models`, PR #437 hard `$20/$20` cost-cap).
+3. Correction (commit `3ad749a`): removes an overstated claim in
+   the dynamic-discovery block that "the Reviewer-Prompt" uses the
+   model_catalog mechanism. `scripts/review_pr.py` does not consult
+   `model_catalog.py` (it loads reviewer prompt files and does
+   role-routing only), so the claim was incorrect. Live review
+   by Guido caught this on the second pass.
+
+**Verification:**
+
+- `./.venv/bin/python -m unittest tests.test_validation.test_rework tests.test_validation.test_github_client`: 39 OK
+- `./.venv/bin/python -m unittest tests.test_reviewer_runtime`: 65 OK
+- `./.venv/bin/python -m unittest tests.test_solve_issues`: 168 OK (no regression; full discover was skipped per the well-known slow-path caveat that also affected PR #440 / PR #442 / PR #445)
+- `git diff --check develop..HEAD`: clean
+- GitHub CI: Python 3.10 + 3.12 both pass
+- User live review: "mergebereit" (after the §61 entry was extended
+  and the review-claim was corrected)
+
+**Out of scope (deferred / separate items):**
+
+- Full Free-Models benchmark sweep (31 free models via OpenRouter +
+  OpenCode, sequenced through Issue #446). The §61 PR is the
+  README update only; the benchmark was run separately as a
+  diagnostic exercise and lives in
+  `reports/benchmarks/free-models-2026-06-26.json` /
+  `.log`. Result: 1 / 31 actually completed (liquid/lfm-2.5-1.2b-instruct:free
+  — the only solver that produced a PR before solve_issues.py's
+  "Issue hat bereits offene PRs"-guard kicked in for the rest of
+  the sweep). 5 OpenCode Free models fail with the opencode-cli/serve
+  version conflict (MiniMax Code.app bundles OpenCode 1.14.28;
+  `~/.opencode/bin/opencode` is 1.15.13). A corrected methodology
+  (PR-close-before-each-run or `--retry`) is tracked as a future
+  exercise; not a §61 deliverable.
+
+Original labels: `kind/docs`, `theme/workflow`, `priority/2`
+
+---

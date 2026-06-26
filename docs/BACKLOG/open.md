@@ -443,52 +443,17 @@ more data points move this item from watchlist to active backlog.
 
 ---
 
-## 61. Update README for current solver workflow
+## 61. ~~Update README for current solver workflow~~ **DONE in PR #447 (squash 9b85570)**
 
-Labels: `kind/docs`, `theme/workflow`, `priority/2`
+Resolved 2026-06-26. See `done.md` for the closure summary.
 
-Priority: `2`
-
-GitHub issue: [#446](https://github.com/SaJaToGu/ai-issue-solver/issues/446)
-
-`README.md` should be updated so it reflects the current
-ai-issue-solver workflow and recent pipeline safeguards.
-
-Recent behavior that the README should not contradict:
-
-- OpenCode free models are discovered dynamically instead of relying
-  on stale static lists.
-- Partial patch application and reject-artifact patch failures hard-stop
-  instead of creating PRs.
-- The solve prompt includes a recently-removed-patterns guard from
-  `docs/AGENTS.md`.
-- §56, §57, §58, and §60 are done; §59 remains a parked watchlist item,
-  not an active implementation task.
-
-Suggested scope:
-
-- review `README.md` for outdated setup, model-selection, and workflow
-  descriptions
-- update any references to OpenCode/free models to match live discovery
-  via `scripts/model_catalog.py`
-- mention the current safety behavior at a high level: failed/partial
-  patch runs do not create PRs
-- keep the update concise and user-facing; do not turn the README into
-  a changelog
-
-Acceptance criteria:
-
-- `README.md` accurately describes the current solver workflow
-- no stale static OpenCode free-model list is introduced
-- the README remains concise and readable
-- documentation-only change; no runtime code changes expected
-
-Touches: `README.md`
-
-Checks:
-
-- `git diff --check`
-- documentation review by a human maintainer
+The §61 task covered three README areas that were missing or
+outdated before the fix: dynamic OpenCode free-model discovery
+(`scripts/model_catalog.py`), the recently-removed-patterns guard
+(`docs/AGENTS.md`), and the new safety behavior for partial / reject
+patch failures (§57 / §60). The final PR also includes a small
+correction to an overstated claim about the reviewer's use of the
+model_catalog mechanism.
 
 ---
 
