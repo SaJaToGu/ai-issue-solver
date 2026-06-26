@@ -58,8 +58,8 @@ wird nicht mehr statisch im Code gepflegt. Stattdessen lädt
 klassifiziert Kandidaten anhand von `-free`-Suffix und expliziten
 Allow-Listen wie `opencode/big-pickle`, und meldet veraltete bzw.
 nicht mehr verfügbare Slugs als `missing` oder `stale`. Die Solver-Hilfen
-`--verify-opencode`, `--list-opencode-free-models` und das Reviewer-Prompt
-verwenden denselben Mechanismus.
+`--verify-opencode` und `--list-opencode-free-models` verwenden denselben
+Mechanismus.
 
 **Recently-Removed-Patterns-Guard:** Damit der Solver nicht versehentlich
 ein Pattern re-introduziert, das in einem kürzlich gemergten PR explizit
