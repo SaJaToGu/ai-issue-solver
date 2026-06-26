@@ -1,5 +1,6 @@
 import subprocess
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import benchmark_free_models
@@ -28,6 +29,46 @@ class BenchmarkFreeModelsTests(unittest.TestCase):
         self.assertIn("--issue", cmd)
         # issue_number 390 must appear in the cmd list
         self.assertIn("390", cmd)
+
+    def test_default_model_specs_uses_dynamic_discovery(self):
+        with patch(
+            "scripts.model_catalog.fetch_openrouter_free_models",
+            return_value=SimpleNamespace(
+                models=("qwen/qwen3-coder:free",),
+                source="live",
+            ),
+        ), patch(
+            "scripts.model_catalog.fetch_opencode_free_models",
+            return_value=SimpleNamespace(
+                models=("opencode/deepseek-v4-flash-free",),
+                source="cache",
+            ),
+        ):
+            models, source = benchmark_free_models.default_model_specs()
+
+        self.assertEqual(
+            models,
+            [
+                ("openrouter_direct", "qwen/qwen3-coder:free"),
+                ("opencode", "opencode/deepseek-v4-flash-free"),
+            ],
+        )
+        self.assertEqual(source, "openrouter:live/opencode:cache")
+
+    def test_explicit_models_bypass_dynamic_discovery(self):
+        with patch("scripts.benchmark_free_models.default_model_specs") as default_mock:
+            models = benchmark_free_models.explicit_model_specs(
+                "openrouter_direct:missing/model:free,opencode:opencode/foo-free"
+            )
+
+        default_mock.assert_not_called()
+        self.assertEqual(
+            models,
+            [
+                ("openrouter_direct", "missing/model:free"),
+                ("opencode", "opencode/foo-free"),
+            ],
+        )
 
 
 if __name__ == "__main__":

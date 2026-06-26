@@ -348,5 +348,80 @@ class FetchOpencodeFreeModelsTests(unittest.TestCase):
         )
 
 
+class FetchOpenrouterFreeModelsTests(unittest.TestCase):
+    """Unit tests for live OpenRouter free-model discovery."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self._orig_cache_path = model_catalog._openrouter_cache_path
+        cache_file = Path(self.tmpdir.name) / "openrouter_models.json"
+        model_catalog._openrouter_cache_path = lambda: cache_file
+        self.addCleanup(
+            setattr, model_catalog, "_openrouter_cache_path", self._orig_cache_path,
+        )
+
+    def test_live_catalog_filters_via_pricing_metadata(self):
+        fake_models = [
+            {
+                "id": "openai/gpt-4o",
+                "pricing": {"prompt": "0.00003", "completion": "0.00006"},
+            },
+            {
+                "id": "deepseek/deepseek-chat-v3.1:free",
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "qwen/qwen3-coder:free",
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "looks/free-but-paid:free",
+                "pricing": {"prompt": "0.00001", "completion": "0"},
+            },
+        ]
+
+        with patch("scripts.verify_openrouter_slugs.fetch_openrouter_models", return_value=fake_models):
+            result = model_catalog.fetch_openrouter_free_models(use_cache=False)
+
+        self.assertEqual(result.source, "live")
+        self.assertEqual(
+            result.models,
+            (
+                "deepseek/deepseek-chat-v3.1:free",
+                "qwen/qwen3-coder:free",
+            ),
+        )
+
+    def test_fallback_when_openrouter_api_unavailable(self):
+        with patch(
+            "scripts.verify_openrouter_slugs.fetch_openrouter_models",
+            side_effect=RuntimeError("network down"),
+        ):
+            result = model_catalog.fetch_openrouter_free_models(use_cache=False)
+
+        self.assertEqual(result.source, "fallback")
+        self.assertIn(
+            "liquid/lfm-2.5-1.2b-instruct:free",
+            result.models,
+        )
+
+    def test_cache_used_when_fresh(self):
+        cache_file = model_catalog._openrouter_cache_path()
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps({
+            "fetched_at": model_catalog.datetime.now(model_catalog.timezone.utc)
+                          .isoformat().replace("+00:00", "Z"),
+            "models": ["cached/free:free"],
+        }), encoding="utf-8")
+
+        with patch("scripts.verify_openrouter_slugs.fetch_openrouter_models") as fetch_mock:
+            result = model_catalog.fetch_openrouter_free_models(use_cache=True)
+
+        fetch_mock.assert_not_called()
+        self.assertEqual(result.source, "cache")
+        self.assertEqual(result.models, ("cached/free:free",))
+
+
 if __name__ == "__main__":
     unittest.main()
