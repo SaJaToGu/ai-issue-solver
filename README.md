@@ -47,6 +47,32 @@ ist als wiederverwendbarer Codex-Skill unter
 verfügbar und kann vom Solver über `--auto-model` oder von eigenen
 Tools über `helpers/recommend_model.sh` aufgerufen werden.
 
+**Sicherheit:** Um Fehler zu vermeiden, führen partielle Patch-Anwendungen
+oder Fehler bei Reject-Artefakten zu einem sofortigen Abbruch (Hard-Stop)
+und erstellen keine Pull Requests.
+
+**OpenCode Free Models (dynamisch):** Die Liste der freien OpenCode-Modelle
+wird nicht mehr statisch im Code gepflegt. Stattdessen lädt
+[`scripts/model_catalog.py`](scripts/model_catalog.py) den Live-Stand von
+`~/.opencode/bin/opencode models` (mit Cache und statischem Fallback),
+klassifiziert Kandidaten anhand von `-free`-Suffix und expliziten
+Allow-Listen wie `opencode/big-pickle`, und meldet veraltete bzw.
+nicht mehr verfügbare Slugs als `missing` oder `stale`. Die Solver-Hilfen
+`--verify-opencode` und `--list-opencode-free-models` verwenden denselben
+Mechanismus.
+
+**Recently-Removed-Patterns-Guard:** Damit der Solver nicht versehentlich
+ein Pattern re-introduziert, das in einem kürzlich gemergten PR explizit
+entfernt wurde, liest der Solve-Prompt die Maintainer-Tabelle in
+[`docs/AGENTS.md`](docs/AGENTS.md) (Abschnitt „Recently Removed Patterns").
+Aktuelle Einträge sind z.B. die statische `free_models`-Liste (entfernt
+in PR #439, ersetzt durch dynamische Discovery) und der Hart-Cost-Cap
+`$20/$20` (ersetzt durch `$15/$50` plus abgestufte Budget-Ratio-Warnungen
+in PR #437). Der Guard ist **soft**: er weist den Solver an, das Pattern
+im PR-Body zu erklären, falls er es für notwendig hält, statt es
+stillschweigend wieder einzubauen. Maintainer pflegen die Tabelle in
+jedem PR, der absichtlich ein Pattern entfernt.
+
 **Run-Reports auswerten:** Die von Schritt 3 erzeugten Run-Reports,
 Provider-Scorecards und OpenCode-Diagnosen werden durch
 [`.agents/skills/solver-reporting/`](.agents/skills/solver-reporting/SKILL.md)
@@ -165,12 +191,12 @@ Die erste Workflow-Runde ist abgeschlossen: Analyse, Backlog-Issues,
 KI-Bearbeitung, PR-Erstellung, CI und Tests laufen. Als nächstes soll der
 Morpheus-Style Workflow komfortabler werden:
 
-- mehrere Issues parallel mit begrenzter Worker-Zahl lösen
-- laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen
+- mehrere Issues parallel mit begrenzter Worker-Zahl lösen (teilweise implementiert)
+- laufende Jobs, PRs und Fehler in einer lokalen Übersicht anzeigen (Dashboard)
 - offene PRs und Issues nach einem Lauf automatisch zusammenfassen
-- gemergte AI-PRs nach dem Review sicher bereinigen
+- gemergte AI-PRs nach dem Review sicher bereinigen (post_merge_cleanup.py)
 
-Der geplante Backlog dafür liegt in [docs/BACKLOG/open.md](docs/BACKLOG/open.md).
+Die verbleibenden Backlog-Items befinden sich in [docs/BACKLOG/open.md](docs/BACKLOG/open.md).
 
 ---
 
