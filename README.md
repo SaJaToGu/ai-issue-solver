@@ -61,6 +61,13 @@ nicht mehr verfügbare Slugs als `missing` oder `stale`. Die Solver-Hilfen
 `--verify-opencode` und `--list-opencode-free-models` verwenden denselben
 Mechanismus.
 
+**OpenRouter Free Models (dynamisch für Benchmarks):** Free-Model-Sweeps
+nutzen ebenfalls [`scripts/model_catalog.py`](scripts/model_catalog.py).
+Der Benchmark lädt den Live-OpenRouter-Katalog, filtert Free-Modelle über
+Pricing-Metadata (`prompt == 0` und `completion == 0`) und nutzt die
+historische Liste nur noch als Fallback, wenn der Katalog nicht erreichbar ist.
+Explizite `--models`-Angaben bleiben davon unberührt.
+
 **OpenCode App-State-Conflict:** Wenn sowohl `~/.opencode/bin/opencode`
 als auch eine App-Bundled `opencode`-Binary (z.B. aus MiniMax Code.app)
 auf der Maschine liegen, kann der Solver-Worker wegen Versions-

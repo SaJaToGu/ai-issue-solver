@@ -37,8 +37,43 @@ OPENCODE_FREE_MODELS: tuple[str, ...] = (
 # enough to pick up new free models in a single Solver-run batch, slow
 # enough to avoid hitting the opencode CLI on every Solver invocation.
 OPENCODE_MODELS_CACHE_TTL_SECONDS = 3600
+OPENROUTER_MODELS_CACHE_TTL_SECONDS = 3600
 OPENCODE_MODELS_CACHE_DIRNAME = "ai-issue-solver"
 OPENCODE_MODELS_CACHE_FILENAME = "opencode_models.json"
+OPENROUTER_MODELS_CACHE_FILENAME = "openrouter_models.json"
+
+
+# Static fallback list, used only when the live OpenRouter catalog
+# call is unavailable. Live discovery via `fetch_openrouter_free_models()`
+# is the source of truth for benchmark sweeps.
+OPENROUTER_FALLBACK_FREE_MODELS: tuple[str, ...] = (
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+    "cohere/north-mini-code:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "google/gemma-4-31b-it:free",
+    "liquid/lfm-2.5-1.2b-instruct:free",
+    "liquid/lfm-2.5-1.2b-thinking:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3.5-content-safety:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    "openai/gpt-oss-120b:free",
+    "openai/gpt-oss-20b:free",
+    "openrouter/free",
+    "openrouter/owl-alpha",
+    "poolside/laguna-m.1:free",
+    "poolside/laguna-xs.2:free",
+    "qwen/qwen3-coder:free",
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+    "google/lyria-3-clip-preview",
+    "google/lyria-3-pro-preview",
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +98,23 @@ class OpencodeModelCache:
         return (now_epoch or time.time()) - fetched_epoch
 
 
+@dataclass(frozen=True)
+class OpenrouterModelCache:
+    """On-disk cache for the live OpenRouter free-model listing."""
+    fetched_at: str
+    models: tuple[str, ...]
+    source: str = "live"  # "live" | "cache" | "fallback"
+
+    def age_seconds(self, now_epoch: float | None = None) -> float:
+        try:
+            fetched_epoch = datetime.fromisoformat(
+                self.fetched_at.replace("Z", "+00:00")
+            ).timestamp()
+        except (TypeError, ValueError):
+            return float("inf")
+        return (now_epoch or time.time()) - fetched_epoch
+
+
 def _opencode_cache_path() -> Path:
     """Resolve the cache path for `opencode models` output.
 
@@ -73,6 +125,13 @@ def _opencode_cache_path() -> Path:
     cache_dir = base / OPENCODE_MODELS_CACHE_DIRNAME
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / OPENCODE_MODELS_CACHE_FILENAME
+
+
+def _openrouter_cache_path() -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    cache_dir = base / OPENCODE_MODELS_CACHE_DIRNAME
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / OPENROUTER_MODELS_CACHE_FILENAME
 
 
 def _read_cache() -> OpencodeModelCache | None:
@@ -101,6 +160,34 @@ def _write_cache(models: Iterable[str]) -> None:
         )
     except OSError:
         # Cache write failures are non-fatal — fall back to memory-only.
+        pass
+
+
+def _read_openrouter_cache() -> OpenrouterModelCache | None:
+    p = _openrouter_cache_path()
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return OpenrouterModelCache(
+            fetched_at=str(data.get("fetched_at", "")),
+            models=tuple(data.get("models", [])),
+            source="cache",
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_openrouter_cache(models: Iterable[str]) -> None:
+    payload = {
+        "fetched_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "models": list(models),
+    }
+    try:
+        _openrouter_cache_path().write_text(
+            json.dumps(payload, indent=2), encoding="utf-8"
+        )
+    except OSError:
         pass
 
 
@@ -209,6 +296,82 @@ def fetch_opencode_free_models(
     free = tuple(m for m in raw if _is_free_opencode_model(m))
     _write_cache(free)
     return OpencodeModelCache(
+        fetched_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        models=free,
+        source="live",
+    )
+
+
+def _price_is_zero(value: Any) -> bool:
+    try:
+        return float(str(value)) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_free_openrouter_model(model: dict[str, Any]) -> bool:
+    """Return True when OpenRouter pricing metadata marks a model free."""
+    pricing = model.get("pricing")
+    if not isinstance(pricing, dict):
+        return False
+    return _price_is_zero(pricing.get("prompt")) and _price_is_zero(
+        pricing.get("completion")
+    )
+
+
+def fetch_openrouter_free_models(
+    *,
+    use_cache: bool = True,
+    ttl_seconds: int = OPENROUTER_MODELS_CACHE_TTL_SECONDS,
+    now_epoch: float | None = None,
+    api_key: str | None = None,
+) -> OpenrouterModelCache:
+    """Return the current free OpenRouter model set.
+
+    Strategy:
+    1. If `use_cache` and a fresh cache exists, return it.
+    2. Otherwise, fetch the live OpenRouter catalog, keep models whose
+       pricing metadata has prompt/completion both at zero, write cache.
+    3. On API/network/import failure, fall back to the static fallback
+       tuple with `source="fallback"`.
+    """
+    if use_cache:
+        cached = _read_openrouter_cache()
+        if cached is not None and cached.age_seconds(now_epoch) < ttl_seconds:
+            return OpenrouterModelCache(
+                fetched_at=cached.fetched_at,
+                models=cached.models,
+                source="cache",
+            )
+
+    if api_key is None:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+
+    try:
+        try:
+            from scripts.verify_openrouter_slugs import fetch_openrouter_models
+        except ModuleNotFoundError:
+            from verify_openrouter_slugs import fetch_openrouter_models
+
+        raw = fetch_openrouter_models(api_key=api_key)
+    except Exception:
+        return OpenrouterModelCache(
+            fetched_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            models=OPENROUTER_FALLBACK_FREE_MODELS,
+            source="fallback",
+        )
+
+    free = tuple(
+        model["id"]
+        for model in raw
+        if (
+            isinstance(model, dict)
+            and isinstance(model.get("id"), str)
+            and _is_free_openrouter_model(model)
+        )
+    )
+    _write_openrouter_cache(free)
+    return OpenrouterModelCache(
         fetched_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         models=free,
         source="live",
@@ -499,7 +662,10 @@ def load_default_catalog(
     config = load_role_config()
     live_models: set[str] | None = None
     if verify_openrouter:
-        from verify_openrouter_slugs import extract_slugs, fetch_openrouter_models
+        try:
+            from scripts.verify_openrouter_slugs import extract_slugs, fetch_openrouter_models
+        except ModuleNotFoundError:
+            from verify_openrouter_slugs import extract_slugs, fetch_openrouter_models
 
         live_models = extract_slugs(
             fetch_openrouter_models(api_key=os.getenv("OPENROUTER_API_KEY"))

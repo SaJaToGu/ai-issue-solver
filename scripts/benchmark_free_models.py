@@ -25,43 +25,6 @@ RUN_TIMEOUT_SECONDS = 180  # per-model wall-clock cap
 
 # File paths are computed in main() once we know the issue_number + run_label
 
-OPENROUTER_FREE_MODELS: list[tuple[str, str]] = [
-    ("openrouter_direct", "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"),
-    ("openrouter_direct", "cohere/north-mini-code:free"),
-    ("openrouter_direct", "google/gemma-4-26b-a4b-it:free"),
-    ("openrouter_direct", "google/gemma-4-31b-it:free"),
-    ("openrouter_direct", "liquid/lfm-2.5-1.2b-instruct:free"),
-    ("openrouter_direct", "liquid/lfm-2.5-1.2b-thinking:free"),
-    ("openrouter_direct", "meta-llama/llama-3.2-3b-instruct:free"),
-    ("openrouter_direct", "meta-llama/llama-3.3-70b-instruct:free"),
-    ("openrouter_direct", "nousresearch/hermes-3-llama-3.1-405b:free"),
-    ("openrouter_direct", "nvidia/nemotron-3-nano-30b-a3b:free"),
-    ("openrouter_direct", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
-    ("openrouter_direct", "nvidia/nemotron-3-super-120b-a12b:free"),
-    ("openrouter_direct", "nvidia/nemotron-3-ultra-550b-a55b:free"),
-    ("openrouter_direct", "nvidia/nemotron-3.5-content-safety:free"),
-    ("openrouter_direct", "nvidia/nemotron-nano-12b-v2-vl:free"),
-    ("openrouter_direct", "nvidia/nemotron-nano-9b-v2:free"),
-    ("openrouter_direct", "openai/gpt-oss-120b:free"),
-    ("openrouter_direct", "openai/gpt-oss-20b:free"),
-    ("openrouter_direct", "openrouter/free"),
-    ("openrouter_direct", "openrouter/owl-alpha"),
-    ("openrouter_direct", "poolside/laguna-m.1:free"),
-    ("openrouter_direct", "poolside/laguna-xs.2:free"),
-    ("openrouter_direct", "qwen/qwen3-coder:free"),
-    ("openrouter_direct", "qwen/qwen3-next-80b-a3b-instruct:free"),
-    ("openrouter_direct", "google/lyria-3-clip-preview"),
-    ("openrouter_direct", "google/lyria-3-pro-preview"),
-]
-
-OPENCODE_FREE_MODELS: list[tuple[str, str]] = [
-    ("opencode", "opencode/big-pickle"),
-    ("opencode", "opencode/deepseek-v4-flash-free"),
-    ("opencode", "opencode/mimo-v2.5-free"),
-    ("opencode", "opencode/nemotron-3-ultra-free"),
-    ("opencode", "opencode/north-mini-code-free"),
-]
-
 
 def log(message: str) -> None:
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -154,6 +117,45 @@ def classify(model_arg: str, model_name: str, rc: int, log_text: str) -> str:
     return "success_no_pr"
 
 
+def explicit_model_specs(raw_models: str) -> list[tuple[str, str]]:
+    all_models = []
+    for spec in raw_models.split(","):
+        spec = spec.strip()
+        if not spec:
+            continue
+        if ":" in spec:
+            # provider:model — but model names can also contain ':'
+            # (e.g. "deepseek/deepseek-chat-v3.1:free"). Split only on FIRST ':'.
+            provider, model_name = spec.split(":", 1)
+            all_models.append((provider, model_name))
+        else:
+            # bare model name → assume openrouter_direct
+            all_models.append(("openrouter_direct", spec))
+    return all_models
+
+
+def default_model_specs() -> tuple[list[tuple[str, str]], str]:
+    try:
+        from scripts.model_catalog import (
+            fetch_opencode_free_models,
+            fetch_openrouter_free_models,
+        )
+    except ModuleNotFoundError:
+        from model_catalog import (
+            fetch_opencode_free_models,
+            fetch_openrouter_free_models,
+        )
+
+    openrouter = fetch_openrouter_free_models()
+    opencode = fetch_opencode_free_models()
+    models = (
+        [("openrouter_direct", model) for model in openrouter.models]
+        + [("opencode", model) for model in opencode.models]
+    )
+    source = f"openrouter:{openrouter.source}/opencode:{opencode.source}"
+    return models, source
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(
@@ -193,23 +195,17 @@ def main(argv: list[str] | None = None) -> int:
     LOG_FILE = log_file
 
     if args.models:
-        all_models = []
-        for spec in args.models.split(","):
-            spec = spec.strip()
-            if ":" in spec:
-                # provider:model — but model names can also contain ':'
-                # (e.g. "deepseek/deepseek-chat-v3.1:free"). Split only on FIRST ':'.
-                provider, model_name = spec.split(":", 1)
-                all_models.append((provider, model_name))
-            else:
-                # bare model name → assume openrouter_direct
-                all_models.append(("openrouter_direct", spec))
+        all_models = explicit_model_specs(args.models)
+        model_source = "explicit"
     else:
-        all_models = OPENROUTER_FREE_MODELS + OPENCODE_FREE_MODELS
+        all_models, model_source = default_model_specs()
 
     runs: list[dict] = []
     total = len(all_models)
-    log(f"=== Free-Models-Benchmark START (issue #{args.issue}, {total} models) ===")
+    log(
+        "=== Free-Models-Benchmark START "
+        f"(issue #{args.issue}, {total} models, source={model_source}) ==="
+    )
 
     for idx, (model_arg, model_name) in enumerate(all_models, start=1):
         result = run_one(args.issue, model_arg, model_name, idx, total)
@@ -221,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                     "started_at": runs[0]["started_at"] if runs else None,
                     "finished_at": None,
                     "issue_number": args.issue,
+                    "model_source": model_source,
                     "total_models": total,
                     "completed_runs": len(runs),
                     "runs": runs,
@@ -236,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         "finished_at": finished_at,
         "issue_number": args.issue,
         "run_label": args.run_label,
+        "model_source": model_source,
         "total_models": total,
         "completed_runs": len(runs),
         "classification_counts": {},
