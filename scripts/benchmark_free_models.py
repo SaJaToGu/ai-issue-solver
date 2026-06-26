@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO = Path("/Users/Guido/Documents/GitHub/ai-issue-solver")
+REPO = Path(__file__).resolve().parent.parent
 ISSUE_NUMBER = 446
 AGGREGATE_FILE = REPO / "reports" / "benchmarks" / "free-models-2026-06-26.json"
 LOG_FILE = REPO / "reports" / "benchmarks" / "free-models-2026-06-26.log"
