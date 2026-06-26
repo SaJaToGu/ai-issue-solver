@@ -535,8 +535,6 @@ Checks:
 - §63's full-resolution remains parked until §65 confirms the
   conflict is real on multiple developer machines
 
-## 65. OpenCode app-state diagnostic script (2026-06-26)
-
 ---
 
 ## 64. ~~Free-model robustness study~~ **CLOSED with smoke-benchmark evidence (2026-06-26)**
@@ -639,5 +637,78 @@ Checks:
   status report (path + version + launchd owner + env-var)
 - `git diff --check`
 - README cross-reference is in place
+
+---
+
+## 66. Dynamic OpenRouter free-model discovery for benchmark sweeps (2026-06-26)
+
+Labels: `kind/tooling`, `theme/openrouter`, `area/model-catalog`, `priority/2`
+
+Priority: `2` — active methodology fix, not a production-default change.
+
+OpenCode free-model discovery is now dynamic via
+`scripts/model_catalog.py`, but OpenRouter free-model benchmark
+selection is still backed by a static list in
+`scripts/benchmark_free_models.py`. The 2026-06-26 smoke benchmark
+proved why that is not enough: `deepseek/deepseek-chat-v3.1:free`
+returned `404 Not Found`, which is classic provider slug drift.
+
+Goal: make OpenRouter free-model benchmark inputs come from the live
+OpenRouter catalog, with cache + fallback semantics similar to the
+OpenCode path. Static lists may remain as fallback, but must not be
+treated as source of truth for real benchmark sweeps.
+
+Scope:
+
+- Add OpenRouter free-model discovery to the shared model catalog layer
+  or a small helper reused by `scripts/model_catalog.py` and
+  `scripts/benchmark_free_models.py`.
+- Reuse existing live OpenRouter catalog plumbing from
+  `scripts/verify_openrouter_slugs.py` where practical instead of
+  creating a second API client.
+- Filter only live catalog entries that are actually free according to
+  provider metadata; `:free` suffix alone is a useful hint but should
+  not override the live catalog.
+- Add cache + fallback behavior:
+  - fresh live catalog → use live free-model list
+  - API/network unavailable → use clearly-labelled fallback list
+  - live catalog says a fallback slug is missing → do not benchmark it
+    unless explicitly requested via `--models`
+- Make `scripts/benchmark_free_models.py` default to the dynamic
+  OpenRouter free-model list plus the existing OpenCode free-model
+  list.
+- Preserve explicit `--models` behavior exactly; user-specified models
+  are allowed even if they are not in the live free-model list.
+
+Acceptance criteria:
+
+- `python scripts/benchmark_free_models.py --issue 390 --models ...`
+  keeps working for explicit model lists.
+- A default benchmark run no longer includes OpenRouter slugs that the
+  live catalog reports as missing.
+- Unit tests cover:
+  - live OpenRouter catalog with free + paid + missing/stale examples
+  - fallback behavior when the OpenRouter API is unavailable
+  - benchmark default model selection uses dynamic OpenRouter discovery
+  - explicit `--models` bypasses dynamic filtering
+- README/Free-Models status is updated only if wording is needed to
+  explain dynamic OpenRouter discovery.
+
+Out of scope:
+
+- Free-model quality evaluation / large 5×5 robustness study (§64 is
+  closed with smoke evidence).
+- §59 patch-mismatch hardening.
+- Changing the strategic production default away from paid
+  OpenRouter / `gpt-4o`.
+- OpenCode App-State resolution (§63 / §65).
+
+Stop criteria:
+
+- If the OpenRouter catalog does not expose enough pricing/free-tier
+  metadata to distinguish free models reliably, stop and document the
+  limitation instead of guessing from names only.
+- If the fix grows beyond roughly 250 LOC, split into a Handover for
+  Codex before implementation.
 
 ---
