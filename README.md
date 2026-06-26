@@ -61,6 +61,13 @@ nicht mehr verfügbare Slugs als `missing` oder `stale`. Die Solver-Hilfen
 `--verify-opencode` und `--list-opencode-free-models` verwenden denselben
 Mechanismus.
 
+**OpenCode App-State-Conflict:** Wenn sowohl `~/.opencode/bin/opencode`
+als auch eine App-Bundled `opencode`-Binary (z.B. aus MiniMax Code.app)
+auf der Maschine liegen, kann der Solver-Worker wegen Versions-
+Konflikt nicht starten. Diagnose: `python scripts/opencode_state_diagnostic.py`.
+Erklärung + drei Resolution-Optionen (App-Update / Bundle umbenennen /
+Projekt-seitig `$OPENCODE_BIN`): siehe [`docs/OPENCODE_APP_STATE.md`](docs/OPENCODE_APP_STATE.md).
+
 **Free-Models Status (Stand 2026-06-26):** Free-Models (sowohl über
 OpenRouter als auch über OpenCode) sind **experimentell und
 supervised-only**. Sie sind nützlich für Smoke-Tests, kosten­günstige
@@ -70,7 +77,7 @@ ernsthaft mergen wollen**. Für strategische Issues bleibt
 `--model openrouter_direct --model-name openai/gpt-4o` der
 Standard. Eine belastbare Statistik, welche Free-Models für welche
 Issue-Klassen taugen, sammelt die Free-Models-Robustheit-Studie
-(Backlog §64, parked — abhängig von §62). Bis dahin gilt: jedes
+(Backlog §64, abgeschlossen mit Smoke-Beleg 2026-06-26). Bis dahin gilt: jedes
 Free-Model-PR braucht Guido-Live-Review, bevor es gemerged wird.
 
 **Recently-Removed-Patterns-Guard:** Damit der Solver nicht versehentlich

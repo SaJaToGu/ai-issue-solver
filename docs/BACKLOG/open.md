@@ -498,11 +498,12 @@ unblocked for proper data collection.
 
 ---
 
-## 63. OpenCode app-state conflict resolution (2026-06-26)
+## 63. OpenCode app-state conflict resolution (2026-06-26) — parked, diagnostic scope moved to §65
 
 Labels: `kind/bug`, `theme/opencode`, `area/runtime`, `priority/3`
 
-Priority: `3` — active, but not 0.9.0-blocking.
+Priority: `3` — **parked** (the diagnostic + docs subset is split off as
+§65, see below; the real resolution remains unstarted).
 
 Observed on Mavis's macOS environment (2026-06-26):
 
@@ -514,53 +515,129 @@ Observed on Mavis's macOS environment (2026-06-26):
 
 The current workaround (`--allow-opencode-state-conflict`) is a **diagnostic** tool, not a production-ready path.
 
-Suggested scope:
+Scope split (per User directive 2026-06-26 — keep §63 narrow, no app updates):
 
-- produce `scripts/opencode_state_diagnostic.py` that prints: which opencode binaries are on PATH and their versions; which opencode-serve process is running and which binary it uses; which app-bundle owns the launchd respawn
-- document a clean resolution in `docs/OPENCODE_APP_STATE.md`, covering at least:
-  - option A: update MiniMax Code.app bundle to match the user's CLI (preferred)
-  - option B: remove or rename the app-bundled binary
-  - option C: configure the opencode adapter to **always** use `~/.opencode/bin/opencode` (or `$OPENCODE_BIN`) regardless of what app-launchd does — the most defensive project-side option
-- the `--allow-opencode-state-conflict` flag should remain as a diagnostic tool but get a stronger warning in `--help` output
+- **§65 (active, narrow, repo-side)** — diagnostic script + docs.
+  Makes the App-State-Conflict reproducible and explainable on
+  every developer machine. Scope: `scripts/opencode_state_diagnostic.py`
+  + `docs/OPENCODE_APP_STATE.md` + README cross-reference.
+- **§63 (parked, wide)** — actual resolution. Needs app-side
+  changes (option A: update MiniMax Code.app bundle) OR
+  project-side option C (always use configured `OPENCODE_BIN`).
+  Out of scope for the 0.9.0 release; revisit only if OpenCode
+  Free-Models become a strategic priority.
 
-Touches: `scripts/opencode_state_diagnostic.py` (new), the opencode pre-flight guard in `scripts/solve_issues.py`, `docs/OPENCODE_APP_STATE.md` (new).
+Touches: `docs/OPENCODE_APP_STATE.md` (new, in §65),
+`scripts/opencode_state_diagnostic.py` (new, in §65).
 
 Checks:
+- §65's diagnostic script prints the conflict clearly
+- §63's full-resolution remains parked until §65 confirms the
+  conflict is real on multiple developer machines
 
-- `python scripts/opencode_state_diagnostic.py` prints a clear status report
-- `git diff --check`
-- 1-run reproduction with `--model opencode --model-name opencode/deepseek-v4-flash-free` after applying option C (always use configured `OPENCODE_BIN`): the worker should start successfully
+## 65. OpenCode app-state diagnostic script (2026-06-26)
 
 ---
 
-## 64. Free-model robustness study (2026-06-26)
+## 64. ~~Free-model robustness study~~ **CLOSED with smoke-benchmark evidence (2026-06-26)**
 
-Labels: `kind/study`, `theme/benchmark`, `area/free-models`, `priority/4`
+Status: **closed without full activation**. The smoke-benchmark
+(`scripts/benchmark_free_models.py --issue 390 --models
+openrouter_direct:deepseek/deepseek-chat-v3.1:free,openrouter_direct:qwen/qwen3-coder:free,openrouter_direct:openai/gpt-oss-20b:free,openrouter_direct:meta-llama/llama-3.3-70b-instruct:free`)
+provided enough signal to close this item without burning the
+planned 5×5 sweep budget.
 
-Priority: `4` — parked/experimental. Depends on §62 being merged first; otherwise data will be invalid again.
+**Results (4/4 attempted, 0/4 PR-relevant):**
 
-**Goal:** turn "Free-Models-Produktivität ist ein Einzeldatenpunkt" into a "belastbare Statistik". For each Free-Model candidate: collect (model, issue-class, success-rate, patch-quality, token-cost) over multiple runs and multiple issues.
+| Model | rc | Real cause |
+|-------|----|-----------|
+| `deepseek/deepseek-chat-v3.1:free` | 0 | 404 Not Found — slug drift (provider may have renamed) |
+| `qwen/qwen3-coder:free` | 0 | 429 Too Many Requests — provider rate limit |
+| `openai/gpt-oss-20b:free` | 0 | Worker exit_code=2 — empty / whitespace response |
+| `meta-llama/llama-3.3-70b-instruct:free` | 0 | 429 Too Many Requests — provider rate limit |
 
-Pre-conditions:
+**Conclusion:** for issue-classes comparable to #390 (Periodic
+doc benchmark, low-risk), free OpenRouter models produce
+**zero PR-relevant results**. The failure surface is **not** a
+single bug — it is a stability profile (provider rate limits +
+slug drift + empty responses). Each additional run would just
+re-confirm the same profile, not extend the picture.
 
-- §62 merged (benchmark sweeps not aborted by the open-PR guard)
-- §63 merged (OpenCode Free-Models testable on developer machines)
-- 5–10 representative issues per Free-Model candidate (mix of docs-only / simple-text-change / small-feature-class)
+**§62 methodology fix is validated by this benchmark:** all 4
+runs were actually attempted (the previous sweep had 24/31
+aborted by the open-PR guard). Data-quality is now clean even
+if the underlying signal is "free stays wobbly".
 
-Scope when activated:
+**Recommendation table produced from smoke (not a full study, but enough to act):**
 
-- pick 5 representative OpenRouter Free-Models (e.g. `deepseek-v3.1:free`, `qwen3-coder:free`, `meta-llama/llama-3.3-70b-instruct:free`, `liquid/lfm-2.5-1.2b-instruct:free`, `nvidia/nemotron-3-super-120b-a12b:free`) and 5 OpenCode Free-Models
-- run each model against 5 representative issues with the new benchmark-mode flag from §62 enabled
-- collect per-run: success / clean-diff / patch-quality, exit code, token-cost, wall-clock, whether the patch applied cleanly
-- produce a recommendation table: "OK for docs-only" / "OK for simple text changes" / "needs review for features" / "do not use"
-- update README "Free-Models" section with the recommendation table and explicit `experimental / supervised / docs-only` labels. **No production-ready claim** until the data is in.
+- `qwen/qwen3-coder:free`, `meta-llama/llama-3.3-70b-instruct:free`
+  → 429-Rate-Limit-Hit on first call within a sweep window. Not
+  useful without provider-side rate-limit coordination.
+- `openai/gpt-oss-20b:free` → empty response on this issue-class.
+  May work for smaller scopes; needs re-test on a text-only
+  issue before any production use.
+- `deepseek/deepseek-chat-v3.1:free` → 404 (slug drift). Re-test
+  with the current OpenRouter slug list before any production use.
 
-Touches: `scripts/benchmark_free_models.py`, possibly new `scripts/benchmark_aggregate.py`, README "Free-Models" section.
+**0.9.0 decision (per User, 2026-06-26):** paid OpenRouter / `gpt-4o`
+is the strategic default. Free-Models stay **experimental /
+supervised / docs-only candidates**. The full 5×5 sweep is
+explicitly **not** planned unless a new use case emerges that
+justifies burning the budget.
+
+The smoke-run JSON lives at
+`reports/benchmarks/smoke-free-models-2026-06-26.json` /
+`.log` for future reference.
+
+---
+
+## 65. OpenCode app-state diagnostic script (2026-06-26)
+
+Labels: `kind/tooling`, `theme/opencode`, `area/runtime`, `priority/3`
+
+Priority: `3` — **scope: repo-side only, no app updates**.
+
+A narrow companion to §63. The full §63 spec is parked (App-
+update, bundle-rewrite, project-side configure-always-use-
+OPENCODE_BIN option), but a small diagnostic + documentation
+tool is valuable immediately because the App-State-Conflict
+itself is **reproducible and explainable** on every developer
+machine that has both `~/.opencode/bin/opencode` and a bundled
+app. The diagnostic makes the state visible; the docs explain
+why the conflict happens and what the three resolution options
+are.
+
+Scope:
+
+- `scripts/opencode_state_diagnostic.py` — Python script (no
+  external deps beyond the standard library) that prints:
+  - which opencode binaries are on `PATH` (with versions)
+  - which `opencode-serve` process is running and which binary
+    it uses (with version)
+  - which `.app` bundle owns the launchd respawn (by scanning
+    `/Applications/` and matching the running binary path)
+  - the configured `OPENCODE_BIN` env-var if set
+- `docs/OPENCODE_APP_STATE.md` — documentation covering:
+  - what the conflict looks like (CLI 1.15.13 vs Serve 1.14.28)
+  - why it happens (app-launchd respawn with the app-bundled binary)
+  - three resolution options (A: app update, B: rename the app-
+    bundled binary, C: project-side always-use-configured-`OPENCODE_BIN`)
+  - when to use `--allow-opencode-state-conflict` (diagnostic only,
+    never as a production-ready path)
+- README "Free-Models" section gets a short paragraph cross-
+  referencing `docs/OPENCODE_APP_STATE.md`
+
+**Out of scope (deliberately):** the full §63 implementation
+(app update, bundle rewrite, project-side option C). Those
+remain parked and would need their own Handover to Codex.
+
+Touches: `scripts/opencode_state_diagnostic.py` (new),
+`docs/OPENCODE_APP_STATE.md` (new), README small cross-reference.
 
 Checks:
-
-- re-run of `scripts/benchmark_free_models.py --issue 446 --models <list>` produces N independent PR attempts per model (each on its own `bench/{time}/{slug}` branch)
-- aggregation script produces the recommendation table
-- README "Free-Models" section gains the recommendation table with explicit `experimental / supervised / docs-only` labels
+- `python scripts/opencode_state_diagnostic.py` produces a clear
+  status report (path + version + launchd owner + env-var)
+- `git diff --check`
+- README cross-reference is in place
 
 ---
