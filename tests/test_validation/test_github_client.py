@@ -97,6 +97,20 @@ class ValidationGitHubClientTests(unittest.TestCase):
         prs = self.client.get_pull_requests("repo")
         self.assertEqual(prs, [])
 
+    def test_get_open_pull_requests_alias_uses_open_state(self):
+        self.session.get.return_value = self._mock_response(200, [
+            {"number": 10, "title": "PR 1", "state": "open", "merged_at": None},
+        ])
+
+        prs = self.client.get_open_pull_requests("repo")
+
+        self.assertEqual(len(prs), 1)
+        self.assertEqual(prs[0].number, 10)
+        self.assertEqual(
+            self.session.get.call_args.kwargs["params"],
+            {"state": "open", "per_page": 100},
+        )
+
     def test_get_pull_request_returns_pr(self):
         self.session.get.return_value = self._mock_response(200, {
             "number": 10, "title": "PR", "state": "merged", "merged_at": "2024-01-01T00:00:00Z",

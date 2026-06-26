@@ -87,6 +87,8 @@ def run_one(model_arg: str, model_name: str, run_idx: int, total: int) -> dict:
         model_name,
         "--skip-slug-verification",
         "--skip-hygiene-check",
+        "--benchmark",
+        "--skip-pr",
     ]
     try:
         proc = subprocess.run(

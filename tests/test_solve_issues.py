@@ -64,9 +64,11 @@ from solve_issues import (  # noqa: E402
     run_post_solve_tests,
     run_worker_command,
     sanitize_worker_prompt_secret_paths,
+    should_check_existing_open_pr,
     should_preserve_worktree,
     should_surface_worker_line,
     sleep_until_codex_reset,
+    main as solve_issues_main,
     validate_worker_changes,
     solve_issue,
     write_run_report,
@@ -104,6 +106,33 @@ class FakeGitHubSession:
         self.gets.append((url, params))
         if url.endswith("/repos/test-owner/demo"):
             return FakeResponse(200, {"default_branch": "main"})
+        if url.endswith("/repos/test-owner/demo/pulls"):
+            return FakeResponse(
+                200,
+                [
+                    {
+                        "number": 10,
+                        "title": "PR 10",
+                        "state": "open",
+                        "html_url": "https://github.com/test-owner/demo/pull/10",
+                        "head": {"ref": "ai/fix-issue-10"},
+                        "base": {"ref": "main"},
+                    }
+                ],
+            )
+        if url.endswith("/repos/test-owner/demo/pulls/10"):
+            return FakeResponse(
+                200,
+                {
+                    "number": 10,
+                    "title": "PR 10",
+                    "state": "open",
+                    "html_url": "https://github.com/test-owner/demo/pull/10",
+                    "mergeable_state": "clean",
+                    "head": {"ref": "ai/fix-issue-10"},
+                    "base": {"ref": "main"},
+                },
+            )
         if url.endswith("/repos/test-owner/demo/branches/main"):
             return FakeResponse(200, {"name": "main"})
         if url.endswith("/repos/test-owner/demo/branches/develop"):
@@ -263,6 +292,70 @@ class GitHubClientBranchTests(unittest.TestCase):
             branches,
             ["ai/fix-issue-7", "ai/fix-issue-7-20260521-090807"],
         )
+
+    def test_get_open_pull_requests_alias_requests_open_prs(self):
+        client = self.make_client()
+
+        prs = client.get_open_pull_requests("demo")
+
+        self.assertEqual(prs[0]["number"], 10)
+        self.assertEqual(
+            client.session.gets[-1],
+            (
+                "https://api.github.com/repos/test-owner/demo/pulls",
+                {"state": "open", "per_page": 100},
+            ),
+        )
+
+    def test_get_pull_request_returns_detail_dict(self):
+        client = self.make_client()
+
+        pr = client.get_pull_request("demo", 10)
+
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr["mergeable_state"], "clean")
+
+
+class BenchmarkModeCliTests(unittest.TestCase):
+    def test_benchmark_mode_bypasses_existing_open_pr_guard(self):
+        args = SimpleNamespace(
+            retry=False,
+            compare_models=False,
+            rework=False,
+            benchmark=True,
+        )
+
+        self.assertFalse(should_check_existing_open_pr(args, 446))
+
+    def test_normal_mode_checks_existing_open_pr_guard(self):
+        args = SimpleNamespace(
+            retry=False,
+            compare_models=False,
+            rework=False,
+            benchmark=False,
+        )
+
+        self.assertTrue(should_check_existing_open_pr(args, 446))
+
+    def test_benchmark_requires_skip_pr(self):
+        argv = [
+            "solve_issues.py",
+            "--repo",
+            "demo",
+            "--issue",
+            "1",
+            "--model",
+            "openrouter_direct",
+            "--benchmark",
+        ]
+
+        with patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as ctx:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        solve_issues_main()
+
+        self.assertEqual(ctx.exception.code, 2)
 
 
 class BranchRecoveryTests(unittest.TestCase):
