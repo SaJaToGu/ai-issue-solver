@@ -15,6 +15,7 @@ class BenchmarkFreeModelsTests(unittest.TestCase):
         )
         with patch("scripts.benchmark_free_models.subprocess.run", return_value=completed) as run_mock:
             benchmark_free_models.run_one(
+                390,
                 "openrouter_direct",
                 "qwen/qwen3-coder:free",
                 1,
@@ -24,6 +25,9 @@ class BenchmarkFreeModelsTests(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertIn("--benchmark", cmd)
         self.assertIn("--skip-pr", cmd)
+        self.assertIn("--issue", cmd)
+        # issue_number 390 must appear in the cmd list
+        self.assertIn("390", cmd)
 
 
 if __name__ == "__main__":

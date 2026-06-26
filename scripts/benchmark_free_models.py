@@ -19,10 +19,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-ISSUE_NUMBER = 446
-AGGREGATE_FILE = REPO / "reports" / "benchmarks" / "free-models-2026-06-26.json"
-LOG_FILE = REPO / "reports" / "benchmarks" / "free-models-2026-06-26.log"
+DEFAULT_ISSUE_NUMBER = 446
+DEFAULT_RUN_LABEL = "free-models-2026-06-26"
 RUN_TIMEOUT_SECONDS = 180  # per-model wall-clock cap
+
+# File paths are computed in main() once we know the issue_number + run_label
 
 OPENROUTER_FREE_MODELS: list[tuple[str, str]] = [
     ("openrouter_direct", "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"),
@@ -66,21 +67,25 @@ def log(message: str) -> None:
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     line = f"[{ts}] {message}"
     print(line, flush=True)
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with LOG_FILE.open("a", encoding="utf-8") as fh:
+    # LOG_FILE may be reassigned in main() to a per-run path
+    log_path = globals().get("LOG_FILE")
+    if log_path is None:
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
 
 
-def run_one(model_arg: str, model_name: str, run_idx: int, total: int) -> dict:
+def run_one(issue_number: int, model_arg: str, model_name: str, run_idx: int, total: int) -> dict:
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    log(f"=== Run {run_idx}/{total} START ({model_arg} / {model_name}) ===")
+    log(f"=== Run {run_idx}/{total} START (issue #{issue_number}, {model_arg} / {model_name}) ===")
     cmd = [
         ".venv/bin/python",
         "scripts/solve_issues.py",
         "--repo",
         "ai-issue-solver",
         "--issue",
-        str(ISSUE_NUMBER),
+        str(issue_number),
         "--model",
         model_arg,
         "--model-name",
@@ -117,6 +122,7 @@ def run_one(model_arg: str, model_name: str, run_idx: int, total: int) -> dict:
     )
     return {
         "run_idx": run_idx,
+        "issue_number": issue_number,
         "model_arg": model_arg,
         "model_name": model_name,
         "started_at": started_at,
@@ -148,27 +154,73 @@ def classify(model_arg: str, model_name: str, rc: int, log_text: str) -> str:
     return "success_no_pr"
 
 
-def main() -> int:
-    AGGREGATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if AGGREGATE_FILE.exists():
-        AGGREGATE_FILE.unlink()
-    LOG_FILE.unlink(missing_ok=True)
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Benchmark all free models (OpenRouter + OpenCode) on an issue."
+    )
+    parser.add_argument(
+        "--issue",
+        type=int,
+        default=DEFAULT_ISSUE_NUMBER,
+        help=f"Issue number to benchmark (default: {DEFAULT_ISSUE_NUMBER})",
+    )
+    parser.add_argument(
+        "--run-label",
+        default=DEFAULT_RUN_LABEL,
+        help="Label for this benchmark run, used in aggregate/log filenames.",
+    )
+    parser.add_argument(
+        "--models",
+        default=None,
+        help=(
+            "Comma-separated list of provider:model pairs to benchmark. "
+            "Examples: 'openrouter_direct:deepseek/deepseek-chat-v3.1:free,"
+            "openrouter_direct:qwen/qwen3-coder:free'. "
+            "Default: all free OpenRouter + OpenCode models."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    aggregate_file = REPO / "reports" / "benchmarks" / f"{args.run_label}.json"
+    log_file = REPO / "reports" / "benchmarks" / f"{args.run_label}.log"
+    aggregate_file.parent.mkdir(parents=True, exist_ok=True)
+    if aggregate_file.exists():
+        aggregate_file.unlink()
+    log_file.unlink(missing_ok=True)
+
+    global LOG_FILE  # used by log()
+    LOG_FILE = log_file
+
+    if args.models:
+        all_models = []
+        for spec in args.models.split(","):
+            spec = spec.strip()
+            if ":" in spec:
+                # provider:model — but model names can also contain ':'
+                # (e.g. "deepseek/deepseek-chat-v3.1:free"). Split only on FIRST ':'.
+                provider, model_name = spec.split(":", 1)
+                all_models.append((provider, model_name))
+            else:
+                # bare model name → assume openrouter_direct
+                all_models.append(("openrouter_direct", spec))
+    else:
+        all_models = OPENROUTER_FREE_MODELS + OPENCODE_FREE_MODELS
 
     runs: list[dict] = []
-    all_models = OPENROUTER_FREE_MODELS + OPENCODE_FREE_MODELS
     total = len(all_models)
-    log(f"=== Free-Models-Benchmark START ({total} models) ===")
+    log(f"=== Free-Models-Benchmark START (issue #{args.issue}, {total} models) ===")
 
     for idx, (model_arg, model_name) in enumerate(all_models, start=1):
-        result = run_one(model_arg, model_name, idx, total)
+        result = run_one(args.issue, model_arg, model_name, idx, total)
         runs.append(result)
         # Persist after each run (so a partial sweep is still recoverable)
-        AGGREGATE_FILE.write_text(
+        aggregate_file.write_text(
             json.dumps(
                 {
                     "started_at": runs[0]["started_at"] if runs else None,
                     "finished_at": None,
-                    "issue_number": ISSUE_NUMBER,
+                    "issue_number": args.issue,
                     "total_models": total,
                     "completed_runs": len(runs),
                     "runs": runs,
@@ -182,7 +234,8 @@ def main() -> int:
     summary = {
         "started_at": runs[0]["started_at"] if runs else None,
         "finished_at": finished_at,
-        "issue_number": ISSUE_NUMBER,
+        "issue_number": args.issue,
+        "run_label": args.run_label,
         "total_models": total,
         "completed_runs": len(runs),
         "classification_counts": {},
@@ -192,10 +245,12 @@ def main() -> int:
         c = r["classification"]
         summary["classification_counts"][c] = summary["classification_counts"].get(c, 0) + 1
 
-    AGGREGATE_FILE.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    aggregate_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     log(f"=== Free-Models-Benchmark END ({total} runs, counts={summary['classification_counts']}) ===")
+    print(f"\nAggregate: {aggregate_file}")
+    print(f"Log:      {log_file}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
