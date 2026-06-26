@@ -712,3 +712,132 @@ Stop criteria:
   Codex before implementation.
 
 ---
+
+## 67. Fix `benchmark_free_models.classify()` so Worker-Failures stop looking like successes (2026-06-26)
+
+Labels: `kind/bug`, `theme/solver`, `area/benchmark`, `priority/1`
+
+Priority: `1` — pipeline-correctness blocker. **Do this BEFORE any
+further Free-Model-Benchmark-Sweep.** Without this fix, every
+benchmark run's aggregate output (`reports/benchmarks/*.json`)
+systematically mislabels worker-failures as `success_no_pr`, which
+poisons any subsequent decision-making on Free-Models.
+
+Repro (2026-06-26, Issue #450 benchmark sweep with 4 Free-Models):
+
+```
+$ python scripts/benchmark_free_models.py --issue 450 \
+    --models openrouter_direct:liquid/lfm-2.5-1.2b-instruct:free,\
+              openrouter_direct:qwen/qwen3-coder:free,\
+              openrouter_direct:google/gemma-4-26b-a4b-it:free,\
+              openrouter_direct:cohere/north-mini-code:free
+
+=== Run 1/4 END: rc=0, classification=success_no_pr ===
+=== Run 2/4 END: rc=0, classification=success_no_pr ===
+=== Run 3/4 END: rc=0, classification=success_no_pr ===
+=== Run 4/4 END: rc=0, classification=success_no_pr ===
+=== Free-Models-Benchmark END (4 runs, counts={'success_no_pr': 4}) ===
+```
+
+But every run-report (`reports/runs/20260626-222516/...-issue-450/summary.txt`)
+shows the workers actually **failed**:
+
+| Run | Model | worker_exit_code | Real failure |
+|-----|-------|------------------|--------------|
+| 1 | liquid/lfm-2.5-1.2b-instruct:free | 2 | 1387 chars Prosa, kein Unified-Diff-Patch |
+| 2 | qwen/qwen3-coder:free | 1 | 429 Too Many Requests |
+| 3 | google/gemma-4-26b-a4b-it:free | 1 | 429 Too Many Requests |
+| 4 | cohere/north-mini-code:free | 2 | 0 Zeichen Antwort, 135s request |
+
+All 4 runs have `has_changes=False` and `status=nonzero_without_changes`
+in their summary.txt.
+
+Root cause (`scripts/benchmark_free_models.py:100-117`):
+
+```python
+def classify(model_arg, model_name, rc, log_text):
+    if rc != 0:
+        # ... returns specific failure classes
+    if "PR erstellt" in log_text or "pr_created" in log_text:
+        return "success_pr_created"
+    if "Keine Patches" in log_text:
+        return "no_patches"
+    return "success_no_pr"   # ← fall-through treats every rc=0+no-PR as success
+```
+
+`solve_issues.py` returns rc=0 even when the worker truly failed
+(as long as no partial commits were made — `status="no_changes"`).
+The fall-through classifies any such run as `success_no_pr`,
+which is the inverse of what the name suggests.
+
+Goal: make `classify()` consult the run-report's `summary.txt`
+(`worker_exit_code` + `has_changes` + `status` fields) for ground
+truth, and only fall back to log-text heuristics if the run-report
+cannot be located.
+
+Scope:
+
+- Read the matching run-report per `subprocess.run` invocation
+  via pid/issue-number + timestamp-window match (report dir format:
+  `<YYYYMMDD-HHMMSS-mics>-<repo>-issue-<N>/summary.txt`).
+- Add canonical classification classes:
+  - `success_pr_skipped` — worker_exit_code=0, has_changes=True,
+    `--skip-pr` was set (the "actual" success in benchmark mode)
+  - `no_changes` — worker_exit_code=0, has_changes=False (worker
+    ran cleanly but produced no patch)
+  - `empty_response_rc2` — worker_exit_code=2 (output empty)
+  - `model_failure_rc1` — worker_exit_code=1 (general worker error)
+  - `patch_validation_failed_rc5` — worker_exit_code=5 (reject artifacts)
+  - `partial_patch_failure_rc6` — worker_exit_code=6 (partial patch)
+  - `openrouter_429` — 429 Too Many Requests (separate from openrouter_400)
+- Keep existing log-text heuristics as fallback when no run-report
+  is found (e.g. tests with mocked subprocess).
+- Existing classes that remain semantically correct:
+  `success_pr_created`, `infrastructure_opencode_state_conflict`,
+  `patch_validation_failed_rc5`, `no_patches` (parseable fallback),
+  `patch_mismatch_mode_c`, `openrouter_400`,
+  `infrastructure_or_unknown_failure`.
+- Update the aggregate JSON `runs[i].classification` field to use
+  the new classes; the `--json` shape stays backward-compatible
+  (no breaking field changes).
+- Tests for: run-report with each new class, run-report missing
+  (fallback path), 429 detection, log-text fallback preservation.
+- Update README "Free-Models"-block + `docs/BACKLOG/done.md`
+  closure entry on completion.
+
+Acceptance criteria:
+
+- Re-running the Issue #450 benchmark with the same 4 Free-Models
+  produces 4 distinct failure classifications (no `success_no_pr`
+  in the aggregate), matching the per-run `worker_exit_code` and
+  `has_changes` from the run-reports.
+- A run with worker_exit_code=0 + has_changes=True + `--skip-pr`
+  is classified as `success_pr_skipped`.
+- A run with worker_exit_code=0 + has_changes=False is classified
+  as `no_changes`, **not** `success_no_pr`.
+- A run with worker_exit_code=2 is classified as `empty_response_rc2`,
+  **not** `success_no_pr`.
+- A run with 429 in worker output is classified as `openrouter_429`.
+- A run without a matching run-report (test mock) falls back to
+  existing log-text heuristics.
+- All existing benchmark-related tests pass.
+
+Out of scope:
+
+- §66 OpenRouter dynamic discovery (already done in PR #449).
+- Changing the production default (still `gpt-4o`).
+- §59 Mode-C Patch-Mismatch-Hardening.
+- §63/§65 OpenCode-App-State.
+- Issue #450 itself — to be addressed **after** this bugfix,
+  via gpt-4o (Mavis-as-dev is acceptable once the bugfix lands).
+
+Stop criteria:
+
+- If the run-report timestamp-correlation logic cannot reliably
+  find the right report (e.g. multiple runs in the same second),
+  stop and add a `--run-report-dir` flag to `solve_issues.py`
+  that prints the absolute path; do not guess.
+- If the fix grows beyond roughly 250 LOC, split into a Handover
+  for Codex before implementation (same rule as §66).
+
+---
