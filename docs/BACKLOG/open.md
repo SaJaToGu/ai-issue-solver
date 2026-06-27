@@ -713,7 +713,7 @@ Stop criteria:
 
 ---
 
-## 67. Fix `benchmark_free_models.classify()` so Worker-Failures stop looking like successes (2026-06-26)
+## 67. ~~Fix `benchmark_free_models.classify()` so Worker-Failures stop looking like successes (2026-06-26)~~ **DONE in PR #465 (squash 5fbc6f6)**
 
 Labels: `kind/bug`, `theme/solver`, `area/benchmark`, `priority/1`
 

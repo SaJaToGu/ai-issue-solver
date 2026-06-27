@@ -1206,3 +1206,102 @@ Original labels: `kind/tooling`, `theme/openrouter`,
 `area/model-catalog`, `priority/2`
 
 ---
+
+## Done — §67: Fix `benchmark_free_models.classify()` so Worker-Failures stop looking like successes
+
+Closed 2026-06-27 via PR #465 (squash `5fbc6f6` on develop). 2 files,
++440/-9, single Mavis-as-dev commit `f786818` on
+`fix/s67-benchmark-classify`. Two prior solver attempts (Mistral-
+Medium-3-5 + gpt-4o via `solve_issues.py --skip-slug-verification`)
+both failed at patch-application (`patch: **** malformed patch`),
+so this was Mavis-as-dev with explicit User approval per the
+established "Mavis-as-dev ≠ system-under-test" carve-out for
+non-benchmark-target issues.
+
+**Background:** the Free-Models-Benchmark-Sweep on 2026-06-26 ran
+4 Free-Models against Issue #450. All four workers actually failed
+(rc=1 for 429 rate-limits, rc=2 for empty responses), but the
+aggregate (`reports/benchmarks/benchmark-issue-450-4free.json`)
+misreported `success_no_pr` for every run. The bug:
+
+```python
+def classify(model_arg, model_name, rc, log_text):
+    if rc != 0:
+        # ...specific failure classes...
+    if "PR erstellt" in log_text or "pr_created" in log_text:
+        return "success_pr_created"
+    if "Keine Patches" in log_text:
+        return "no_patches"
+    return "success_no_pr"   # ← fall-through treats rc=0+no-PR as success
+```
+
+`solve_issues.py` returns rc=0 even when the worker truly failed
+(no partial commits → `status="no_changes"`), so the fall-through
+was hit on every run.
+
+**Fix (`scripts/benchmark_free_models.py`):**
+
+- **`_find_run_report(issue_number, started_at, finished_at)`** —
+  walks `reports/runs/` for the most-recently-modified
+  `*-<repo>-issue-<N>/` directory whose mtime falls inside
+  `[started_at-5s, finished_at+30s]`. Returns `None` on miss.
+- **`_read_run_report_summary(run_report)`** — single-line
+  `key: value` parser for `summary.txt`. Inline implementation
+  avoids the `scripts.solver_reporting` import, whose bare
+  `from utils import ...` lines break in the test harness.
+- **`classify(... run_report=None)`** — Run-Report-Primary with
+  log-text fallback. New canonical classes (replacing the
+  fall-through):
+
+  | worker_exit_code | has_changes | status | class |
+  |---|---|---|---|
+  | 0 | True | `pr_created*` | `success_pr_created` |
+  | 0 | True | `pr_skipped` | `success_pr_skipped` |
+  | 0 | False | any | `no_changes` *(was `success_no_pr`)* |
+  | 1 | any | any | `model_failure_rc1` |
+  | 2 | any | any | `empty_response_rc2` |
+  | 5 | any | any | `patch_validation_failed_rc5` |
+  | 6 | any | any | `partial_patch_failure_rc6` |
+  | any | any | + `429 Too Many Requests` | `openrouter_429` |
+
+- The legacy log-text fallback now returns `no_changes` for the
+  rc=0+no-PR case instead of `success_no_pr`, so a missing
+  run-report cannot accidentally label a silent failure as
+  success.
+
+**Tests (`tests/test_benchmark_free_models.py`):**
+
+- 12 new tests across two new classes:
+  - `ClassifyFromRunReportTests` (10 tests) — one per new
+    canonical class plus the fallback paths.
+  - `FindRunReportTests` (2 tests) — in-window match + no-match.
+- Existing 3 tests preserved; total 15 OK.
+
+**Verification:**
+
+- `./.venv/bin/python -m unittest tests.test_benchmark_free_models`: 15 OK
+- `pytest tests/test_benchmark_free_models.py tests/test_benchmark_issues.py
+  tests/test_analyze_repos.py`: 37 OK (cross-module regression check)
+- GitHub CI: Python 3.10 + 3.12 both pass (squash-merge fast-forwarded)
+- User live review: "OK zum Squash-Merge" (after AIS `code`-review
+  verdict `ready to merge`, 0 blockers).
+- AIS review strengths noted: window-based matching with
+  configurable slack, clear precedence order with comprehensive
+  docstring, proper 429 handling before worker exit code, elegant
+  test context manager.
+
+**Scope discipline (per User directive):** the PR is **only** the
+classifier fix + tests. §66 (OpenRouter dynamic discovery), §59
+(Mode-C watchlist), §63/§65 (OpenCode-App-State), and the
+strategic production default (`gpt-4o` via paid OpenRouter) are
+explicitly NOT touched.
+
+**Unblocked:** Issue #450 can now be solved (Mavis-as-dev is
+acceptable again per §67 spec). Re-running the 4 Free-Models
+benchmark on Issue #450 as an acceptance test will produce 4
+distinct failure classifications instead of 4× `success_no_pr`.
+
+Original labels: `kind/bug`, `theme/solver`, `area/benchmark`,
+`priority/1`
+
+---
