@@ -298,7 +298,6 @@ ai-issue-solver/
 │   ├── OPENCODE_APP_STATE.md    # OpenCode-App-State-Konflikt-Doku
 │   ├── MODEL_OVERRIDE_POLICY.md # Modell-Override-Regeln
 │   ├── PLANNING_0.9.0.md        # 0.9.0-Release-Planung
-│   ├── PLANNING_0.10.0_DESIGN_BRIEF.md # 0.10.0-Design-Brief
 │   ├── PRODUCT_VISION_1.0.md    # 1.0-Produkt-Vision
 │   ├── ROADMAP.md               # Strategischer Ausbauplan
 │   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
@@ -310,7 +309,7 @@ ai-issue-solver/
     ├── test_model_catalog.py         # OpenCode-/OpenRouter-Catalog-Tests
     ├── test_solve_issues*.py         # Solver-CLI- und Worker-Adapter-Tests
     ├── test_opencode_state_diagnostic.py # OpenCode-State-Diagnose-Tests
-    └── test_review_pr.py             # AIS-Code-Review-Tests
+    └── test_reviewer_runtime.py      # AIS-Code-Review-Tests
 ```
 
 ---
