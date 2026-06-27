@@ -31,8 +31,23 @@ try:
 except ModuleNotFoundError:
     requests = None
 
-sys.path.insert(0, str(Path(__file__).parent))
+# Make sibling and project-root modules importable when this file is
+# run directly (`python scripts/status_dashboard.py`).
+#
+# Two paths are needed for the same reason as in validation/cli.py:
+#   - scripts/utils, scripts/solver_*  (parent = scripts/)
+#   - workers.*                        (parents[1] = project root)
+sys.path.insert(0, str(Path(__file__).resolve().parent))        # scripts/
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))    # project root
 from utils import is_placeholder_value, load_env, print_banner, print_step  # noqa: E402
+from solver_reporting import (  # noqa: E402
+    classify_run_status,
+    parse_summary_file,
+    parse_datetime_value,
+    parse_created_at,
+    latest_datetime,
+    read_normalized_run_outcome,
+)
 from workflow_congestion import (  # noqa: E402
     BacklogEntry,
     WorkflowCongestionFinding,
@@ -64,13 +79,10 @@ DEFAULT_WORKFLOW_PR_THRESHOLD = 3
 DEFAULT_WORKFLOW_STALE_DAYS = 7
 GITHUB_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/")
 GITHUB_PR_RE = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
-CODEX_RATE_LIMIT_RESET_RE = re.compile(
-    r"rate limit will be reset on\s+(.+?)(?:\.|\n|$)",
-    re.IGNORECASE,
-)
-CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
-    r"(?:reached the codex message limit|rate limit will be reset)",
-    re.IGNORECASE,
+from workers.codex_adapter import (  # noqa: E402
+    CODEX_RATE_LIMIT_MESSAGE_RE,
+    CODEX_RATE_LIMIT_RESET_RE,
+    parse_codex_reset_datetime,
 )
 
 # =============================================================================
@@ -423,69 +435,6 @@ class DashboardGitHubClient:
         return [repo for repo in data if not repo.get("archived", False)]
 
 
-def parse_summary(path: Path) -> dict[str, str]:
-    fields: dict[str, str] = {}
-    if not path.exists():
-        return fields
-
-    multiline_keys = {"git_diff_stat", "output_tail"}
-    current_multiline_key = None
-    multiline_parts: list[str] = []
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        key, separator, value = raw_line.partition(":")
-        key = key.strip()
-        value = value.strip()
-        starts_multiline_key = bool(separator and key in multiline_keys)
-
-        if current_multiline_key:
-            if starts_multiline_key:
-                fields[current_multiline_key] = "\n".join(multiline_parts).strip()
-                current_multiline_key = key
-                multiline_parts = [value] if value else []
-                continue
-            multiline_parts.append(raw_line)
-            continue
-
-        if not raw_line.strip():
-            continue
-        if not separator:
-            continue
-        if key in multiline_keys:
-            current_multiline_key = key
-            if value:
-                multiline_parts.append(value)
-            continue
-        fields[key] = value
-
-    if current_multiline_key:
-        fields[current_multiline_key] = "\n".join(multiline_parts).strip()
-    return fields
-
-
-def parse_created_at(run_dir_name: str) -> datetime | None:
-    match = re.match(r"^(\d{8}-\d{6})(?:-(\d{6}))?", run_dir_name)
-    if not match:
-        return None
-    value = "".join(part for part in match.groups(default="") if part)
-    fmt = "%Y%m%d-%H%M%S%f" if match.group(2) else "%Y%m%d-%H%M%S"
-    try:
-        return datetime.strptime(value, fmt)
-    except ValueError:
-        return None
-
-
-def parse_datetime_value(value: str) -> datetime | None:
-    if not value:
-        return None
-    normalized = value.strip()
-    for date_format in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(normalized[:19], date_format)
-        except ValueError:
-            pass
-    return None
-
-
 def read_health_file(run_dir: Path) -> dict[str, str]:
     health_path = run_dir / "health.json"
     if not health_path.exists():
@@ -504,30 +453,11 @@ def file_mtime(path: Path) -> datetime | None:
         return None
 
 
-def parse_codex_reset_datetime(reset_text: str) -> datetime | None:
-    normalized = re.sub(r"\s+", " ", reset_text.strip())
-    normalized = normalized.replace(", at ", " ").replace(" at ", " ")
-    for date_format in (
-        "%B %d, %Y %I:%M %p",
-        "%b %d, %Y %I:%M %p",
-        "%B %d %Y %I:%M %p",
-        "%b %d %Y %I:%M %p",
-    ):
-        try:
-            return datetime.strptime(normalized, date_format)
-        except ValueError:
-            pass
-    return None
-
-
 def codex_rate_limit_wait_until(output_tail: str) -> datetime | None:
     match = CODEX_RATE_LIMIT_RESET_RE.search(output_tail)
     if not match:
         return None
     return parse_codex_reset_datetime(match.group(1).strip())
-
-
-def latest_datetime(*values: datetime | None) -> datetime | None:
     parsed = [value for value in values if value is not None]
     return max(parsed) if parsed else None
 
@@ -556,31 +486,7 @@ def classify_status(status: str, worker_exit_code: str = "") -> str:
         Die Dashboard-Kategorie: queued, running, unhealthy, failed, recovered,
         superseded, successful, noop, archived, oder unknown
     """
-    if not status:
-        return "unknown"
-
-    # Direkte Zuordnung für spezifische Zustände
-    if status == "queued":
-        return "queued"
-    if status == "started":
-        return "running"
-
-    # Zuordnung über Status-Gruppen
-    if status in ARCHIVED_STATUSES:
-        return "archived"
-    if status in SUCCESS_STATUSES:
-        return "successful"
-    if status in NOOP_STATUSES:
-        return "noop"
-    if status in FAILED_STATUSES or status.endswith("_failed"):
-        return "failed"
-
-    # Fallback: Nicht-Null Exit-Code = failed
-    if worker_exit_code and worker_exit_code != "0":
-        return "failed"
-
-    # Default für unbekannte erfolgreiche Zustände
-    return "noop"
+    return classify_run_status(status, worker_exit_code)
 
 
 # =============================================================================
@@ -697,10 +603,11 @@ def read_runs(runs_dir: Path,
     timeout = timedelta(minutes=health_timeout_minutes)
 
     for run_dir in sorted((path for path in runs_dir.iterdir() if path.is_dir()), reverse=True):
-        fields = parse_summary(run_dir / "summary.txt")
+        fields = parse_summary_file(run_dir / "summary.txt")
+        normalized = read_normalized_run_outcome(run_dir)
         health = read_health_file(run_dir)
-        status = fields.get("status", "")
-        exit_code = fields.get("worker_exit_code", "")
+        status = normalized.status
+        exit_code = normalized.worker_exit_code
         output_tail = health.get("output_tail") or fields.get("output_tail", "")
         summary_mtime = file_mtime(run_dir / "summary.txt")
         health_mtime = file_mtime(run_dir / "health.json")
@@ -720,7 +627,7 @@ def read_runs(runs_dir: Path,
             last_report_update_at = latest_datetime(health_mtime, summary_mtime)
 
         # Klassifiziere den Status
-        category = classify_status(status, exit_code)
+        category = normalized.category
 
         # Führe Gesundheitsprüfung durch
         last_progress_at = latest_datetime(last_activity_at, last_report_update_at)
@@ -743,12 +650,12 @@ def read_runs(runs_dir: Path,
         cost_confidence = fields.get("cost_confidence", "unavailable")
         priority = int(fields.get("priority", 0)) if fields.get("priority") else None
         provider = fields.get("provider", "")
-        run_outcome_worker_status = fields.get("run_outcome_worker_status", "")
-        run_outcome_has_changes = fields.get("run_outcome_has_changes", "").lower() in ("true", "1", "yes")
-        run_outcome_test_status = fields.get("run_outcome_test_status", "")
-        run_outcome_delivery_status = fields.get("run_outcome_delivery_status", "")
-        run_outcome_failure_class = fields.get("run_outcome_failure_class", "")
-        run_outcome_recovery_status = fields.get("run_outcome_recovery_status", "")
+        run_outcome_worker_status = str(normalized.run_outcome.get("worker_status", ""))
+        run_outcome_has_changes = bool(normalized.run_outcome.get("has_changes", False))
+        run_outcome_test_status = str(normalized.run_outcome.get("test_status", ""))
+        run_outcome_delivery_status = str(normalized.run_outcome.get("delivery_status", ""))
+        run_outcome_failure_class = str(normalized.run_outcome.get("failure_class", ""))
+        run_outcome_recovery_status = str(normalized.run_outcome.get("recovery_status", ""))
         
         # Provider-Scorecard Felder
         provider_scorecard_requested_model = fields.get("provider_scorecard_requested_model", "")
@@ -770,10 +677,10 @@ def read_runs(runs_dir: Path,
                 created_at=parse_created_at(run_dir.name),
                 status=status,
                 category=category,
-                repo=fields.get("repo") or fields.get("selected_repo", ""),
-                issue_number=fields.get("issue_number") or fields.get("issue", ""),
-                issue_title=fields.get("issue_title", ""),
-                branch=fields.get("branch", ""),
+                repo=normalized.repo,
+                issue_number=normalized.issue_number,
+                issue_title=normalized.issue_title,
+                branch=normalized.branch,
                 base_branch=fields.get("base_branch", ""),
                 model=model,
                 worker_exit_code=exit_code,
@@ -782,8 +689,8 @@ def read_runs(runs_dir: Path,
                 health_status=health_status,
                 health_reason=health_reason,
                 recovery_hint=recovery_hint,
-                pr_url=fields.get("pr_url", ""),
-                preserved_worktree=fields.get("preserved_worktree", ""),
+                pr_url=normalized.pr_url,
+                preserved_worktree=normalized.preserved_worktree,
                 note=fields.get("note") or fields.get("cleanup_note", ""),
                 git_diff_stat=fields.get("git_diff_stat", ""),
                 output_tail=output_tail,

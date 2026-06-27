@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.0 - 2026-06-23 / closed 2026-06-27
+
+- **Validation infrastructure (§42, PRs #395 / #396 / #397):** shipped the
+  0.9.0 validation library end-to-end — models + parsers + metrics
+  (PR-A), IO + selection + pr_checks (PR-B), and CLI surface + shim
+  (PR-C). 126 unit tests, all module line caps respected, CI green on
+  Python 3.10 + 3.12.
+- **First validation run (§43, PRs #399 / #400 / #401):** N=3 sweep
+  across #386 / #387 / #382; all three PRs merged with CI green.
+  Validation report archived at `reports/validation-0.9.0.md`.
+- **Backward-split loop (§44, PR #403):** detects oversized PRs via
+  LOC + file-count thresholds in `scripts/validation/split.py` and
+  routes them to sub-issue decomposition. Closes the "1570-line
+  monolith" failure mode that surfaced repeatedly during the §42–§45
+  sweep.
+- **PR rework loop (§45, PR #405):** added `--rework-pr <N>` to
+  `solve_issues.py` — reads review threads, builds a focused prompt,
+  spawns a worker on the same branch, pushes follow-up commits.
+  Replaces the manual review-feedback loop for solver-produced PRs.
+- **RepoLens archive (#406, commit `0095f54`):** the no-longer-
+  maintained RepoLens wrapper image moved to `scripts/archive/` +
+  `docs/archive/` with revival-checklist READMEs. Tests for the
+  deprecated wrapper deleted (kept the archive folder would still be
+  picked up by `python -m unittest discover -s tests`).
+- **Milestone and orchestration cleanup (§46 / §47 / §48 / §49, PRs
+  #413 / #414 / #415 / #419):** synchronized `VERSION` and changelog
+  to 0.9.0, deprecated the Aider worker adapter in favor of the active
+  Codex/OpenCode/OpenRouter paths, added rework/retry usage
+  instrumentation, and closed the remaining cost-limit-forwarding gap
+  in overnight runs.
+- **Solver-loop hardening (§56 / §57 / §60, PRs #440 / #442 / #445):**
+  rework prompts now anchor to the branch tip and configurable token cap;
+  partial patch application and reject-artifact failures are hard stops,
+  so failed workers no longer create PRs from partial on-disk changes.
+- **Dynamic model catalogs (§58 / §66, PRs #443 / #449):** OpenCode and
+  OpenRouter free-model discovery moved away from stale static lists.
+  Recently removed patterns are injected into solve prompts so workers do
+  not silently reintroduce deleted model slugs or old budget defaults.
+- **Free-model benchmark methodology (§62 / §67, PRs #448 / #465):**
+  benchmark mode now skips PR creation safely and classifies runs from
+  worker run reports instead of treating clean process exit as success.
+  The #450 smoke benchmark correctly classified two empty responses and
+  two OpenRouter 429 rate-limit failures.
+- **0.9.0 close-out (#450 / PR #466):** README repository structure and
+  free-model status were updated. Free models remain experimental and
+  supervised-only; paid OpenRouter `openai/gpt-4o` stays the strategic
+  default for merge-intended issues.
+
 ## 0.3.1 - 2026-06-01
 
 - Prevented failed worker runs from opening pull requests when only tool side-effect files changed.

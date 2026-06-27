@@ -17,6 +17,9 @@ project. It is intentionally lean and strategic; concrete tasks live in
 - **Cost & process control** over model benchmarking. See #16, #37, #38, #39.
 - **Provider abstraction** — GitHub-first, OpenRouter, native APIs as fallback.
   See [`REPO_PROFILE_PROVIDER.md`](REPO_PROFILE_PROVIDER.md).
+- **Model override policy** — model choice is explicit and overridable per run,
+  with defaults kept in role/provider configuration. See
+  [`MODEL_OVERRIDE_POLICY.md`](MODEL_OVERRIDE_POLICY.md).
 - **Knowledge lifecycle** — every piece of information either gets
   `kept` / `promoted` / `archived` / `deleted`. Nothing lingers.
 
@@ -27,8 +30,22 @@ project. It is intentionally lean and strategic; concrete tasks live in
   routing, release-review process. Close-out:
   [`RELEASE_REVIEW_0.7.0.md`](RELEASE_REVIEW_0.7.0.md).
   Release notes: [`RELEASE_NOTES_0.7.0.md`](RELEASE_NOTES_0.7.0.md).
-- **0.8.0** — TBD. Candidate anchors in
-  [`RELEASE_REVIEW_0.7.0.md` §6](../../docs/RELEASE_REVIEW_0.7.0.md#6-suggested-080-anchors).
+- **0.8.0** skipped — planned as Governance & Knowledge Release,
+  but the scope (Handover Audit + Reviewer Runtime + Knowledge
+  Dry Run) had no independent identity once meta-planning began.
+  Pivoted.
+- **0.9.0** done — Solver Validation Release. It shipped validation
+  infrastructure, PR rework, backward-split handling, hard stops for
+  partial/reject patch failures, dynamic OpenCode/OpenRouter free-model
+  discovery, and corrected benchmark classification from run reports.
+  Close-out is recorded in [`CHANGELOG.md`](../CHANGELOG.md); the
+  original plan remains in [`PLANNING_0.9.0.md`](PLANNING_0.9.0.md).
+- **1.0.0** target — Runnable workflow app for AI-assisted repository
+  work. The app coordinates transparent, reviewable steps around one
+  repository: triage, planning, model selection, solver execution,
+  observation, review, rework, recovery, merge preparation, and
+  reporting. Product vision:
+  [`PRODUCT_VISION_1.0.md`](PRODUCT_VISION_1.0.md).
 
 ## Strategic Items (not yet in Backlog)
 

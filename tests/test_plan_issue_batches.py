@@ -1,4 +1,7 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 import sys
 from pathlib import Path
@@ -8,11 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from plan_issue_batches import (  # noqa: E402
+    MODEL_SOURCE_DEFAULT,
+    MODEL_SOURCE_CLI,
     PlannedIssue,
     batch_command_for_wave,
     extract_explicit_touches,
     infer_issue_touches,
     issue_from_github,
+    main,
     plan_waves,
     render_plan,
     touches_conflict,
@@ -91,7 +97,13 @@ class PlanIssueBatchesTests(unittest.TestCase):
             ]
         )
 
-        output = render_plan(waves, emit_commands=True, model="codex", base_branch="develop")
+        output = render_plan(
+            waves,
+            emit_commands=True,
+            model="codex",
+            base_branch="develop",
+            model_source=MODEL_SOURCE_DEFAULT,
+        )
 
         self.assertIn("#60 - Add optional fallback", output)
         self.assertIn("#64 - Add scheduler", output)
@@ -99,6 +111,109 @@ class PlanIssueBatchesTests(unittest.TestCase):
         self.assertIn("python scripts/solve_issues_batch.py", output)
         self.assertIn("--issue 60", output)
         self.assertIn("--issue 64", output)
+
+    def test_render_plan_includes_default_model_source(self):
+        waves = plan_waves(
+            [
+                self.make_issue(60, "Add optional fallback", ("scripts/solve_issues_batch.py",)),
+            ]
+        )
+
+        output = render_plan(
+            waves,
+            emit_commands=True,
+            model="codex",
+            base_branch="develop",
+            model_source=MODEL_SOURCE_DEFAULT,
+        )
+
+        self.assertIn("model_default: codex", output)
+        self.assertIn("model_effective: codex", output)
+        self.assertIn("model_source: default", output)
+
+    def test_render_plan_rejects_unknown_model_source(self):
+        waves = plan_waves(
+            [
+                self.make_issue(60, "Add optional fallback", ("scripts/solve_issues_batch.py",)),
+            ]
+        )
+
+        with self.assertRaises(ValueError):
+            render_plan(
+                waves,
+                emit_commands=True,
+                model="codex",
+                base_branch="develop",
+                model_source="env",
+            )
+
+    def test_render_plan_includes_cli_model_source(self):
+        waves = plan_waves(
+            [
+                self.make_issue(60, "Add optional fallback", ("scripts/solve_issues_batch.py",)),
+            ]
+        )
+
+        output = render_plan(
+            waves,
+            emit_commands=True,
+            model="opencode",
+            base_branch="develop",
+            model_source=MODEL_SOURCE_CLI,
+        )
+
+        self.assertIn("model_default: codex", output)
+        self.assertIn("model_effective: opencode", output)
+        self.assertIn("model_source: cli --model", output)
+        self.assertIn("--model opencode", output)
+
+    def test_render_plan_omits_model_source_without_commands(self):
+        waves = plan_waves(
+            [
+                self.make_issue(60, "Add optional fallback", ("scripts/solve_issues_batch.py",)),
+            ]
+        )
+
+        output = render_plan(
+            waves,
+            emit_commands=False,
+            model="codex",
+            base_branch="develop",
+            model_source=MODEL_SOURCE_DEFAULT,
+        )
+
+        self.assertNotIn("model_effective:", output)
+        self.assertNotIn("model_source:", output)
+
+    def test_main_reports_cli_model_source_for_emitted_commands(self):
+        issues = [self.make_issue(60, "Add optional fallback", ("scripts/solve_issues_batch.py",))]
+        stdout = StringIO()
+
+        with patch("plan_issue_batches.load_open_issues", return_value=issues):
+            with redirect_stdout(stdout):
+                rc = main(["--repo", "demo", "--emit-commands", "--model", "opencode"])
+
+        self.assertEqual(rc, 0)
+        output = stdout.getvalue()
+        self.assertIn("model_default: codex", output)
+        self.assertIn("model_effective: opencode", output)
+        self.assertIn("model_source: cli --model", output)
+        self.assertIn("--model opencode", output)
+
+    def test_main_reports_default_model_source_for_emitted_commands(self):
+        issues = [self.make_issue(60, "Add optional fallback", ("scripts/solve_issues_batch.py",))]
+        stdout = StringIO()
+
+        with patch("plan_issue_batches.load_open_issues", return_value=issues):
+            with redirect_stdout(stdout):
+                rc = main(["--repo", "demo", "--emit-commands"])
+
+        self.assertEqual(rc, 0)
+        output = stdout.getvalue()
+        self.assertIn("model_default: codex", output)
+        self.assertIn("model_effective: codex", output)
+        self.assertIn("model_source: default", output)
+        self.assertIn("--model codex", output)
 
     def test_batch_command_for_wave_uses_issue_numbers_and_repo(self):
         wave = plan_waves(

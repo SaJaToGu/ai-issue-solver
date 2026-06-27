@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import io
 import json
 import tempfile
 from datetime import datetime
@@ -7,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +27,8 @@ from solve_issues_batch import (  # noqa: E402
     run_issue_job,
     run_issue_jobs,
     get_result_badge,
+    main as batch_main,
+    parse_args,
 )
 
 
@@ -53,6 +58,7 @@ class BatchRunnerTests(unittest.TestCase):
             "close_issues": False,
             "fallback_model": None,
             "fallback_model_name": None,
+            "allow_opencode_state_conflict": False,
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -79,6 +85,17 @@ class BatchRunnerTests(unittest.TestCase):
         jobs = discover_issue_jobs(FakeBatchClient(), ["demo"], [7, 7, 404], "ai-generated")
 
         self.assertEqual(jobs, [IssueJob("demo", 7)])
+
+    def test_help_text_lists_openrouter_providers(self):
+        printed = io.StringIO()
+        with self.assertRaises(SystemExit) as raised:
+            with contextlib.redirect_stdout(printed):
+                parse_args(["--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        help_text = printed.getvalue()
+        self.assertIn("openrouter", help_text)
+        self.assertIn("openrouter_direct", help_text)
 
     def test_build_worker_command_forwards_solver_flags(self):
         args = self.make_args(
@@ -134,6 +151,37 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertIn("--model-name", cmd)
         self.assertIn("mistral/mistral-small-2603", cmd)
         self.assertNotIn("--defer-codex-rate-limit", cmd)
+
+    def test_build_worker_command_forwards_opencode_state_override(self):
+        args = self.make_args(
+            model="opencode",
+            model_name="mistral/mistral-small-2603",
+            allow_opencode_state_conflict=True,
+        )
+
+        cmd = build_worker_command(args, IssueJob("demo", 7), Path("scripts/solve_issues.py"))
+
+        self.assertIn("--allow-opencode-state-conflict", cmd)
+
+    def test_main_uses_shared_opencode_preflight_guard(self):
+        with patch("solve_issues_batch.load_env", return_value={"GITHUB_TOKEN": "t", "GITHUB_USER": "u"}), patch(
+            "solve_issues_batch.require_config_value",
+            side_effect=lambda cfg, key, label=None: cfg[key],
+        ), patch(
+            "solve_issues_batch.run_opencode_preflight_guard",
+            return_value=False,
+        ) as preflight_guard:
+            result = batch_main([
+                "--model",
+                "opencode",
+                "--repo",
+                "demo",
+                "--issue",
+                "7",
+            ])
+
+        self.assertEqual(result, 1)
+        preflight_guard.assert_called_once_with(allow_conflict=False)
 
     def test_build_worker_command_forwards_mistral_vibe(self):
         args = self.make_args(model="mistral-vibe")

@@ -15,10 +15,12 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT))
 
 from solve_issues import (  # noqa: E402
     GitHubClient,
     POST_SOLVE_TEST_COMMAND,
+    PROJECT_ROOT,
     PostSolveTestResult,
     PullRequestState,
     WorkerAssessment,
@@ -27,13 +29,14 @@ from solve_issues import (  # noqa: E402
     branch_has_changes_against_base,
     build_aider_command,
     build_issue_pr_body,
+    build_solve_prompt,
     build_opencode_command,
     build_opencode_prompt,
     build_vibe_command,
     build_worker_command,
     build_worker_env,
-    check_opencode_auth,
     clone_repo,
+    collect_pre_solver_hygiene_findings,
     cleanup_preserved_worktrees,
     create_ensemble_branches,
     create_run_report,
@@ -45,12 +48,12 @@ from solve_issues import (  # noqa: E402
     format_git_change_summary,
     format_post_solve_test_command,
     format_worker_output_tail,
-    find_opencode_executable,
     get_worker_display_name,
     git_status_porcelain,
     infer_aider_targets,
     is_secret_worker_path,
     parse_codex_reset_datetime,
+    _parse_gone_branches,
     plan_branch_recovery,
     print_branch_recovery_plan,
     relativize_repo_absolute_paths,
@@ -61,14 +64,25 @@ from solve_issues import (  # noqa: E402
     run_post_solve_tests,
     run_worker_command,
     sanitize_worker_prompt_secret_paths,
+    should_check_existing_open_pr,
     should_preserve_worktree,
     should_surface_worker_line,
     sleep_until_codex_reset,
+    main as solve_issues_main,
     validate_worker_changes,
     solve_issue,
     write_run_report,
     write_run_health,
     write_worker_diagnostics,
+)
+from workers.opencode_diagnostics import (  # noqa: E402
+    OpenCodeStatePreflight,
+    check_opencode_auth,
+    check_opencode_state_guard,
+    find_opencode_executable,
+    run_opencode_preflight_guard,
+    _looks_like_opencode_executable,
+    _print_opencode_state_preflight,
 )
 
 
@@ -92,14 +106,41 @@ class FakeGitHubSession:
         self.gets.append((url, params))
         if url.endswith("/repos/test-owner/demo"):
             return FakeResponse(200, {"default_branch": "main"})
+        if url.endswith("/repos/test-owner/demo/pulls"):
+            return FakeResponse(
+                200,
+                [
+                    {
+                        "number": 10,
+                        "title": "PR 10",
+                        "state": "open",
+                        "html_url": "https://github.com/test-owner/demo/pull/10",
+                        "head": {"ref": "ai/fix-issue-10"},
+                        "base": {"ref": "main"},
+                    }
+                ],
+            )
+        if url.endswith("/repos/test-owner/demo/pulls/10"):
+            return FakeResponse(
+                200,
+                {
+                    "number": 10,
+                    "title": "PR 10",
+                    "state": "open",
+                    "html_url": "https://github.com/test-owner/demo/pull/10",
+                    "mergeable_state": "clean",
+                    "head": {"ref": "ai/fix-issue-10"},
+                    "base": {"ref": "main"},
+                },
+            )
         if url.endswith("/repos/test-owner/demo/branches/main"):
             return FakeResponse(200, {"name": "main"})
         if url.endswith("/repos/test-owner/demo/branches/develop"):
             return FakeResponse(404, {"message": "Branch not found"})
         return FakeResponse(404, {"message": "Not found"})
 
-    def post(self, url, json=None):
-        self.posts.append((url, json))
+    def post(self, url, json=None, timeout=None):
+        self.posts.append((url, json, timeout))
         return FakeResponse(201, {"html_url": "https://github.com/test-owner/demo/pull/1"})
 
 
@@ -119,6 +160,47 @@ class BranchListSession:
                 ],
             )
         return FakeResponse(404, {"message": "Not found"})
+
+
+class PreSolverHygieneTests(unittest.TestCase):
+    def test_parse_gone_branches_detects_deleted_upstreams(self):
+        output = "\n".join([
+            "* develop 1234567 [origin/develop] ok",
+            "  ai/old 89abcde [origin/ai/old: gone] stale branch",
+            "  main 456789a [origin/main] ok",
+        ])
+
+        self.assertEqual(_parse_gone_branches(output), ["ai/old"])
+
+    def test_collect_pre_solver_hygiene_findings_reports_operator_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact_dir = root / "reports" / "tmp"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "validation-issue-999.md").write_text("body\n", encoding="utf-8")
+
+            findings = collect_pre_solver_hygiene_findings(root)
+
+        self.assertIn(
+            "operator artifact remains: reports/tmp/validation-issue-999.md",
+            findings,
+        )
+
+    def test_collect_pre_solver_hygiene_findings_reports_dirty_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+            path = root / "tracked.txt"
+            path.write_text("one\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            path.write_text("two\n", encoding="utf-8")
+
+            findings = collect_pre_solver_hygiene_findings(root)
+
+        self.assertIn("working tree has uncommitted changes", findings)
 
 
 class GitHubClientBranchTests(unittest.TestCase):
@@ -172,6 +254,21 @@ class GitHubClientBranchTests(unittest.TestCase):
 
         self.assertEqual(pr["html_url"], "https://github.com/test-owner/demo/pull/1")
         self.assertEqual(client.session.posts[0][1]["base"], "main")
+        self.assertEqual(client.session.posts[0][2], 30)
+
+    def test_create_pull_request_uses_request_timeout(self):
+        client = self.make_client()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            client.create_pull_request(
+                repo="demo",
+                title="Fix",
+                body="Body",
+                head="ai/fix-issue-1",
+                base="main",
+            )
+
+        self.assertEqual(client.session.posts[0][2], 30)
 
     def test_branch_exists_encodes_branch_names_with_slashes(self):
         client = self.make_client()
@@ -195,6 +292,70 @@ class GitHubClientBranchTests(unittest.TestCase):
             branches,
             ["ai/fix-issue-7", "ai/fix-issue-7-20260521-090807"],
         )
+
+    def test_get_open_pull_requests_alias_requests_open_prs(self):
+        client = self.make_client()
+
+        prs = client.get_open_pull_requests("demo")
+
+        self.assertEqual(prs[0]["number"], 10)
+        self.assertEqual(
+            client.session.gets[-1],
+            (
+                "https://api.github.com/repos/test-owner/demo/pulls",
+                {"state": "open", "per_page": 100},
+            ),
+        )
+
+    def test_get_pull_request_returns_detail_dict(self):
+        client = self.make_client()
+
+        pr = client.get_pull_request("demo", 10)
+
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr["mergeable_state"], "clean")
+
+
+class BenchmarkModeCliTests(unittest.TestCase):
+    def test_benchmark_mode_bypasses_existing_open_pr_guard(self):
+        args = SimpleNamespace(
+            retry=False,
+            compare_models=False,
+            rework=False,
+            benchmark=True,
+        )
+
+        self.assertFalse(should_check_existing_open_pr(args, 446))
+
+    def test_normal_mode_checks_existing_open_pr_guard(self):
+        args = SimpleNamespace(
+            retry=False,
+            compare_models=False,
+            rework=False,
+            benchmark=False,
+        )
+
+        self.assertTrue(should_check_existing_open_pr(args, 446))
+
+    def test_benchmark_requires_skip_pr(self):
+        argv = [
+            "solve_issues.py",
+            "--repo",
+            "demo",
+            "--issue",
+            "1",
+            "--model",
+            "openrouter_direct",
+            "--benchmark",
+        ]
+
+        with patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as ctx:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        solve_issues_main()
+
+        self.assertEqual(ctx.exception.code, 2)
 
 
 class BranchRecoveryTests(unittest.TestCase):
@@ -261,6 +422,134 @@ class BranchRecoveryTests(unittest.TestCase):
 
         self.assertEqual(plan.action, "skip_existing_pr")
         self.assertEqual(plan.pull_request, pr)
+
+    def test_rework_reuses_single_matching_open_pr(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7",
+            base_ref="develop",
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "rework_existing_pr")
+        self.assertEqual(plan.branch, "ai/fix-issue-7")
+        self.assertEqual(plan.pull_request, pr)
+
+    def test_rework_refuses_base_branch_mismatch(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7",
+            base_ref="main",
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "skip_rework_ineligible")
+        self.assertIn("Rework-Modus verweigert", plan.message)
+
+    def test_rework_refuses_head_branch_mismatch(self):
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-8",
+            base_ref="develop",
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "skip_rework_ineligible")
+        self.assertIn("Rework-Modus verweigert", plan.message)
+
+    def test_rework_refuses_multiple_open_pr_matches(self):
+        default_pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7",
+            base_ref="develop",
+        )
+        retry_pr = PullRequestState(
+            number=13,
+            html_url="https://github.com/test-owner/demo/pull/13",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7-20260521-090807",
+            base_ref="develop",
+        )
+        client = self.make_client(
+            branch_exists=True,
+            branches=["ai/fix-issue-7", "ai/fix-issue-7-20260521-090807"],
+            pull_requests={
+                "ai/fix-issue-7": [default_pr],
+                "ai/fix-issue-7-20260521-090807": [retry_pr],
+            },
+        )
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "skip_rework_ineligible")
+        self.assertEqual(len(plan.found_pull_requests), 2)
+
+    def test_rework_without_open_pr_falls_back_to_normal_reuse(self):
+        client = self.make_client(branch_exists=True, pull_requests=[])
+
+        plan = plan_branch_recovery(
+            client,
+            "demo",
+            7,
+            "ai/fix-issue-7",
+            stdin_isatty_fn=lambda: False,
+            rework=True,
+            base_branch="develop",
+        )
+
+        self.assertEqual(plan.action, "reuse_branch")
+        self.assertEqual(plan.branch, "ai/fix-issue-7")
 
     def test_closed_unmerged_pr_uses_new_branch_without_tty(self):
         pr = PullRequestState(
@@ -556,6 +845,73 @@ class BranchRecoveryTests(unittest.TestCase):
             summary_calls[0][1]["git_change_summary"],
             ["Git-Änderungsübersicht:", "  README.md | 1 +"],
         )
+
+    @patch("solve_issues.create_issue_pull_request")
+    @patch("solve_issues.format_git_change_summary", return_value=[])
+    @patch("solve_issues.git_status_porcelain", return_value="")
+    @patch("solve_issues.assess_worker_result",
+           return_value=WorkerAssessment(should_continue=False, has_changes=False, reason="noop"))
+    @patch("solve_issues.get_worker_adapter")
+    @patch("solve_issues.branch_has_changes_against_base", return_value=True)
+    @patch("solve_issues.checkout_existing_remote_branch", return_value=True)
+    @patch("solve_issues.clone_repo", return_value=True)
+    def test_rework_existing_pr_branch_runs_worker_despite_existing_changes(
+        self, mock_clone, mock_checkout, mock_branch_has_changes,
+        mock_get_adapter, mock_assess, mock_git_status,
+        mock_format_summary, mock_create_pr,
+    ):
+        adapter = unittest.mock.MagicMock()
+        adapter.get_display_name.return_value = "Fake Codex"
+        adapter.build_env.return_value = {}
+        adapter.run.return_value = (
+            WorkerRunResult(0, ""),
+            SimpleNamespace(
+                all_outputs=[],
+                rate_limit_note=None,
+                opencode_session_totals=None,
+                opencode_budget_exceeded=None,
+                openrouter_usage=None,
+                openrouter_budget_exceeded=None,
+                openrouter_request_timed_out=False,
+                vibe_log_snippet="",
+            ),
+        )
+        mock_get_adapter.return_value = adapter
+        pr = PullRequestState(
+            number=12,
+            html_url="https://github.com/test-owner/demo/pull/12",
+            state="open",
+            merged=False,
+            head_ref="ai/fix-issue-7",
+            base_ref="main",
+        )
+        client = self.make_client(branch_exists=True, pull_requests=[pr])
+        issue = {"number": 7, "title": "Fix recovery", "body": ""}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = solve_issue(
+                    client=client,
+                    issue=issue,
+                    repo="demo",
+                    model="codex",
+                    model_name="",
+                    config={"owner": "test-owner", "config": {}},
+                    token="token",
+                    dry_run=False,
+                    base_branch="main",
+                    close_issues=False,
+                    run_report_dir=tmpdir,
+                    rework=True,
+                )
+
+            metadata = json.loads((Path(tmpdir) / "metadata.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(result)
+        adapter.run.assert_called_once()
+        mock_create_pr.assert_not_called()
+        self.assertEqual(metadata["rework"]["rework_of"], 12)
+        self.assertEqual(metadata["rework"]["rework_reason"], "existing_open_pr")
 
 
 class WorkerAssessmentTests(unittest.TestCase):
@@ -930,7 +1286,7 @@ class AiderCommandTests(unittest.TestCase):
             opencode.chmod(0o755)
             inactive_python = str(Path(tmpdir) / "bin" / "python")
 
-            with patch("solve_issues.sys.executable", inactive_python):
+            with patch("workers.opencode_diagnostics.sys.executable", inactive_python):
                 found = find_opencode_executable(tmpdir)
 
         self.assertEqual(found, str(opencode))
@@ -942,8 +1298,8 @@ class AiderCommandTests(unittest.TestCase):
             home_opencode.write_text("#!/bin/sh\n", encoding="utf-8")
             home_opencode.chmod(0o755)
 
-            with patch("solve_issues.Path.home", return_value=Path(tmpdir)):
-                with patch("solve_issues.shutil.which", return_value=None):
+            with patch("workers.opencode_diagnostics.Path.home", return_value=Path(tmpdir)):
+                with patch("workers.opencode_diagnostics.shutil.which", return_value=None):
                     found = find_opencode_executable("/missing/repo")
 
         self.assertEqual(found, str(home_opencode))
@@ -1075,6 +1431,80 @@ class AiderCommandTests(unittest.TestCase):
         self.assertIn("OpenCode wurde bereits mit `--dir`", prompt)
         self.assertIn("repo-relative Pfade", prompt)
         self.assertIn("Fix issue", prompt)
+
+    def test_solve_prompt_includes_recently_removed_patterns_when_configured(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            patterns_file = Path(tmpdir) / "AGENTS.md"
+            patterns_file.write_text(
+                "# Agents\n\n"
+                "## Recently Removed Patterns (last 90 days)\n\n"
+                "| Removed by | Date | Pattern | Why removed |\n"
+                "|------------|------|---------|-------------|\n"
+                "| PR #439 | 2026-06-25 | Static `free_models` list including `opencode/minimax-m3-free` | Dynamic discovery is source of truth. |\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"AIS_RECENTLY_REMOVED_PATTERNS_FILE": str(patterns_file)}):
+                prompt = build_solve_prompt(389, "Fix free models", "Please integrate free models.")
+
+        self.assertIn("RECENTLY REMOVED PATTERNS", prompt)
+        self.assertIn("Do not reintroduce them", prompt)
+        self.assertIn("Static `free_models` list", prompt)
+        self.assertIn("opencode/minimax-m3-free", prompt)
+
+    def test_solve_prompt_omits_recently_removed_patterns_when_file_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            patterns_file = Path(tmpdir) / "AGENTS.md"
+            patterns_file.write_text("", encoding="utf-8")
+            with patch.dict(os.environ, {"AIS_RECENTLY_REMOVED_PATTERNS_FILE": str(patterns_file)}):
+                prompt = build_solve_prompt(1, "Title", "Body")
+
+        self.assertNotIn("RECENTLY REMOVED PATTERNS", prompt)
+        self.assertIn("=== ISSUE #1: Title ===", prompt)
+
+    def test_solve_prompt_omits_recently_removed_patterns_when_file_missing(self):
+        missing_file = Path(tempfile.gettempdir()) / "missing-recently-removed-patterns.md"
+        with patch.dict(os.environ, {"AIS_RECENTLY_REMOVED_PATTERNS_FILE": str(missing_file)}):
+            prompt = build_solve_prompt(1, "Title", "Body")
+
+        self.assertNotIn("RECENTLY REMOVED PATTERNS", prompt)
+        self.assertIn("=== ISSUE #1: Title ===", prompt)
+
+    def test_solve_prompt_does_not_leak_absolute_project_root_path(self):
+        # Live-review finding (Guido, 2026-06-25): the default
+        # docs/AGENTS.md resolution returns an absolute path under
+        # PROJECT_ROOT, which was being included verbatim in the worker
+        # prompt. The prompt must use the repo-relative path instead
+        # so the operator's local filesystem layout is not exposed.
+        with patch.dict(os.environ, {}, clear=True):
+            prompt = build_solve_prompt(389, "Title", "Body")
+
+        self.assertIn("RECENTLY REMOVED PATTERNS", prompt)
+        self.assertIn("docs/AGENTS.md", prompt)
+        self.assertNotIn(str(PROJECT_ROOT), prompt)
+        self.assertNotIn("/Users/", prompt)
+        self.assertNotIn(tempfile.gettempdir(), prompt)
+
+    def test_solve_prompt_does_not_leak_absolute_path_from_env_var_override(self):
+        # When the operator explicitly sets AIS_RECENTLY_REMOVED_PATTERNS_FILE
+        # to an absolute path that lives outside PROJECT_ROOT, we still
+        # display the absolute path verbatim (it was an explicit choice,
+        # not a leak from default config).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outside_file = Path(tmpdir) / "external-patterns.md"
+            outside_file.write_text(
+                "# External\n\n"
+                "## Recently Removed Patterns\n\n"
+                "- example\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"AIS_RECENTLY_REMOVED_PATTERNS_FILE": str(outside_file)},
+            ):
+                prompt = build_solve_prompt(2, "Title", "Body")
+
+        self.assertIn("RECENTLY REMOVED PATTERNS", prompt)
+        self.assertIn(str(outside_file), prompt)
 
     def test_opencode_command_requires_executable(self):
         with patch("solve_issues.find_opencode_executable", return_value=None):
@@ -2422,7 +2852,7 @@ class OpenCodePreflightTests(unittest.TestCase):
 
             with unittest.mock.patch(
                 "subprocess.run", side_effect=[version_mock, auth_mock]
-            ):
+            ), unittest.mock.patch("solve_issues._print_opencode_state_preflight"):
                 printed = io.StringIO()
                 with contextlib.redirect_stdout(printed):
                     exit_code = run_opencode_diagnostic()
@@ -2432,6 +2862,183 @@ class OpenCodePreflightTests(unittest.TestCase):
         self.assertIn("OpenCode Diagnostic", output)
         self.assertIn("0.1.0", output)
         self.assertIn("Authentifiziert", output)
+
+    def test_opencode_state_preflight_reports_wal_and_version_mix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "opencode.db"
+            db_path.write_text("", encoding="utf-8")
+            Path(f"{db_path}-wal").write_text("", encoding="utf-8")
+            Path(f"{db_path}-shm").write_text("", encoding="utf-8")
+
+            process = SimpleNamespace(
+                pid="123",
+                executable="/Applications/MiniMax Code.app/opencode",
+                version="1.14.28",
+            )
+
+            with patch(
+                "workers.opencode_session_reader.find_opencode_db_path",
+                return_value=db_path,
+            ), patch(
+                "workers.opencode_diagnostics._find_opencode_serve_processes",
+                return_value=[process],
+            ):
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    _print_opencode_state_preflight("/Users/Guido/.opencode/bin/opencode", "1.15.13")
+
+        output = printed.getvalue()
+        self.assertIn("OpenCode WAL-Dateien", output)
+        self.assertIn("opencode.db-wal", output)
+        self.assertIn("pid=123", output)
+        self.assertIn("Versions-/Executable-Konflikt", output)
+        self.assertIn("Root Cause", output)
+        self.assertIn("version=1.15.13", output)
+        self.assertIn("version=1.14.28", output)
+        self.assertIn("WAL/SHM-Dateien", output)
+
+    def test_opencode_state_preflight_reports_wal_without_blocking_version_mix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "opencode.db"
+            db_path.write_text("", encoding="utf-8")
+            Path(f"{db_path}-wal").write_text("", encoding="utf-8")
+
+            with patch(
+                "workers.opencode_session_reader.find_opencode_db_path",
+                return_value=db_path,
+            ), patch(
+                "workers.opencode_diagnostics._find_opencode_serve_processes",
+                return_value=[],
+            ):
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    _print_opencode_state_preflight("/Users/Guido/.opencode/bin/opencode", "1.15.13")
+
+        output = printed.getvalue()
+        self.assertIn("OpenCode WAL-Dateien", output)
+        self.assertIn("opencode.db-wal", output)
+        self.assertIn("opencode serve: kein laufender Prozess gefunden", output)
+        self.assertNotIn("Versions-/Executable-Konflikt", output)
+        self.assertNotIn("Root Cause", output)
+
+    def test_opencode_process_filter_ignores_shell_commands_that_mention_serve(self):
+        self.assertFalse(_looks_like_opencode_executable("/bin/zsh -c gh issue create"))
+        self.assertTrue(_looks_like_opencode_executable("/Users/Guido/.opencode/bin/opencode"))
+
+    def test_opencode_state_guard_blocks_version_mix_by_default(self):
+        process = SimpleNamespace(
+            pid="123",
+            executable="/Applications/MiniMax Code.app/opencode",
+            version="1.14.28",
+        )
+        preflight = OpenCodeStatePreflight(
+            opencode_exe="/Users/Guido/.opencode/bin/opencode",
+            cli_version="1.15.13",
+            db_path=None,
+            wal_files=[],
+            serve_processes=[process],
+        )
+
+        with patch("workers.opencode_diagnostics._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "workers.opencode_diagnostics._collect_opencode_state_preflight",
+            return_value=preflight,
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                allowed = check_opencode_state_guard(
+                    "/Users/Guido/.opencode/bin/opencode",
+                    print_state=False,
+                )
+
+        self.assertFalse(allowed)
+        output = printed.getvalue()
+        self.assertIn("Worker-Start blockiert", output)
+        self.assertIn("Versions-/Executable-Konflikt", output)
+        self.assertIn("kein reines WAL-Problem", output)
+        self.assertIn("Recovery", output)
+        self.assertIn("Versionen angleichen", output)
+        self.assertIn("WAL/SHM nicht als Root Cause", output)
+
+    def test_opencode_state_guard_allows_clean_state(self):
+        preflight = OpenCodeStatePreflight(
+            opencode_exe="/Users/Guido/.opencode/bin/opencode",
+            cli_version="1.15.13",
+            db_path=None,
+            wal_files=[],
+            serve_processes=[],
+        )
+
+        with patch("workers.opencode_diagnostics._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "workers.opencode_diagnostics._collect_opencode_state_preflight",
+            return_value=preflight,
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                allowed = check_opencode_state_guard(
+                    "/Users/Guido/.opencode/bin/opencode",
+                    print_state=False,
+                )
+
+        self.assertTrue(allowed)
+        self.assertNotIn("Worker-Start blockiert", printed.getvalue())
+
+    def test_opencode_state_guard_allows_explicit_override(self):
+        process = SimpleNamespace(
+            pid="123",
+            executable="/Applications/MiniMax Code.app/opencode",
+            version="1.14.28",
+        )
+        preflight = OpenCodeStatePreflight(
+            opencode_exe="/Users/Guido/.opencode/bin/opencode",
+            cli_version="1.15.13",
+            db_path=None,
+            wal_files=[],
+            serve_processes=[process],
+        )
+
+        with patch("workers.opencode_diagnostics._read_opencode_cli_version", return_value="1.15.13"), patch(
+            "workers.opencode_diagnostics._collect_opencode_state_preflight",
+            return_value=preflight,
+        ):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                allowed = check_opencode_state_guard(
+                    "/Users/Guido/.opencode/bin/opencode",
+                    allow_conflict=True,
+                    print_state=False,
+                )
+
+        self.assertTrue(allowed)
+        self.assertIn("ueberstimmt", printed.getvalue())
+
+    def test_opencode_preflight_guard_reports_missing_cli(self):
+        with patch("workers.opencode_diagnostics.find_opencode_executable", return_value=None):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                allowed = run_opencode_preflight_guard()
+
+        self.assertFalse(allowed)
+        self.assertIn("OpenCode CLI wurde nicht gefunden", printed.getvalue())
+
+    def test_opencode_preflight_guard_forwards_shared_state_check(self):
+        with patch(
+            "workers.opencode_diagnostics.find_opencode_executable",
+            return_value="/usr/bin/opencode",
+        ), patch(
+            "workers.opencode_diagnostics.check_opencode_state_guard",
+            return_value=True,
+        ) as state_guard:
+            allowed = run_opencode_preflight_guard(
+                allow_conflict=True,
+                print_state=False,
+            )
+
+        self.assertTrue(allowed)
+        state_guard.assert_called_once_with(
+            "/usr/bin/opencode",
+            allow_conflict=True,
+            print_state=False,
+        )
 
 
 class TestOpenRouterDirectWorkerPath(unittest.TestCase):
@@ -2458,6 +3065,126 @@ class TestOpenRouterDirectWorkerPath(unittest.TestCase):
             api_key="test-key",
             model="mistralai/mistral-large",
         )
+
+
+class TestReworkFlagUsageLog(unittest.TestCase):
+    """Tests for `_log_rework_flag_use` (issue #412 / §48).
+
+    Each invocation that uses any of `--rework`, `--retry`,
+    `--rework-pr`, `--compare-models` should append one JSON line to
+    `reports/usage/rework-flags.jsonl`. Invocations without those
+    flags must be no-ops.
+    """
+
+    def setUp(self):
+        # Force the helper into a temp dir so we never touch the real
+        # repo's `reports/usage/rework-flags.jsonl`.
+        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp_path = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _patch_log_path(self):
+        import solve_issues
+
+        log_path = self._tmp_path / "rework-flags.jsonl"
+        return patch.object(solve_issues, "REWORK_FLAG_USAGE_LOG", log_path)
+
+    def _read_entries(self) -> list[dict]:
+        log_path = self._tmp_path / "rework-flags.jsonl"
+        with log_path.open("r", encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_no_rework_flag_writes_nothing(self):
+        import solve_issues
+        from solve_issues import _log_rework_flag_use
+
+        args = SimpleNamespace(
+            rework=False,
+            retry=False,
+            rework_pr=0,
+            compare_models=False,
+            model="opencode",
+            repo="some-repo",
+            issue=42,
+            dry_run=False,
+        )
+        with self._patch_log_path():
+            _log_rework_flag_use(args)
+            self.assertFalse(
+                solve_issues.REWORK_FLAG_USAGE_LOG.exists(),
+                "log file must not be created when no rework flag is active",
+            )
+
+    def test_rework_flag_writes_entry(self):
+        import solve_issues
+        from solve_issues import _log_rework_flag_use
+
+        args = SimpleNamespace(
+            rework=True,
+            retry=False,
+            rework_pr=0,
+            compare_models=False,
+            model="opencode",
+            repo="some-repo",
+            issue=42,
+            dry_run=False,
+        )
+        with self._patch_log_path():
+            _log_rework_flag_use(args)
+            self.assertTrue(solve_issues.REWORK_FLAG_USAGE_LOG.exists())
+            entries = self._read_entries()
+            self.assertEqual(len(entries), 1)
+            self.assertIn("--rework", entries[0]["flags"])
+            self.assertEqual(entries[0]["model"], "opencode")
+            self.assertEqual(entries[0]["issue"], 42)
+            self.assertIsNone(entries[0]["rework_pr"])
+
+    def test_rework_pr_flag_records_pr_number(self):
+        import solve_issues
+        from solve_issues import _log_rework_flag_use
+
+        args = SimpleNamespace(
+            rework=False,
+            retry=False,
+            rework_pr=405,
+            compare_models=False,
+            model="openrouter_direct",
+            repo="ai-issue-solver",
+            issue=None,
+            dry_run=True,
+        )
+        with self._patch_log_path():
+            _log_rework_flag_use(args)
+            entries = self._read_entries()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["flags"], ["--rework-pr 405"])
+            self.assertEqual(entries[0]["rework_pr"], 405)
+            self.assertTrue(entries[0]["dry_run"])
+
+    def test_multiple_flags_combined(self):
+        import solve_issues
+        from solve_issues import _log_rework_flag_use
+
+        args = SimpleNamespace(
+            rework=False,
+            retry=True,
+            rework_pr=0,
+            compare_models=True,
+            model="opencode",
+            repo="some-repo",
+            issue=7,
+            dry_run=False,
+        )
+        with self._patch_log_path():
+            _log_rework_flag_use(args)
+            entries = self._read_entries()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(
+                sorted(entries[0]["flags"]),
+                sorted(["--retry", "--compare-models"]),
+            )
 
 
 if __name__ == "__main__":

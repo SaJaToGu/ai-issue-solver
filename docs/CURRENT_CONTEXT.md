@@ -2,7 +2,7 @@
 
 Created: 2026-06-15 (file introduced as part of Release 0.7.0 information
 architecture audit, issue #309).
-Last rewritten: 2026-06-18 (after Release 0.7.0 close-out).
+Last rewritten: 2026-06-27 (0.9.0 release close-out).
 
 This document is a **short-lived snapshot** of where the project stands. It
 should be revisited after every release via
@@ -11,30 +11,39 @@ whenever the situation changes materially.
 
 ## Current Release
 
-- Release 0.7.0 closed (see
-  [`RELEASE_REVIEW_0.7.0.md`](RELEASE_REVIEW_0.7.0.md) and
-  [`RELEASE_NOTES_0.7.0.md`](RELEASE_NOTES_0.7.0.md)).
-- HEAD at close: `b8fabf5`. Five architecture issues (#311, #312, #313,
-  #314, #315) plus the #309 audit all delivered.
-- Issue #309 is the meta-issue and is closed by the release review
-  document.
-- 0.8.0 planning has not started.
+- Release 0.9.0 is closed as of 2026-06-27. The version file remains
+  `0.9.0`; the historical `v0.9.0` tag already exists on the earlier
+  milestone-sync commit.
+- `develop` is the release source branch. The close-out target is to
+  fast-forward `main` to the current `develop` head.
+- Release notes are in [`CHANGELOG.md`](../CHANGELOG.md). The original
+  plan remains in [`PLANNING_0.9.0.md`](PLANNING_0.9.0.md) as a
+  historical planning artifact.
 
-## Current Focus Areas
+## Current Focus After 0.9.0
 
-### 0.8.0 candidates (from the 0.7.0 close-out)
+0.9.0 answered the practical solver-validation question by hardening the
+pipeline around real failures:
 
-- **Wire reviewer prompts to a runtime** in a separate script (not in
-  `solve_issues.py`). Issue to be filed.
-- **Handover document audit** — deferred from #309. Issue to be filed.
-- **`architecture_agent` (future) — promote or remove.** Issue to be
-  filed.
-- **Backlog triage for 0.8.0** — `docs/BACKLOG/open.md` is 1043 lines and
-  most items are not prioritised.
-- **Knowledge Manager first dry-run** for the `archive` rule (no human
-  review). `promote` / `delete` stay human-gated.
-- **Watchdog cron + dashboard wiring** — verify the JSON status report
-  is consumable by `status_dashboard.py`.
+- worker runs with partial patch application or reject artifacts now
+  hard-stop instead of creating misleading PRs;
+- rework prompts are anchored to the branch tip and can use a larger
+  configurable output cap;
+- OpenCode and OpenRouter free-model discovery are dynamic instead of
+  relying on stale static lists;
+- benchmark sweeps now classify results from run reports, so empty
+  responses and OpenRouter 429s are visible as failures instead of
+  `success_no_pr`;
+- free models are documented as experimental and supervised-only. Paid
+  OpenRouter `openai/gpt-4o` remains the strategic default for issues
+  whose PRs are intended to merge.
+
+Remaining open work is intentionally narrow:
+
+- §59 — Mode-C patch-mismatch hardening remains watchlist-only until
+  there are at least three normal solve-path Mode-C data points.
+- §63 — OpenCode app-state conflict remains parked because it depends on
+  app-side version alignment rather than a repository-only fix.
 
 ### Architectural invariants to preserve
 
@@ -60,10 +69,33 @@ whenever the situation changes materially.
 - ~~How should outside-in reviews be performed?~~ `architecture_agent`
   (future, parked) for project direction; `reviewer_architecture`
   for per-PR review. Roles split to avoid overlap.
+- ~~Should 0.8.0 ship as planned?~~ No. The planned scope had no
+  independent identity. Pivoted to 0.9.0 Solver Validation.
+
+## Resolved Questions (closed by 0.9.0 prep, 2026-06-18)
+
+- ~~Backlog health~~ — `docs/BACKLOG/open.md` was 648 lines, ten
+  stale sections moved to `done.md` via PR #330 (commit `f515ac7`).
+  §37 and §39 parked under `## Parked / Future` with explicit
+  `Parked because:` annotations. Old `NEXT_BACKLOG.md` references
+  inside §22 replaced with `open.md`. File is now a reliable input
+  for the validation run's issue selection.
+- ~~Cost-limit flags on batch / overnight~~ — `--max-run-cost-usd`,
+  `--max-run-input-tokens`, `--max-run-output-tokens` now flow from
+  `solve_issues_batch.py` and `run_overnight.py` to the worker
+  process. PR #328 (commit `85c8821`), 9 new tests.
+- ~~Reviewer runtime~~ — `scripts/review_pr.py` exists; can be invoked
+  as `python scripts/review_pr.py --pr N --role code` (or
+  `architecture` / `documentation`). PR #329 (commit `bfc65c7`),
+  45 new tests.
+- ~~Local branch cleanup helper~~ — `post_merge_cleanup.py
+  --local-branches [--base develop] [--apply] [--show-unmerged]`
+  exists with the safety rule pinned by 17 tests. PR #332 (commit
+  `5d1513f`).
 
 ## Open Questions
 
-- **Handover document audit** — the audit deliverable for #309 was
-  deferred. Open.
-- **Backlog health** — `docs/BACKLOG/open.md` is large and
-  under-prioritised. Open.
+- **0.10.0 scope** — not yet committed in tracked documentation.
+- **Free-model production readiness** — current evidence says
+  experimental/supervised-only. Revisit only with fresh benchmark data
+  and after §62/§67-style methodology checks remain green.

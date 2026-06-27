@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import argparse
 from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import sys
 
@@ -14,15 +17,13 @@ from run_overnight import (  # noqa: E402
     IssueOutcome,
     StepResult,
     build_caffeinate_command,
-    build_batch_command,
-    build_dashboard_command,
     build_pull_command,
     can_use_caffeinate,
-    classify_status,
     collect_issue_outcomes,
     create_session_dir,
     detect_warning_markers,
     format_duration,
+    main as overnight_main,
     parse_args,
     parse_run_dir_timestamp,
     parse_summary_file,
@@ -51,6 +52,7 @@ class OvernightRunnerTests(unittest.TestCase):
             "runs_dir": Path("reports/runs"),
             "dashboard_output": Path("reports/status-dashboard.html"),
             "owner": None,
+            "allow_opencode_state_conflict": False,
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -61,70 +63,26 @@ class OvernightRunnerTests(unittest.TestCase):
             ["git", "pull", "--ff-only", "origin", "develop"],
         )
 
-    def test_build_batch_command_forwards_bounded_solver_flags(self):
-        args = self.make_args(
-            model="ollama",
-            model_name="deepseek-coder:6.7b",
-            repo="demo",
-            issue=[7, 8],
-            workers=3,
-            dry_run=True,
-            close_issues=True,
-            fallback_model="mistral",
-            fallback_model_name="magistral-medium-2509",
-        )
+    def test_main_uses_shared_opencode_preflight_guard(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir = Path(tmpdir) / "overnight"
+            session_dir.mkdir()
+            with patch("run_overnight.create_session_dir", return_value=session_dir), patch(
+                "run_overnight.run_opencode_preflight_guard",
+                return_value=False,
+            ) as preflight_guard:
+                result = overnight_main([
+                    "--model",
+                    "opencode",
+                    "--repo",
+                    "demo",
+                    "--issue",
+                    "7",
+                    "--skip-pull",
+                ])
 
-        command = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
-
-        self.assertEqual(command[0], sys.executable)
-        self.assertIn("scripts/solve_issues_batch.py", command)
-        self.assertIn("--workers", command)
-        self.assertIn("3", command)
-        self.assertIn("--base-branch", command)
-        self.assertIn("develop", command)
-        self.assertEqual(command.count("--issue"), 2)
-        self.assertIn("--fallback-model", command)
-        self.assertIn("mistral", command)
-        self.assertIn("--fallback-model-name", command)
-        self.assertIn("magistral-medium-2509", command)
-        self.assertIn("--dry-run", command)
-        self.assertIn("--close-issues", command)
-
-    def test_build_batch_command_forwards_health_and_verbosity_flags(self):
-        args = self.make_args(
-            model="opencode",
-            worker_health_timeout_minutes=15,
-            unhealthy_action="stop",
-            unhealthy_retries=2,
-            verbosity="normal",
-        )
-
-        command = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
-
-        self.assertIn("--worker-health-timeout-minutes", command)
-        self.assertIn("15", command)
-        self.assertIn("--unhealthy-action", command)
-        self.assertIn("stop", command)
-        self.assertIn("--unhealthy-retries", command)
-        self.assertIn("2", command)
-        self.assertIn("--verbosity", command)
-        self.assertIn("normal", command)
-
-    def test_build_dashboard_command_uses_configured_paths_and_owner(self):
-        args = self.make_args(
-            runs_dir=Path("custom/runs"),
-            dashboard_output=Path("custom/dashboard.html"),
-            owner="test-owner",
-        )
-
-        command = build_dashboard_command(args, Path("scripts/status_dashboard.py"))
-
-        self.assertIn("--runs-dir", command)
-        self.assertIn("custom/runs", command)
-        self.assertIn("--output", command)
-        self.assertIn("custom/dashboard.html", command)
-        self.assertIn("--owner", command)
-        self.assertIn("test-owner", command)
+        self.assertEqual(result, 1)
+        preflight_guard.assert_called_once_with(allow_conflict=False)
 
     def test_build_caffeinate_command_can_watch_current_process(self):
         self.assertEqual(
@@ -314,15 +272,6 @@ line 2
         self.assertIn("README.md | 1 +", fields["git_diff_stat"])
         self.assertIn("scripts/dashboard.py | 2 +-", fields["git_diff_stat"])
         self.assertEqual(fields["output_tail"], "line 1\nline 2")
-
-    def test_classify_status_groups_known_states(self):
-        self.assertEqual(classify_status(""), "unknown")
-        self.assertEqual(classify_status("queued"), "queued")
-        self.assertEqual(classify_status("started"), "running")
-        self.assertEqual(classify_status("pr_created"), "successful")
-        self.assertEqual(classify_status("no_changes"), "failed")
-        self.assertEqual(classify_status("clone_failed"), "failed")
-        self.assertEqual(classify_status("archived"), "archived")
 
     def test_collect_issue_outcomes_returns_sorted_outcomes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -515,9 +464,91 @@ Python-Syntaxpruefung fehlgeschlagen
         self.assertEqual(format_duration(64), "1m 4s")
         self.assertEqual(format_duration(3661), "1h 1m 1s")
 
-    def test_classify_status_treats_no_changes_as_failed(self):
-        self.assertEqual(classify_status("no_changes"), "failed")
-        self.assertEqual(classify_status("nonzero_without_changes"), "failed")
+
+# ── Cost-limit / runtime flag forwarding ──────────────────────────────────
+
+def _has_pair(cmd: list[str], flag: str, value: str) -> bool:
+    for i, token in enumerate(cmd):
+        if token == flag and i + 1 < len(cmd) and cmd[i + 1] == value:
+            return True
+    return False
+
+
+class OvernightCostLimitForwardingTests(unittest.TestCase):
+    """Verify that run_overnight's parse_args accepts budget/runtime limits
+    and forwards them through solver_commands.build_batch_command."""
+
+    def test_parse_args_accepts_budget_flags(self):
+        args = parse_args([
+            "--model", "opencode",
+            "--max-run-cost-usd", "5.0",
+            "--max-run-input-tokens", "100000",
+            "--max-run-output-tokens", "20000",
+            "--skip-pull",
+        ])
+        self.assertEqual(args.max_run_cost_usd, 5.0)
+        self.assertEqual(args.max_run_input_tokens, 100000)
+        self.assertEqual(args.max_run_output_tokens, 20000)
+
+    def test_parse_args_accepts_runtime_flags(self):
+        args = parse_args([
+            "--model", "opencode",
+            "--max-run-runtime-seconds", "600",
+            "--max-post-worker-runtime-seconds", "120",
+            "--skip-pull",
+        ])
+        self.assertEqual(args.max_run_runtime_seconds, 600.0)
+        self.assertEqual(args.max_post_worker_runtime_seconds, 120.0)
+
+    def test_parse_args_omits_budget_flags_by_default(self):
+        args = parse_args(["--model", "opencode", "--skip-pull"])
+        self.assertIsNone(args.max_run_cost_usd)
+        self.assertIsNone(args.max_run_input_tokens)
+        self.assertIsNone(args.max_run_output_tokens)
+
+    def test_parse_args_omits_runtime_flags_by_default(self):
+        args = parse_args(["--model", "opencode", "--skip-pull"])
+        self.assertIsNone(args.max_run_runtime_seconds)
+        self.assertIsNone(args.max_post_worker_runtime_seconds)
+
+    def test_build_batch_command_forwards_budget_flags(self):
+        from solver_commands import build_batch_command
+
+        args = parse_args([
+            "--model", "opencode",
+            "--max-run-cost-usd", "2.5",
+            "--max-run-input-tokens", "50000",
+            "--max-run-output-tokens", "10000",
+            "--skip-pull",
+        ])
+        cmd = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+        self.assertTrue(_has_pair(cmd, "--max-run-cost-usd", "2.5"))
+        self.assertTrue(_has_pair(cmd, "--max-run-input-tokens", "50000"))
+        self.assertTrue(_has_pair(cmd, "--max-run-output-tokens", "10000"))
+
+    def test_build_batch_command_forwards_runtime_flags(self):
+        from solver_commands import build_batch_command
+
+        args = parse_args([
+            "--model", "opencode",
+            "--max-run-runtime-seconds", "900",
+            "--max-post-worker-runtime-seconds", "180",
+            "--skip-pull",
+        ])
+        cmd = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+        self.assertTrue(_has_pair(cmd, "--max-run-runtime-seconds", "900.0"))
+        self.assertTrue(_has_pair(cmd, "--max-post-worker-runtime-seconds", "180.0"))
+
+    def test_build_batch_command_omits_limits_when_not_set(self):
+        from solver_commands import build_batch_command
+
+        args = parse_args(["--model", "opencode", "--skip-pull"])
+        cmd = build_batch_command(args, Path("scripts/solve_issues_batch.py"))
+        self.assertNotIn("--max-run-cost-usd", cmd)
+        self.assertNotIn("--max-run-input-tokens", cmd)
+        self.assertNotIn("--max-run-output-tokens", cmd)
+        self.assertNotIn("--max-run-runtime-seconds", cmd)
+        self.assertNotIn("--max-post-worker-runtime-seconds", cmd)
 
 
 if __name__ == "__main__":

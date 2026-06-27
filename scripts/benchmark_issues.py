@@ -18,6 +18,10 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from model_catalog import OPENCODE_FREE_MODELS
+from solver_commands import build_single_solver_command
+from solver_reporting import load_run_outcome
+from workers.opencode_diagnostics import run_opencode_preflight_guard
 from utils import (
     load_env,
     print_banner,
@@ -28,14 +32,55 @@ from utils import (
 )
 
 
-FREE_OPencode_MODELS = [
-    "opencode/deepseek-v4-flash-free",
-    "opencode/mimo-v2.5-free",
-    "opencode/minimax-m3-free",
-    "opencode/nemotron-3-ultra-free",
-]
+FREE_OPENCODE_MODELS = list(OPENCODE_FREE_MODELS)
+FREE_OPencode_MODELS = FREE_OPENCODE_MODELS
 
 RUN_REPORT_RE = re.compile(r"Run-Report:\s*(\S+)")
+
+
+def benchmark_solver_args(dry_run: bool) -> argparse.Namespace:
+    return argparse.Namespace(
+        model="opencode",
+        model_name=None,
+        label="ai-generated",
+        base_branch=None,
+        dry_run=False,
+        close_issues=False,
+        verbosity=None,
+        max_run_cost_usd=None,
+        max_run_input_tokens=None,
+        max_run_output_tokens=None,
+    )
+
+
+def build_benchmark_command(
+    issue_number: int,
+    *,
+    repo: str,
+    dry_run: bool = False,
+    model_name: str | None = None,
+    branch_suffix: str | None = None,
+    ensemble: int | None = None,
+    allow_opencode_state_conflict: bool = False,
+    solve_script: Path = Path("scripts/solve_issues.py"),
+) -> list[str]:
+    args = benchmark_solver_args(dry_run)
+    command = build_single_solver_command(
+        args,
+        solve_script,
+        repo=repo,
+        issue_number=issue_number,
+        model="opencode",
+        model_name=model_name,
+        dry_run=dry_run,
+        include_label=False,
+        skip_pr=True,
+        branch_suffix=branch_suffix,
+        ensemble=ensemble,
+    )
+    if allow_opencode_state_conflict:
+        command.append("--allow-opencode-state-conflict")
+    return command
 
 
 def extract_run_report_path(output: str) -> Path | None:
@@ -43,18 +88,6 @@ def extract_run_report_path(output: str) -> Path | None:
     if not match:
         return None
     return Path(match.group(1))
-
-
-def load_run_outcome(run_report: Path | None) -> dict:
-    if not run_report:
-        return {}
-    metadata_path = run_report / "metadata.json"
-    try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    outcome = metadata.get("run_outcome", {})
-    return outcome if isinstance(outcome, dict) else {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,10 +115,25 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Führe N Modelle parallel aus und wähle die beste Lösung. Beispiel: --ensemble 3",
     )
+    parser.add_argument(
+        "--allow-opencode-state-conflict",
+        action="store_true",
+        help=(
+            "OpenCode trotz laufendem Versions-/State-Mix starten und an "
+            "Benchmark-Worker weiterreichen. Nur verwenden, wenn der Konflikt "
+            "bewusst akzeptiert ist."
+        ),
+    )
     return parser.parse_args()
 
 
-def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False, ensemble: int = 0) -> dict:
+def run_benchmark(
+    issue_number: int,
+    models: list[str],
+    dry_run: bool = False,
+    ensemble: int = 0,
+    allow_opencode_state_conflict: bool = False,
+) -> dict:
     """Führt den Benchmark für die angegebenen Modelle aus."""
     # OPENCODE_SERVER_PASSWORD wird von OpenCode Desktop gesetzt und verhindert,
     # dass `opencode run` eine neue Session startet. Vor dem Subprozess entfernen,
@@ -95,21 +143,23 @@ def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False, e
     full_repo = os.environ.get("GITHUB_REPOSITORY") or "SaJaToGu/ai-issue-solver"
     repo = full_repo.split("/", 1)[1] if "/" in full_repo else full_repo
 
+    if not dry_run and not run_opencode_preflight_guard(
+        allow_conflict=allow_opencode_state_conflict,
+    ):
+        return {
+            "error": "opencode_state_preflight_failed",
+        }
+
     if ensemble > 0:
         print(f"\n--- Benchmark für Ensemble mit {ensemble} Modellen ---")
         
-        # Führe solve_issues.py im Ensemble-Modus aus
-        cmd = [
-            sys.executable,
-            "scripts/solve_issues.py",
-            "--model", "opencode",
-            "--repo", repo,
-            "--issue", str(issue_number),
-            "--skip-pr",
-            "--ensemble", str(ensemble),
-        ]
-        if dry_run:
-            cmd.append("--dry-run")
+        cmd = build_benchmark_command(
+            issue_number,
+            repo=repo,
+            dry_run=dry_run,
+            ensemble=ensemble,
+            allow_opencode_state_conflict=allow_opencode_state_conflict,
+        )
         
         try:
             result = subprocess.run(
@@ -166,19 +216,14 @@ def run_benchmark(issue_number: int, models: list[str], dry_run: bool = False, e
         model_slug = model.replace("/", "-").replace(":", "-")[:48]
         branch_suffix = f"bench/{datetime.now().strftime('%H%M%S')}/{model_slug}"
         
-        # Führe solve_issues.py mit dem aktuellen Modell aus
-        cmd = [
-            sys.executable,
-            "scripts/solve_issues.py",
-            "--model", "opencode",
-            "--model-name", model,
-            "--repo", repo,
-            "--issue", str(issue_number),
-            "--skip-pr",
-            "--branch-suffix", branch_suffix,
-        ]
-        if dry_run:
-            cmd.append("--dry-run")
+        cmd = build_benchmark_command(
+            issue_number,
+            repo=repo,
+            dry_run=dry_run,
+            model_name=model,
+            branch_suffix=branch_suffix,
+            allow_opencode_state_conflict=allow_opencode_state_conflict,
+        )
         
         try:
             result = subprocess.run(
@@ -230,18 +275,6 @@ def print_results(results: dict) -> None:
     """Gibt die Benchmark-Ergebnisse aus."""
     print_banner("BENCHMARK-ERGEBNISSE")
     for model, result in results.items():
-        print(f"\nModell: {model}")
-        print(f"  - Änderungen: {'Ja' if result.get('changes', False) else 'Nein'}")
-        print(f"  - PR erstellt: {'Ja' if result.get('pr', False) else 'Nein'}")
-        print(f"  - Tests bestanden: {'Ja' if result.get('tests_passed', False) else 'Nein'}")
-        if "error" in result:
-            print(f"  - Fehler: {result['error']}")
-
-
-def print_results(results: dict) -> None:
-    """Gibt die Benchmark-Ergebnisse aus."""
-    print_banner("BENCHMARK-ERGEBNISSE")
-    for model, result in results.items():
         print(f"\n{'Ensemble' if result.get('ensemble') else 'Modell'}: {model}")
         if result.get('ensemble'):
             print(f"  - Modelle: {', '.join(result.get('models', []))}")
@@ -254,7 +287,7 @@ def print_results(results: dict) -> None:
 
 def main() -> int:
     args = parse_args()
-    models = args.models.split(",") if args.models else FREE_OPencode_MODELS
+    models = args.models.split(",") if args.models else FREE_OPENCODE_MODELS
     
     print_banner("BENCHMARK FÜR NICHT-CODEX-SOLVER")
     print(f"Issue: {args.issue}")
@@ -265,7 +298,13 @@ def main() -> int:
         print(f"Modelle: {', '.join(models)}")
     print(f"Dry-Run: {'Ja' if args.dry_run else 'Nein'}")
     
-    results = run_benchmark(args.issue, models, args.dry_run, args.ensemble)
+    results = run_benchmark(
+        args.issue,
+        models,
+        args.dry_run,
+        args.ensemble,
+        allow_opencode_state_conflict=args.allow_opencode_state_conflict,
+    )
     print_results(results)
     
     # Speichere Ergebnisse als JSON

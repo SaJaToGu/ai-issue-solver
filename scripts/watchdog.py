@@ -22,9 +22,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.solver_reporting import RUN_REPORTS_ROOT  # noqa: E402
-from scripts.status_dashboard import parse_summary, parse_created_at, parse_datetime_value  # noqa: E402
+from solver_reporting import (  # noqa: E402
+    RUN_REPORTS_ROOT,
+    RUNNING_STATUSES as _SOLVER_RUNNING_STATUSES,
+    TERMINAL_STATUSES,
+    read_normalized_run_outcome,
+    latest_datetime,
+    parse_summary_file,
+)
 
 # ── Default paths & thresholds ──────────────────────────────────────────────
 
@@ -34,9 +41,22 @@ BUDGET_TRACKER_PATH = Path("reports") / "budget_tracker.json"
 # Default thresholds
 DEFAULT_PROGRESS_TIMEOUT_MINUTES = 30
 DEFAULT_STUCK_TIMEOUT_MINUTES = 15
-DEFAULT_COST_PER_RUN_USD = 5.0
-DEFAULT_COST_PER_DAY_USD = 20.0
-DEFAULT_COST_BUDGET_RATIO = 0.8  # Warn when 80% of monthly budget reached
+# Cost-per-run and cost-per-day thresholds. Bumped from $5/$20 (the
+# pre-0.9.0 defaults) after Issue #425's first Solver run hit the
+# $20/day limit and self-reported success while producing a no-op
+# diff. $15/$50 give the Solver enough headroom to finish the work
+# while still flagging genuinely runaway costs.
+DEFAULT_COST_PER_RUN_USD = 15.0
+DEFAULT_COST_PER_DAY_USD = 50.0
+# Monthly-budget ratio warning tier — staggered so the operator
+# sees a soft "info" warning at 70% and a hard "critical" at 100%.
+# The legacy single-threshold behaviour was 80% warning / 100%
+# critical; the new ladder keeps 100% as critical but introduces
+# intermediate tiers so an issue like #425 (which ran exactly to
+# the cap and was killed) trips an earlier "info" before the wall.
+DEFAULT_COST_BUDGET_RATIO = 0.8
+DEFAULT_COST_INFO_RATIO = 0.7
+DEFAULT_COST_WARN_RATIO = 0.9
 
 # ── Data classes ────────────────────────────────────────────────────────────
 
@@ -102,20 +122,8 @@ def _string_value(data: dict, key: str) -> str:
     return "" if value is None else str(value)
 
 
-def _latest_datetime(*values: datetime | None) -> datetime | None:
-    parsed = [v for v in values if v is not None]
-    return max(parsed) if parsed else None
 
 
-TERMINAL_STATUSES = frozenset({
-    "archived", "cleanup_noop", "cleanup_successful",
-    "clone_failed", "failed", "no_changes",
-    "nonzero_without_changes", "pr_created",
-    "pr_created_from_existing_branch", "pr_created_with_warning",
-    "pr_failed", "push_failed", "rate_limit_deferred",
-    "skip_existing_pr", "skip_merged_pr",
-    "validation_failed", "worker_validation_failed",
-})
 
 
 def _active_runs(runs_dir: Path) -> list[WatchdogRun]:
@@ -127,11 +135,12 @@ def _active_runs(runs_dir: Path) -> list[WatchdogRun]:
     for run_dir in sorted(runs_dir.iterdir()):
         if not run_dir.is_dir():
             continue
-        summary = parse_summary(run_dir / "summary.txt")
+        summary = parse_summary_file(run_dir / "summary.txt")
         metadata = _read_json(run_dir / "metadata.json")
         health = _read_json(run_dir / "health.json")
+        normalized = read_normalized_run_outcome(run_dir)
 
-        status = _string_value(metadata, "status") or summary.get("status", "")
+        status = normalized.status
         if not status:
             continue
 
@@ -143,32 +152,20 @@ def _active_runs(runs_dir: Path) -> list[WatchdogRun]:
             continue
 
         phase = _string_value(health, "phase")
-
-        last_activity = parse_datetime_value(
-            _string_value(health, "last_activity_at")
-            or _string_value(metadata, "last_activity_at")
-            or summary.get("last_activity_at", "")
-        )
-        last_report = parse_datetime_value(
-            _string_value(health, "last_report_update_at")
-            or _string_value(metadata, "last_report_update_at")
-            or summary.get("last_report_update_at", "")
-        )
+        last_activity = normalized.last_activity_at
+        last_report = normalized.last_report_update_at
 
         results.append(WatchdogRun(
             run_id=run_dir.name,
             run_dir=run_dir,
-            repo=_string_value(metadata, "repo") or summary.get("repo", ""),
-            issue=_string_value(metadata, "issue_number")
-            or _string_value(metadata, "issue")
-            or summary.get("issue", ""),
+            repo=normalized.repo,
+            issue=normalized.issue_number,
             phase=phase,
             status=status,
             last_activity_at=last_activity,
             last_report_update_at=last_report,
-            model=_string_value(metadata, "model") or summary.get("model", ""),
-            worker_exit_code=_string_value(metadata, "worker_exit_code")
-            or summary.get("worker_exit_code", ""),
+            model=normalized.model,
+            worker_exit_code=normalized.worker_exit_code,
         ))
     return results
 
@@ -182,8 +179,17 @@ def check_cost(
     per_run_limit: float = DEFAULT_COST_PER_RUN_USD,
     per_day_limit: float = DEFAULT_COST_PER_DAY_USD,
     budget_ratio: float = DEFAULT_COST_BUDGET_RATIO,
+    info_ratio: float = DEFAULT_COST_INFO_RATIO,
+    warn_ratio: float = DEFAULT_COST_WARN_RATIO,
 ) -> list[CostFinding]:
-    """Check costs: per-run, per-day, and budget ratio."""
+    """Check costs: per-run, per-day, and budget ratio.
+
+    Budget-ratio findings use a staggered severity ladder so the
+    operator sees an "info" hint at 70% spent before the legacy
+    80% warning, and a "critical" still fires at 100%. This gives
+    the operator a chance to react before a Solver run is killed at
+    the wall (the failure mode that bit Issue #425).
+    """
     findings: list[CostFinding] = []
 
     # Per-run cost check from provider_scorecard in metadata
@@ -219,18 +225,34 @@ def check_cost(
         if budget > 0 and spent > 0:
             try:
                 ratio = float(spent) / float(budget)
-                if ratio >= budget_ratio:
-                    severity = "critical" if ratio >= 1.0 else "warning"
-                    findings.append(CostFinding(
-                        kind="budget_ratio",
-                        severity=severity,
-                        message=(
-                            f"Role '{role_name}' has spent ${spent:.2f} of "
-                            f"${budget:.2f} budget ({ratio:.0%})"
-                        ),
-                        current=spent,
-                        threshold=budget * budget_ratio,
-                    ))
+                if ratio >= 1.0:
+                    severity = "critical"
+                elif ratio >= warn_ratio:
+                    severity = "warning"
+                elif ratio >= info_ratio:
+                    severity = "info"
+                else:
+                    continue
+                # Threshold = the dollar amount at which this severity
+                # tier fires. Critical uses 100% (the wall); warning uses
+                # the 90% tier; info uses the 70% tier.
+                if severity == "critical":
+                    threshold = budget * 1.0
+                elif severity == "warning":
+                    threshold = budget * warn_ratio
+                else:  # info
+                    threshold = budget * info_ratio
+
+                findings.append(CostFinding(
+                    kind="budget_ratio",
+                    severity=severity,
+                    message=(
+                        f"Role '{role_name}' has spent ${spent:.2f} of "
+                        f"${budget:.2f} budget ({ratio:.0%})"
+                    ),
+                    current=spent,
+                    threshold=threshold,
+                ))
             except (TypeError, ValueError):
                 pass
 
@@ -251,7 +273,7 @@ def check_progress(
     findings: list[ProgressFinding] = []
 
     for run in runs:
-        last_seen = _latest_datetime(run.last_activity_at, run.last_report_update_at)
+        last_seen = latest_datetime(run.last_activity_at, run.last_report_update_at)
         if last_seen is None:
             continue
         idle = now - last_seen
@@ -285,7 +307,7 @@ def check_stuck(
     findings: list[ProgressFinding] = []
 
     for run in runs:
-        last_seen = _latest_datetime(run.last_activity_at, run.last_report_update_at)
+        last_seen = latest_datetime(run.last_activity_at, run.last_report_update_at)
         if last_seen is None:
             continue
         idle = now - last_seen

@@ -25,8 +25,15 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from solve_issues import MODEL_CONFIGS  # noqa: E402
+from solve_issues import (  # noqa: E402
+    MODEL_CONFIGS,
+)
 from solve_issues_batch import DEFAULT_WORKERS, positive_int  # noqa: E402
+import solver_commands  # noqa: E402
+from solver_reporting import read_normalized_run_outcome  # noqa: E402
+from workers.opencode_diagnostics import (  # noqa: E402
+    run_opencode_preflight_guard,
+)
 from utils import print_banner, print_err, print_ok, print_step, print_warn  # noqa: E402
 
 
@@ -113,63 +120,6 @@ def create_session_dir(root: Path, now_fn=datetime.now) -> Path:
 
 def build_pull_command(base_branch: str) -> list[str]:
     return ["git", "pull", "--ff-only", "origin", base_branch]
-
-
-def build_batch_command(args: argparse.Namespace, batch_script: Path) -> list[str]:
-    command = [
-        sys.executable,
-        str(batch_script),
-        "--model",
-        args.model,
-        "--workers",
-        str(args.workers),
-        "--label",
-        args.label,
-    ]
-    if args.model_name:
-        command.extend(["--model-name", args.model_name])
-    if args.fallback_model:
-        command.extend(["--fallback-model", args.fallback_model])
-    if args.fallback_model_name:
-        command.extend(["--fallback-model-name", args.fallback_model_name])
-    if args.repo:
-        command.extend(["--repo", args.repo])
-    for issue_number in args.issue or []:
-        command.extend(["--issue", str(issue_number)])
-    if args.base_branch:
-        command.extend(["--base-branch", args.base_branch])
-    if args.dry_run:
-        command.append("--dry-run")
-    if args.close_issues:
-        command.append("--close-issues")
-    if args.worker_health_timeout_minutes is not None:
-        command.extend([
-            "--worker-health-timeout-minutes",
-            str(args.worker_health_timeout_minutes),
-        ])
-    if args.unhealthy_action:
-        command.extend(["--unhealthy-action", args.unhealthy_action])
-    if args.unhealthy_retries is not None:
-        command.extend(["--unhealthy-retries", str(args.unhealthy_retries)])
-    if getattr(args, "skip_congestion_check", False):
-        command.append("--skip-congestion-check")
-    if args.verbosity:
-        command.extend(["--verbosity", args.verbosity])
-    return command
-
-
-def build_dashboard_command(args: argparse.Namespace, dashboard_script: Path) -> list[str]:
-    command = [
-        sys.executable,
-        str(dashboard_script),
-        "--output",
-        str(args.dashboard_output),
-    ]
-    if args.runs_dir:
-        command.extend(["--runs-dir", str(args.runs_dir)])
-    if args.owner:
-        command.extend(["--owner", args.owner])
-    return command
 
 
 def build_caffeinate_command(pid: int | None = None) -> list[str]:
@@ -348,36 +298,6 @@ def parse_summary_file(summary_path: Path) -> dict[str, str]:
     return fields
 
 
-def classify_status(status: str, worker_exit_code: str = "") -> str:
-    """Klassifiziert den Status eines Runs (kopiert aus status_dashboard.py)."""
-    if not status:
-        return "unknown"
-    if status == "queued":
-        return "queued"
-    if status == "started":
-        return "running"
-    # Erfolgreiche Staende
-    if status in {"pr_created", "pr_created_from_existing_branch", "cleanup_successful"}:
-        return "successful"
-    # No-op Staende
-    if status in {"skip_existing_pr", "skip_merged_pr", "skip_closed_pr", "cleanup_noop"}:
-        return "noop"
-    if status in {"no_changes", "nonzero_without_changes"}:
-        return "failed"
-    # Fehlgeschlagene Staende
-    if status in {
-        "branch_create_failed", "checkout_failed", "clone_failed",
-        "nonzero_without_changes", "pr_failed", "pr_failed_from_existing_branch",
-        "push_failed", "cleanup_failed", "rate_limit_deferred", "validation_failed",
-    } or status.endswith("_failed"):
-        return "failed"
-    # Archiviert
-    if status in {"archived", "cleanup_archived"}:
-        return "archived"
-    if worker_exit_code and worker_exit_code != "0":
-        return "failed"
-    return "noop"
-
 
 def detect_warning_markers(run_dir: Path) -> str:
     """Erkennt Warnungsmarker in geaenderten Dateien eines Runs.
@@ -465,9 +385,10 @@ def collect_issue_outcomes(
         if not summary_path.exists():
             continue
 
-        fields = parse_summary_file(summary_path)
-        run_repo = fields.get("repo") or fields.get("selected_repo", "")
-        issue_number = fields.get("issue_number") or fields.get("issue", "")
+        normalized = read_normalized_run_outcome(run_dir)
+        fields = dict(normalized.summary)
+        run_repo = normalized.repo
+        issue_number = normalized.issue_number
 
         if repo and run_repo != repo:
             continue
@@ -475,9 +396,9 @@ def collect_issue_outcomes(
             if not issue_number.isdigit() or int(issue_number) not in issue_numbers:
                 continue
 
-        status = fields.get("status", "")
-        exit_code = fields.get("worker_exit_code", "")
-        category = classify_status(status, exit_code)
+        status = normalized.status
+        exit_code = normalized.worker_exit_code
+        category = normalized.category
 
         # Standardmaessig unvollstaendige Runs aus Dashboards/Reports ausblenden.
         # Die Overnight-Summary blendet sie ein, damit abgebrochene Health-Stopps
@@ -490,15 +411,15 @@ def collect_issue_outcomes(
         outcome = IssueOutcome(
             repo=run_repo,
             issue_number=issue_number,
-            issue_title=fields.get("issue_title", ""),
+            issue_title=normalized.issue_title,
             status=status,
             category=category,
             worker_exit_code=exit_code,
-            pr_url=fields.get("pr_url", ""),
+            pr_url=normalized.pr_url,
             git_diff_stat=fields.get("git_diff_stat", ""),
             warning_markers=warning_markers,
-            branch=fields.get("branch", ""),
-            model=fields.get("model", ""),
+            branch=normalized.branch,
+            model=normalized.model,
             run_dir=run_dir.name,
         )
         outcomes.append(outcome)
@@ -656,6 +577,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["quiet", "normal", "verbose"],
         help="An Batch-Solver weiterreichen: Worker-Ausgabe",
     )
+    parser.add_argument(
+        "--allow-opencode-state-conflict",
+        action="store_true",
+        help=(
+            "OpenCode trotz laufendem Versions-/State-Mix starten und an Batch weiterreichen. "
+            "Nur bewusst verwenden; Standard ist blockieren."
+        ),
+    )
     parser.add_argument("--skip-pull", action="store_true", help="Git-Pull des Basis-Branches ueberspringen")
     parser.add_argument("--skip-tests", action="store_true", help="Testlauf vor dem Batch ueberspringen")
     parser.add_argument(
@@ -693,6 +622,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="macOS waehrend des Nachtlaufs mit caffeinate wach halten",
     )
+    # OpenCode Budget-Limits (nur fuer --model opencode); an solve_issues_batch.py weitergereicht
+    parser.add_argument(
+        "--max-run-cost-usd",
+        type=float,
+        default=None,
+        help="An Batch-Solver weiterreichen: Maximale Kosten in USD fuer einen einzelnen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-input-tokens",
+        type=int,
+        default=None,
+        help="An Batch-Solver weiterreichen: Maximale Input-Tokens fuer einen einzelnen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-output-tokens",
+        type=int,
+        default=None,
+        help="An Batch-Solver weiterreichen: Maximale Output-Tokens fuer einen einzelnen OpenCode-Run",
+    )
+    parser.add_argument(
+        "--max-run-runtime-seconds",
+        type=float,
+        default=None,
+        help="An Batch-Solver weiterreichen: Maximale Laufzeit in Sekunden fuer einen einzelnen Run (direkte API-Worker)",
+    )
+    parser.add_argument(
+        "--max-post-worker-runtime-seconds",
+        type=float,
+        default=None,
+        help="An Batch-Solver weiterreichen: Maximale Laufzeit in Sekunden fuer Validierung, Tests, Commit, Push und PR-Erstellung",
+    )
     return parser.parse_args(argv)
 
 
@@ -705,13 +665,23 @@ def main(argv: list[str] | None = None) -> int:
     steps: list[StepResult] = []
 
     print_step(1, f"Log-Verzeichnis: {session_dir}")
+    next_step = 2
+
+    if args.model == "opencode" and not args.dry_run:
+        print_step(next_step, "OpenCode-State-Preflight")
+        next_step += 1
+        if not run_opencode_preflight_guard(
+            allow_conflict=args.allow_opencode_state_conflict,
+        ):
+            return 1
 
     with keep_awake(args.caffeinate, session_dir / "caffeinate.log"):
         if args.skip_pull:
             print_warn("Git-Pull uebersprungen")
             steps.append(skipped_step("pull", session_dir / "pull.log", "--skip-pull"))
         else:
-            print_step(2, f"Pull von origin/{args.base_branch}")
+            print_step(next_step, f"Pull von origin/{args.base_branch}")
+            next_step += 1
             pull_result = run_logged_command(
                 "pull",
                 build_pull_command(args.base_branch),
@@ -728,7 +698,8 @@ def main(argv: list[str] | None = None) -> int:
             print_warn("Tests uebersprungen")
             steps.append(skipped_step("tests", session_dir / "tests.log", "--skip-tests"))
         elif can_continue:
-            print_step(3, f"Tests: {command_to_text(args.test_command)}")
+            print_step(next_step, f"Tests: {command_to_text(args.test_command)}")
+            next_step += 1
             test_result = run_logged_command(
                 "tests",
                 args.test_command,
@@ -752,7 +723,8 @@ def main(argv: list[str] | None = None) -> int:
                 "--skip-congestion-check",
             ))
         elif can_continue:
-            print_step(4, "Workflow-Congestion-Check")
+            print_step(next_step, "Workflow-Congestion-Check")
+            next_step += 1
             congestion_command = [
                 sys.executable,
                 str(Path("scripts") / "solve_issues.py"),
@@ -791,10 +763,15 @@ def main(argv: list[str] | None = None) -> int:
         can_continue = all(step.ok for step in steps)
 
         if can_continue:
-            print_step(4, f"Batch-Solver mit {args.workers} Worker(n)")
+            print_step(next_step, f"Batch-Solver mit {args.workers} Worker(n)")
+            next_step += 1
             batch_result = run_logged_command(
                 "batch",
-                build_batch_command(args, Path("scripts") / "solve_issues_batch.py"),
+                solver_commands.build_batch_command(
+                    args,
+                    Path("scripts") / "solve_issues_batch.py",
+                    skip_congestion_check=args.skip_congestion_check,
+                ),
                 project_root,
                 session_dir / "batch.log",
             )
@@ -802,10 +779,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             steps.append(skipped_step("batch", session_dir / "batch.log", "Preflight fehlgeschlagen"))
 
-        print_step(5, "Dashboard regenerieren")
+        print_step(next_step, "Dashboard regenerieren")
+        next_step += 1
         dashboard_result = run_logged_command(
             "dashboard",
-            build_dashboard_command(args, Path("scripts") / "status_dashboard.py"),
+            solver_commands.build_dashboard_command(
+                Path("scripts") / "status_dashboard.py",
+                args.dashboard_output,
+                runs_dir=args.runs_dir,
+                owner=getattr(args, "owner", None),
+            ),
             project_root,
             session_dir / "dashboard.log",
         )
@@ -816,7 +799,7 @@ def main(argv: list[str] | None = None) -> int:
     write_final_summary(summary_path, session_dir, args, steps, started_at, finished_at, args.runs_dir)
 
     failed_steps = [step for step in steps if not step.ok]
-    print_step(6, "Finale Summary")
+    print_step(next_step, "Finale Summary")
     if failed_steps:
         print_err("Overnight-Lauf mit Fehlern beendet")
         print(f"   Summary: {summary_path}")

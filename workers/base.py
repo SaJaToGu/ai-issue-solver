@@ -15,6 +15,8 @@ Gemeinsame Ergebnis-Klassifizierung:
     no_changes              → Worker erfolgreich, keine Änderungen
     nonzero_with_changes    → Worker mit Fehlercode, aber Änderungen vorhanden
     nonzero_without_changes → Worker mit Fehlercode, keine Änderungen
+    patch_validation_failed → Patch-Anwendung erzeugte Reject-Artefakte
+    partial_patch_failure   → Worker hat nur einen Teil der Patches angewendet
     rate_limit_deferred     → Codex Rate-Limit, kein sofortiger Retry
     failed_worker           → Worker nicht gefunden oder nicht startbar
 """
@@ -25,6 +27,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+
+# Return codes for patch-applying workers that must hard-stop even when
+# the working tree changed.
+PATCH_VALIDATION_FAILED_RETURN_CODE = 5
+PARTIAL_PATCH_FAILURE_RETURN_CODE = 6
 
 
 # ─────────────────────────────────────────────────────────────
@@ -67,6 +75,12 @@ class AdapterDiagnostics:
     opencode_session_totals: dict | None = None
     # OpenCode-Budget-Ueberschreitung (nur für OpenCodeAdapter)
     opencode_budget_exceeded: str | None = None
+    # OpenRouter-Direct Usage (nur für OpenRouterDirectAdapter)
+    openrouter_usage: dict | None = None
+    # OpenRouter-Direct Budget-Ueberschreitung (nur für OpenRouterDirectAdapter)
+    openrouter_budget_exceeded: str | None = None
+    # OpenRouter-Direct Request-Timeout (nur für OpenRouterDirectAdapter)
+    openrouter_request_timed_out: bool = False
 
 
 # ─────────────────────────────────────────────────────────────

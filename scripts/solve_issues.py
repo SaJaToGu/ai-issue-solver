@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import json
 import os
 import re
 import shutil
@@ -113,15 +114,18 @@ from solver_repository import (
 )
 from solver_reporting import (  # noqa: F401 (re-exports used by tests/batch)
     PRESERVED_WORKTREE_RETENTION_DAYS,
+    POST_PUSH_INCOMPLETE_STATUSES,
     RUN_REPORTS_ROOT,
     RunReport,
     cleanup_preserved_worktrees,
     create_run_report,
     detect_opencode_runtime_diagnostics,
     format_git_change_summary,
+    format_post_push_recovery_note,
     format_worker_output_tail,
     preserve_worker_worktree,
     print_opencode_runtime_diagnostics,
+    pr_recovery_command,
     safe_run_repo_name,
     should_preserve_worktree,
     should_surface_worker_line,
@@ -147,6 +151,11 @@ from repo_profile import (  # noqa: F401 (re-exports used by tests)
     build_repo_profile,
     serialize_repo_profile,
 )
+from model_catalog import (  # noqa: E402
+    OPENCODE_DEFAULT_MODEL,
+    OPENCODE_FREE_MODELS,
+    OPENROUTER_DIRECT_DEFAULT_MODEL,
+)
 from workflow_congestion import (  # noqa: F401
     WorkflowPullRequest,
     WorkflowIssue,
@@ -156,6 +165,21 @@ from workflow_congestion import (  # noqa: F401
     parse_issue_references,
     pull_request_from_github,
     issue_from_github,
+)
+from workers.opencode_diagnostics import (  # noqa: F401 (re-exports used by tests/batch)
+    OpenCodeStatePreflight,
+    check_opencode_auth,
+    check_opencode_state_guard,
+    find_opencode_executable,
+    _looks_like_opencode_executable,
+    _print_opencode_state_preflight,
+)
+from workers.codex_adapter import (  # noqa: F401 (re-exports used by tests/batch)
+    CODEX_RATE_LIMIT_RETRY_LIMIT,
+    CodexRateLimit,
+    detect_codex_rate_limit,
+    parse_codex_reset_datetime,
+    sleep_until_codex_reset,
 )
 
 
@@ -272,13 +296,8 @@ MODEL_CONFIGS = {
         "display_name": "OpenCode CLI",
         "env_key": None,
         "env_var": None,
-        "default_model_name": "opencode/deepseek-v4-flash-free",
-        "free_models": [
-            "opencode/deepseek-v4-flash-free",
-            "opencode/mimo-v2.5-free",
-            "opencode/minimax-m3-free",
-            "opencode/nemotron-3-ultra-free",
-        ],
+        "default_model_name": OPENCODE_DEFAULT_MODEL,
+        "free_models": list(OPENCODE_FREE_MODELS),
     },
     "openrouter": {
         "display_name": "OpenRouter (aider, legacy)",
@@ -293,18 +312,36 @@ MODEL_CONFIGS = {
         "display_name": "OpenRouter (Direct)",
         "env_key": "OPENROUTER_API_KEY",
         "env_var": "OPENROUTER_API_KEY",
-        "default_model_name": "mistralai/mistral-large",
+        "default_model_name": OPENROUTER_DIRECT_DEFAULT_MODEL,
     },
 }
 
 VIBE_LOG_PATH = Path(".vibe") / "logs" / "vibe.log"
 VIBE_LOG_SNIPPET_LINES = 15
 VIBE_LOG_SNIPPET_CHARS = 2000
-CODEX_RATE_LIMIT_RETRY_LIMIT = 3
+
 # Standard-Post-Solve-Testbefehl nach erfolgreichem Commit & Push.
 # Wird in run_post_solve_tests() ausgefuehrt; Status landet in PR-Body und Run-Report.
 POST_SOLVE_TEST_COMMAND = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
 POST_SOLVE_TEST_TIMEOUT_SECONDS = 300
+# Post-Worker-Phasen (Issue #350): Validierung, Tests, Commit, Push, PR.
+# Diese Phasen laufen _nach_ dem eigentlichen KI-Worker, koennen aber in der
+# Praxis blockieren (z.B. GitHub-API haengt). Wir setzen fuer jede Phase
+# explizite Health-Updates und eine harte Watchdog-Obergrenze, damit ein
+# stiller Single-Run nicht endlos haengt.
+POST_WORKER_PHASES: tuple[str, ...] = (
+    "validating",
+    "post_solve_tests",
+    "committing",
+    "pushing",
+    "creating_pr",
+)
+# Default-Budget fuer die _gesamte_ Post-Worker-Phase (Validierung bis
+# PR-Erstellung). Wird durch ``--max-post-worker-runtime-seconds``
+# ueberschrieben.
+DEFAULT_POST_WORKER_RUNTIME_SECONDS = 600
+# Watchdog-Heartbeat-Intervall fuer die Post-Worker-Health-Datei.
+POST_WORKER_HEARTBEAT_SECONDS = 15
 CONFLICT_MARKER_RE = re.compile(r"^\s*(?:<{7}\s|>{7}\s|={7}\s*$)")
 COMMON_REPO_FILES = {
     ".dockerignore",
@@ -357,33 +394,14 @@ PATH_CANDIDATE_RE = re.compile(
 )
 ABSOLUTE_PATH_RE = re.compile(r"(?<![\w:/.-])/[^\s`'\"<>|]+")
 CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
-CODEX_RATE_LIMIT_RESET_RE = re.compile(
-    r"rate limit will be reset on\s+(.+?)(?:\.|\n|$)",
-    re.IGNORECASE,
-)
-CODEX_RATE_LIMIT_MESSAGE_RE = re.compile(
-    r"(?:reached the codex message limit|rate limit will be reset)",
-    re.IGNORECASE,
-)
 VIBE_TURN_LIMIT_RE = re.compile(
     r"<vibe_stop_event>Turn limit of \d+ reached</vibe_stop_event>",
     re.IGNORECASE,
 )
 
 
-@dataclass(frozen=True)
-class WorkerRunResult:
-    returncode: int
-    output: str
-    last_activity_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class WorkerAssessment:
-    should_continue: bool
-    has_changes: bool
-    reason: str
-
+from workers.base import WorkerRunResult
+from workers.base import WorkerOutcome as WorkerAssessment
 
 @dataclass(frozen=True)
 class WorkerValidation:
@@ -392,17 +410,13 @@ class WorkerValidation:
 
 
 @dataclass(frozen=True)
-class CodexRateLimit:
-    reset_at: datetime | None
-    reset_text: str | None
-
-
-@dataclass(frozen=True)
 class PullRequestState:
     number: int | None
     html_url: str
     state: str
     merged: bool
+    head_ref: str | None = None
+    base_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -434,6 +448,93 @@ Wenn du Dateien erstellst, achte auf:
 - Korrekte Syntax für die jeweilige Sprache/Format
 - Sinnvolle Inhalte die zum Projekt passen
 """
+
+RECENTLY_REMOVED_PATTERNS_ENV = "AIS_RECENTLY_REMOVED_PATTERNS_FILE"
+DEFAULT_RECENTLY_REMOVED_PATTERNS_FILE = Path("docs") / "AGENTS.md"
+RECENTLY_REMOVED_PATTERNS_HEADING = "Recently Removed Patterns"
+
+
+def _resolve_recently_removed_patterns_file() -> Path:
+    configured = os.getenv(RECENTLY_REMOVED_PATTERNS_ENV)
+    path = Path(configured) if configured else DEFAULT_RECENTLY_REMOVED_PATTERNS_FILE
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def _extract_recently_removed_patterns_section(text: str) -> str:
+    lines = text.splitlines()
+    start: int | None = None
+    start_level = 0
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        heading_text = stripped.lstrip("#").strip().lower()
+        if heading_text.startswith(RECENTLY_REMOVED_PATTERNS_HEADING.lower()):
+            start = index
+            start_level = len(stripped) - len(stripped.lstrip("#"))
+            break
+
+    if start is None:
+        return ""
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if not stripped.startswith("#"):
+            continue
+        level = len(stripped) - len(stripped.lstrip("#"))
+        if level <= start_level:
+            end = index
+            break
+
+    section_body = "\n".join(lines[start + 1:end]).strip()
+    return section_body
+
+
+def load_recently_removed_patterns_section(path: Path | None = None) -> str:
+    patterns_file = path or _resolve_recently_removed_patterns_file()
+    try:
+        content = patterns_file.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return _extract_recently_removed_patterns_section(content)
+
+
+def build_solve_prompt(number: int, title: str, body: str | None) -> str:
+    prompt = AIDER_PROMPT_TEMPLATE.format(
+        number=number,
+        title=title,
+        body=body or "(kein Beschreibungstext)",
+    )
+    patterns_section = load_recently_removed_patterns_section()
+    if not patterns_section:
+        return prompt
+    # Display the patterns-file path relative to PROJECT_ROOT when possible,
+    # so the worker prompt does not leak the operator's local absolute
+    # path (e.g. /Users/.../docs/AGENTS.md). If the configured file lives
+    # outside PROJECT_ROOT (env-var override with an absolute path), show
+    # the absolute path verbatim — that path was explicitly chosen by the
+    # operator and is not a leak from default config.
+    patterns_file = _resolve_recently_removed_patterns_file()
+    try:
+        display_path = patterns_file.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        display_path = str(patterns_file)
+    return (
+        f"{prompt}\n\n"
+        "=== RECENTLY REMOVED PATTERNS (DO NOT RE-INTRODUCE) ===\n"
+        "The project explicitly removed the following patterns in recently "
+        "merged PRs. Do not reintroduce them in this run. If the issue seems "
+        "to require one of them, explain why in the PR description and let "
+        "the reviewer decide. Before introducing a pattern that resembles "
+        "one of these entries, inspect recent merged history with "
+        "`git log develop` when available.\n\n"
+        f"{patterns_section}\n\n"
+        f"(Pattern list sourced from `{display_path}`.)"
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -563,9 +664,46 @@ class GitHubClient:
                     html_url=pr.get("html_url", ""),
                     state=pr.get("state", ""),
                     merged=bool(pr.get("merged_at")),
+                    head_ref=(pr.get("head") or {}).get("ref"),
+                    base_ref=(pr.get("base") or {}).get("ref"),
                 )
             )
         return pull_requests
+
+    def get_pull_requests(self, repo: str, state: str = "all",
+                          head: str | None = None) -> list[dict]:
+        """List pull requests for workflow-congestion checks."""
+        params = {"state": state, "per_page": 100}
+        if head:
+            params["head"] = head
+        try:
+            resp = self.session.get(
+                f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
+                params=params,
+            )
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"PRs prüfen: {repo}")
+        if resp.status_code == 404:
+            return []
+        raise_for_github_response(resp, f"PRs prüfen: {repo}")
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
+    def get_open_pull_requests(self, repo: str, head: str | None = None) -> list[dict]:
+        """Backward-compatible alias for open pull-request listings."""
+        return self.get_pull_requests(repo, state="open", head=head)
+
+    def get_pull_request(self, repo: str, number: int) -> dict | None:
+        """Return detailed pull-request metadata for workflow congestion checks."""
+        try:
+            resp = self.session.get(f"{self.BASE}/repos/{self.owner}/{repo}/pulls/{number}")
+        except requests.RequestException as exc:
+            handle_github_request_error(exc, f"PR prüfen: {repo}#{number}")
+        if resp.status_code == 404:
+            return None
+        raise_for_github_response(resp, f"PR prüfen: {repo}#{number}")
+        data = resp.json()
+        return data if isinstance(data, dict) else None
 
     def resolve_base_branch(self, repo: str, requested_base: str | None = None) -> str | None:
         """Ermittelt den Zielbranch und nutzt ohne Vorgabe den GitHub-Default-Branch."""
@@ -617,12 +755,14 @@ class GitHubClient:
         # Kommentar hinzufügen
         self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}/comments",
-            json={"body": comment}
+            json={"body": comment},
+            timeout=30,
         )
         # Issue schließen
         self.session.patch(
             f"{self.BASE}/repos/{self.owner}/{repo}/issues/{number}",
-            json={"state": "closed"}
+            json={"state": "closed"},
+            timeout=30,
         )
 
     def create_pull_request(self, repo: str, title: str, body: str,
@@ -639,7 +779,8 @@ class GitHubClient:
 
         resp = self.session.post(
             f"{self.BASE}/repos/{self.owner}/{repo}/pulls",
-            json={"title": title, "body": body, "head": head, "base": resolved_base}
+            json={"title": title, "body": body, "head": head, "base": resolved_base},
+            timeout=30,
         )
         if resp.status_code == 201:
             return resp.json()
@@ -723,6 +864,89 @@ def preflight_checks(config: dict, repo: str, issue_number: int | None = None) -
         print(f"   ✅ Issue offen: #{issue_number} {issue.get('title', '')}")
 
     return token, user
+
+
+def _run_local_git(args: list[str], *, project_root: Path = PROJECT_ROOT) -> subprocess.CompletedProcess:
+    """Run a local git command for pre-solver hygiene checks."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _parse_gone_branches(branch_vv_output: str) -> list[str]:
+    """Extract local branches whose upstream is gone from `git branch -vv` output."""
+    gone_branches: list[str] = []
+    for line in branch_vv_output.splitlines():
+        stripped = line.strip()
+        if not stripped or ": gone]" not in stripped:
+            continue
+        if stripped.startswith("* "):
+            stripped = stripped[2:].strip()
+        branch_name = stripped.split(maxsplit=1)[0]
+        if branch_name:
+            gone_branches.append(branch_name)
+    return gone_branches
+
+
+def collect_pre_solver_hygiene_findings(project_root: Path = PROJECT_ROOT) -> list[str]:
+    """
+    Collect non-destructive local hygiene findings before a real Solver run.
+
+    The check focuses on operator-side leftovers that can distort measurement
+    runs. It never deletes files or branches.
+    """
+    findings: list[str] = []
+
+    if (project_root / ".git").exists():
+        status = _run_local_git(["status", "--porcelain"], project_root=project_root)
+        if status.returncode == 0 and status.stdout.strip():
+            findings.append("working tree has uncommitted changes")
+        elif status.returncode != 0:
+            details = (status.stderr or status.stdout).strip()
+            findings.append(f"git status failed: {details}")
+
+        branches = _run_local_git(
+            ["branch", "-vv", "--sort=-committerdate"],
+            project_root=project_root,
+        )
+        if branches.returncode == 0:
+            for branch_name in _parse_gone_branches(branches.stdout):
+                findings.append(f"local branch '{branch_name}' tracks a gone upstream")
+        else:
+            details = (branches.stderr or branches.stdout).strip()
+            findings.append(f"git branch -vv failed: {details}")
+
+    operator_artifacts = sorted((project_root / "reports" / "tmp").glob("validation-issue-*.md"))
+    for artifact in operator_artifacts:
+        findings.append(f"operator artifact remains: {artifact.relative_to(project_root)}")
+
+    return findings
+
+
+def run_pre_solver_hygiene_check(*, dry_run: bool = False, project_root: Path = PROJECT_ROOT) -> bool:
+    """Print and evaluate the pre-solver hygiene gate."""
+    print_step(0, "Pre-Solver Hygiene")
+    findings = collect_pre_solver_hygiene_findings(project_root)
+    if not findings:
+        print("   ✅ Lokale Solver-Hygiene sauber")
+        return True
+
+    for finding in findings:
+        print_warn(finding)
+
+    if dry_run:
+        print_warn("Dry-run: Hygiene-Funde werden gemeldet, blockieren aber nicht.")
+        return True
+
+    print_err(
+        "Solverlauf blockiert: lokale Hygiene-Funde zuerst bereinigen "
+        "oder --skip-hygiene-check bewusst setzen."
+    )
+    return False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -825,66 +1049,6 @@ def find_vibe_executable(repo_path: str | None = None) -> str | None:
     return shutil.which("vibe")
 
 
-def find_opencode_executable(repo_path: str | None = None) -> str | None:
-    """Find the OpenCode CLI in common local install locations or PATH."""
-    candidates = []
-
-    if sys.executable:
-        candidates.append(Path(sys.executable).with_name("opencode"))
-
-    if repo_path:
-        repo_root = Path(repo_path)
-        candidates.extend([
-            repo_root / ".venv" / "bin" / "opencode",
-            repo_root / "venv" / "bin" / "opencode",
-        ])
-
-    candidates.append(Path.home() / ".local" / "bin" / "opencode")
-    candidates.append(Path.home() / ".local" / "share" / "opencode" / "opencode")
-    candidates.append(Path.home() / ".opencode" / "bin" / "opencode")
-
-    for candidate in candidates:
-        if candidate.exists() and os.access(candidate, os.X_OK):
-            return str(candidate)
-
-    return shutil.which("opencode")
-
-
-def check_opencode_auth(opencode_exe: str) -> bool:
-    """Prüft ob OpenCode authentisiert ist; gibt True zurück wenn alles ok.
-
-    Führt `opencode auth list` aus und interpretiert das Ergebnis.
-    Bei Fehlern wird nur eine Warnung ausgegeben, kein Abbruch.
-    """
-    try:
-        result = subprocess.run(
-            [opencode_exe, "auth", "list"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        stderr_lower = result.stderr.lower() if result.stderr else ""
-        stdout_lower = result.stdout.lower() if result.stdout else ""
-        combined = stderr_lower + stdout_lower
-
-        if result.returncode == 0 and "credentials" in combined and "0 credentials" not in combined:
-            return True
-
-        print_warn("OpenCode ist nicht authentifiziert!")
-        print("   → Anmelden mit: opencode auth login")
-        print("   → Oder Provider-Token via OPENCODE_API_KEY setzen")
-        return False
-    except FileNotFoundError:
-        print_warn("OpenCode Auth-Check fehlgeschlagen: executable nicht gefunden")
-        return False
-    except subprocess.TimeoutExpired:
-        print_warn("OpenCode Auth-Check hat nicht innerhalb von 15s geantwortet")
-        return False
-    except OSError as exc:
-        print_warn(f"OpenCode Auth-Check fehlgeschlagen: {exc}")
-        return False
-
-
 def run_opencode_diagnostic() -> int:
     """Führt eine strukturierte OpenCode-Diagnose aus und gibt das Ergebnis aus.
 
@@ -926,6 +1090,8 @@ def run_opencode_diagnostic() -> int:
     except (OSError, subprocess.TimeoutExpired) as exc:
         print_err(f"OpenCode --version fehlgeschlagen: {exc}")
         return 1
+
+    _print_opencode_state_preflight(opencode_exe, version)
 
     try:
         auth_result = subprocess.run(
@@ -1819,9 +1985,11 @@ def run_openrouter_direct_worker(
     aus der Modellantwort und wendet sie im Repository-Verzeichnis an.
 
     Returncode-Semantik (aus DirectRunResult):
-        0  — Mindestens ein Patch erfolgreich angewendet.
+        0  — Alle gefundenen Patches erfolgreich angewendet.
         1  — Patches gefunden, aber alle fehlgeschlagen oder API-Fehler.
         2  — Modell hat Prosa ohne auswertbare Diffs zurueckgegeben.
+        5  — Patch-Anwendung hat Reject-Artefakte erzeugt; harter Fehler.
+        6  — Nur ein Teil der Patches wurde angewendet; harter Fehler.
 
     Args:
         prompt: Eingabe-Prompt fuer das Modell (bereits sanitiert).
@@ -2062,6 +2230,152 @@ class PostSolveTestResult:
         return f"{prefix} ({command_text})"
 
 
+class PostWorkerTimeoutError(RuntimeError):
+    """Wird ausgeloest, wenn eine Post-Worker-Phase das Zeitbudget ueberschreitet.
+
+    Der Solver faengt diesen Fehler in ``solve_issue`` ab, schreibt einen
+    ``pr_creation_timeout``-bzw. ``pushed_without_pr``-Run-Report und
+    hinterlegt einen Recovery-Hinweis inkl. PR-Befehl.
+    """
+
+
+@dataclass(frozen=True)
+class PostWorkerPhaseResult:
+    """Ergebnis einer einzelnen Post-Worker-Phase (Issue #350)."""
+    phase: str
+    started_at: datetime
+    finished_at: datetime
+    timed_out: bool = False
+    error: str | None = None
+
+    @property
+    def duration_seconds(self) -> float:
+        return (self.finished_at - self.started_at).total_seconds()
+
+
+def _post_worker_phase_started(phase: str) -> datetime:
+    """Heartbeat fuer den Watchdog: Phase + Start-Zeitpunkt festhalten.
+
+    Wird am Anfang _jeder_ Post-Worker-Phase aufgerufen. Der externe
+    Watchdog-Cron liest ``health.json`` und kann so eine haengende Phase
+    erkennen.
+    """
+    if phase not in POST_WORKER_PHASES:
+        raise ValueError(
+            f"Unbekannte Post-Worker-Phase: {phase!r} (erwartet: {POST_WORKER_PHASES})"
+        )
+    print(f"      ▶ Post-Worker-Phase: {phase}")
+    return datetime.now()
+
+
+def _post_worker_phase_finished(
+    run_report: RunReport | None,
+    phase: str,
+    started_at: datetime,
+    *,
+    note: str | None = None,
+    last_activity: str = "",
+) -> PostWorkerPhaseResult:
+    """Heartbeat fuer den Watchdog: Phase sauber abschliessen."""
+    finished_at = datetime.now()
+    if run_report is not None:
+        # Health-Datei mit aktuellem Stand aktualisieren, damit das
+        # Batch-Watchdog weiss, dass diese Phase sauber durchgelaufen ist.
+        write_run_health(
+            run_report,
+            last_activity,
+            finished_at,
+            status="running",
+            phase=phase,
+        )
+    return PostWorkerPhaseResult(
+        phase=phase,
+        started_at=started_at,
+        finished_at=finished_at,
+        error=note,
+    )
+
+
+def _check_post_worker_deadline(
+    started_at: datetime,
+    deadline_seconds: float,
+    phase: str,
+) -> None:
+    """Wirft :class:`PostWorkerTimeoutError`, wenn das Post-Worker-Budget
+    ueberschritten ist.
+    """
+    if deadline_seconds <= 0:
+        return
+    elapsed = (datetime.now() - started_at).total_seconds()
+    if elapsed > deadline_seconds:
+        raise PostWorkerTimeoutError(
+            f"Post-Worker-Phase '{phase}' ueberschritt das Zeitbudget "
+            f"({int(elapsed)}s > {int(deadline_seconds)}s)"
+        )
+
+
+def compute_post_worker_deadline(
+    run_started_at: datetime,
+    max_run_runtime_seconds: float | None,
+    max_post_worker_runtime_seconds: float | None,
+) -> float:
+    """Berechnet das verbleibende Post-Worker-Budget in Sekunden.
+
+    Beruecksichtigt sowohl das globale ``--max-run-runtime-seconds`` als
+    auch das dedizierte ``--max-post-worker-runtime-seconds``. Wenn beide
+    gesetzt sind, gewinnt der kleinere Wert.
+    """
+    candidates: list[float] = []
+    if max_post_worker_runtime_seconds and max_post_worker_runtime_seconds > 0:
+        candidates.append(float(max_post_worker_runtime_seconds))
+    if max_run_runtime_seconds and max_run_runtime_seconds > 0:
+        elapsed = (datetime.now() - run_started_at).total_seconds()
+        remaining = float(max_run_runtime_seconds) - elapsed
+        if remaining > 0:
+            candidates.append(remaining)
+    if not candidates:
+        return 0.0
+    return min(candidates)
+
+
+def _run_post_worker_with_watchdog(
+    run_report: RunReport | None,
+    phase: str,
+    post_worker_started_at: datetime,
+    post_worker_deadline_seconds: float,
+    operation,
+):
+    """Fuehrt eine Post-Worker-Phase unter Watchdog-Schutz aus (Issue #350).
+
+    Aktualisiert vor dem Start die Health-Datei (Phase + Heartbeat) und
+    wirft :class:`PostWorkerTimeoutError`, sobald das Budget ueberschritten
+    ist. So hinterlaesst eine haengende Phase (commit, push, PR) immer
+    einen klaren ``last_phase``-Eintrag im Health-File und einen
+    ``pr_creation_timeout``- bzw. ``pushed_without_pr``-Status, der im
+    Watchdog als terminal und recovery-faehig erkannt wird.
+    """
+    phase_started = _post_worker_phase_started(phase)
+    _check_post_worker_deadline(
+        post_worker_started_at,
+        post_worker_deadline_seconds,
+        phase,
+    )
+    if run_report is not None:
+        write_run_health(
+            run_report,
+            status="running",
+            phase=phase,
+        )
+    result = operation()
+    _post_worker_phase_finished(
+        run_report,
+        phase,
+        phase_started,
+    )
+    return result
+
+
+
 def format_post_solve_test_command(command: list[str] | None = None) -> list[str]:
     """Gibt den auszufuehrenden Post-Solve-Testbefehl zurueck.
 
@@ -2145,75 +2459,15 @@ def run_post_solve_tests(repo_dir: str,
 def assess_worker_result(result: WorkerRunResult, git_status: str,
                          repo_dir: str | None = None,
                          issue_text: str = "") -> WorkerAssessment:
-    changed_paths = changed_paths_from_status(git_status)
-    meaningful_paths = meaningful_changed_paths_for_worker(
-        git_status,
-        repo_dir=repo_dir,
-        issue_text=issue_text,
-        worker_returncode=result.returncode,
-    )
-    has_changes = bool(changed_paths)
-    has_meaningful_changes = bool(meaningful_paths)
-    if result.returncode == 0 and has_changes:
-        return WorkerAssessment(True, True, "changed")
-    if result.returncode == 0:
-        return WorkerAssessment(False, False, "no_changes")
-    if has_meaningful_changes:
-        return WorkerAssessment(True, True, "nonzero_with_changes")
-    return WorkerAssessment(False, False, "nonzero_without_changes")
+    """Classify a worker result into a structured assessment.
 
-
-def parse_codex_reset_datetime(reset_text: str) -> datetime | None:
-    """Parst die Reset-Zeit aus der Codex-CLI-Meldung im lokalen Zeitkontext."""
-    normalized = re.sub(r"\s+", " ", reset_text.strip())
-    normalized = normalized.replace(", at ", " ").replace(" at ", " ")
-
-    formats = (
-        "%B %d, %Y %I:%M %p",
-        "%b %d, %Y %I:%M %p",
-        "%B %d %Y %I:%M %p",
-        "%b %d %Y %I:%M %p",
-    )
-    for date_format in formats:
-        try:
-            return datetime.strptime(normalized, date_format)
-        except ValueError:
-            pass
-    return None
-
-
-def detect_codex_rate_limit(output: str) -> CodexRateLimit | None:
-    if not CODEX_RATE_LIMIT_MESSAGE_RE.search(output):
-        return None
-
-    reset_match = CODEX_RATE_LIMIT_RESET_RE.search(output)
-    if not reset_match:
-        return CodexRateLimit(reset_at=None, reset_text=None)
-
-    reset_text = reset_match.group(1).strip()
-    return CodexRateLimit(
-        reset_at=parse_codex_reset_datetime(reset_text),
-        reset_text=reset_text,
-    )
-
-
-def sleep_until_codex_reset(rate_limit: CodexRateLimit,
-                            sleep_fn=time.sleep,
-                            now_fn=datetime.now) -> None:
-    if rate_limit.reset_text:
-        print_warn(f"Codex-Rate-Limit erreicht; Reset laut Codex: {rate_limit.reset_text}")
-    else:
-        print_warn("Codex-Rate-Limit erreicht; keine Reset-Zeit in der Ausgabe gefunden")
-
-    if not rate_limit.reset_at:
-        return
-
-    wait_seconds = max(0.0, (rate_limit.reset_at - now_fn()).total_seconds())
-    if wait_seconds > 0:
-        print(f"      Pausiere bis {rate_limit.reset_at.strftime('%Y-%m-%d %H:%M')} und setze dann fort.")
-        sleep_fn(wait_seconds)
-    else:
-        print("      Reset-Zeit ist bereits erreicht; setze sofort fort.")
+    Delegates to the shared ``classify_worker_outcome`` from
+    ``workers.execution``.  Kept as a public function in this module for
+    backward compatibility; new code should import
+    ``workers.execution.classify_worker_outcome`` directly.
+    """
+    from workers.execution import classify_worker_outcome
+    return classify_worker_outcome(result, git_status, repo_dir, issue_text)
 
 
 def print_worker_assessment(result: WorkerRunResult, assessment: WorkerAssessment) -> None:
@@ -2288,7 +2542,9 @@ def plan_branch_recovery(client: GitHubClient, repo: str, issue_number: int,
                          issue_branch: str,
                          prompt_fn=input,
                          stdin_isatty_fn=sys.stdin.isatty,
-                         now_fn=datetime.now) -> BranchRecoveryPlan:
+                         now_fn=datetime.now,
+                         rework: bool = False,
+                         base_branch: str | None = None) -> BranchRecoveryPlan:
     """Prueft vorhandene Remote-Artefakte und waehlt einen sicheren Branch."""
     discovered_branches = client.get_issue_branches(repo, issue_number)
     default_exists = client.branch_exists(repo, issue_branch)
@@ -2318,16 +2574,44 @@ def plan_branch_recovery(client: GitHubClient, repo: str, issue_number: int,
             found_pull_requests=found_pull_requests,
         )
 
-    for branch in branches_to_check:
-        pr = next((candidate for candidate in pull_requests_by_branch[branch]
-                   if candidate.state == "open"), None)
-        if pr:
+    open_pr_matches = tuple(
+        (branch, pr)
+        for branch in branches_to_check
+        for pr in pull_requests_by_branch[branch]
+        if pr.state == "open"
+    )
+    if open_pr_matches:
+        if rework and len(open_pr_matches) == 1:
+            branch, pr = open_pr_matches[0]
+            head_matches = not pr.head_ref or pr.head_ref == branch
+            base_matches = not base_branch or not pr.base_ref or pr.base_ref == base_branch
+            if head_matches and base_matches:
+                return recovery_plan(
+                    "rework_existing_pr",
+                    branch,
+                    f"Rework-Modus: vorhandenen offenen {describe_pull_request(pr)} auf Branch '{branch}' weiterbearbeiten.",
+                    pr,
+                )
+
+        if rework:
+            branch, pr = open_pr_matches[0]
             return recovery_plan(
-                "skip_existing_pr",
+                "skip_rework_ineligible",
                 branch,
-                f"Vorhandener Branch '{branch}' hat bereits einen offenen {describe_pull_request(pr)}.",
+                (
+                    "Rework-Modus verweigert: offener PR ist nicht eindeutig "
+                    "dem erwarteten Issue-Branch/Base-Branch zuordenbar."
+                ),
                 pr,
             )
+
+        branch, pr = open_pr_matches[0]
+        return recovery_plan(
+            "skip_existing_pr",
+            branch,
+            f"Vorhandener Branch '{branch}' hat bereits einen offenen {describe_pull_request(pr)}.",
+            pr,
+        )
 
     for branch in branches_to_check:
         pr = next((candidate for candidate in pull_requests_by_branch[branch]
@@ -2627,8 +2911,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 max_run_input_tokens: int | None = None,
                 max_run_output_tokens: int | None = None,
                 max_run_cache_read_tokens: int | None = None,
+                max_run_runtime_seconds: float | None = None,
+                max_post_worker_runtime_seconds: float | None = None,
                 ensemble: int = 0,
-                role_routing: dict | None = None) -> bool:
+                role_routing: dict | None = None,
+                rework: bool = False) -> bool:
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
@@ -2762,12 +3049,21 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             number,
             default_branch_name,
             stdin_isatty_fn=lambda: False,
+            rework=rework,
+            base_branch=base_branch,
         )
         print_branch_recovery_plan(recovery_plan)
         print(f"      [DRY-RUN] Geplanter Issue-Branch: {recovery_plan.branch}")
         return True
 
-    recovery_plan = plan_branch_recovery(client, repo, number, default_branch_name)
+    recovery_plan = plan_branch_recovery(
+        client,
+        repo,
+        number,
+        default_branch_name,
+        rework=rework,
+        base_branch=base_branch,
+    )
     print_branch_recovery_plan(recovery_plan)
     run_report = create_run_report(
         repo,
@@ -2776,11 +3072,24 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         model,
         issue_title=title,
         run_dir=run_report_dir,
+        rework_of=(
+            recovery_plan.pull_request.number
+            if recovery_plan.action == "rework_existing_pr" and recovery_plan.pull_request
+            else None
+        ),
+        rework_reason="existing_open_pr" if recovery_plan.action == "rework_existing_pr" else None,
     )
     if run_report:
         write_run_report(run_report, "started")
         write_run_health(run_report, status="running", phase="clone")
         print(f"      Run-Report: {run_report.path}")
+    # Issue #350: Zeitpunkt fuer das Post-Worker-Watchdog-Budget festhalten.
+    # Der Watchdog misst die _gesamte_ Post-Worker-Phase (Validierung bis
+    # PR-Erstellung) gegen ``--max-post-worker-runtime-seconds`` bzw. das
+    # verbleibende ``--max-run-runtime-seconds``.
+    run_started_at = datetime.now()
+    post_worker_started_at: datetime | None = None
+    post_worker_deadline_seconds: float = 0.0
     # Fruehes Repo-Profil fuer Skip-Pfade (vorhandener PR, geschlossene Issue)
     early_repo_profile_obj, early_repo_profile_dict = build_repo_profile_for_run(
         repo, config["config"], branch=base_branch,
@@ -2919,7 +3228,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
 
         # Branch anlegen
         branch_name = recovery_plan.branch
-        if recovery_plan.action == "reuse_branch":
+        if recovery_plan.action in {"reuse_branch", "rework_existing_pr"}:
             if not checkout_existing_remote_branch(repo_dir, branch_name):
                 print_err(f"Vorhandener Branch konnte nicht ausgecheckt werden: {branch_name}")
                 if run_report:
@@ -2930,6 +3239,11 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 if continue_:
                     print(
                         "      [CONTINUE] Vorhandene Änderungen gefunden; "
+                        "setze Arbeit auf bestehendem Branch fort..."
+                    )
+                elif recovery_plan.action == "rework_existing_pr":
+                    print(
+                        "      [REWORK] Vorhandene PR-Änderungen gefunden; "
                         "setze Arbeit auf bestehendem Branch fort..."
                     )
                 else:
@@ -2998,11 +3312,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         # (siehe oben) und steht fuer alle weiteren Phasen bereit.
 
         # Prompt bauen
-        prompt = AIDER_PROMPT_TEMPLATE.format(
-            number=number,
-            title=title,
-            body=body or "(kein Beschreibungstext)"
-        )
+        prompt = build_solve_prompt(number=number, title=title, body=body)
 
         # Worker-Adapter instanziieren und Umgebung vorbereiten
         adapter = get_worker_adapter(model)
@@ -3019,7 +3329,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         adapter_kwargs: dict = {}
         if model == "codex":
             adapter_kwargs["additional_dirs"] = additional_dirs
-        if model == "opencode":
+        if model in ("opencode", "openrouter_direct"):
             if max_run_cost_usd is not None:
                 adapter_kwargs["max_run_cost_usd"] = max_run_cost_usd
             if max_run_input_tokens is not None:
@@ -3028,6 +3338,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 adapter_kwargs["max_run_output_tokens"] = max_run_output_tokens
             if max_run_cache_read_tokens is not None:
                 adapter_kwargs["max_run_cache_read_tokens"] = max_run_cache_read_tokens
+            if max_run_runtime_seconds is not None:
+                adapter_kwargs["max_run_runtime_seconds"] = max_run_runtime_seconds
         if model == "codex" and defer_codex_rate_limit:
             from workers.codex_adapter import CodexAdapter
             adapter = CodexAdapter(defer_rate_limit=True)
@@ -3054,6 +3366,13 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
             opencode_session_metrics = dict(adapter_diagnostics.opencode_session_totals)
             if adapter_diagnostics.opencode_budget_exceeded:
                 opencode_session_metrics["budget_exceeded"] = adapter_diagnostics.opencode_budget_exceeded
+        openrouter_usage_metrics = None
+        if adapter_diagnostics.openrouter_usage:
+            openrouter_usage_metrics = dict(adapter_diagnostics.openrouter_usage)
+            if adapter_diagnostics.openrouter_budget_exceeded:
+                openrouter_usage_metrics["budget_exceeded"] = adapter_diagnostics.openrouter_budget_exceeded
+            if adapter_diagnostics.openrouter_request_timed_out:
+                openrouter_usage_metrics["timed_out"] = True
 
         # Monthly spending erfassen (solver role)
         if role_routing is not None:
@@ -3144,6 +3463,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                 )
             return False
@@ -3179,10 +3499,132 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                 )
             return False
 
+        if adapter_diagnostics.openrouter_budget_exceeded:
+            print_warn(
+                "OpenRouter-Direct Budget-/Kontrolllimit überschritten; "
+                "erstelle keinen Commit und keinen PR"
+            )
+            print(f"      {adapter_diagnostics.openrouter_budget_exceeded}")
+            status = "budget_exceeded"
+            if run_report and should_preserve_worktree(
+                status,
+                repo_dir,
+                base_branch,
+                changes_exist=assessment.has_changes,
+            ):
+                preserved_worktree = preserve_worker_worktree(
+                    repo_dir=repo_dir,
+                    report=run_report,
+                    owner=config["owner"],
+                    repo=repo,
+                    issue_number=number,
+                    branch=branch_name,
+                    status=status,
+                    base_branch=base_branch,
+                )
+            if run_report:
+                write_resource_diagnostics_to_report(
+                    run_report.path, run_resources, resource_diagnostics
+                )
+                write_run_report(
+                    run_report,
+                    status,
+                    worker_result=diagnostic_result,
+                    note=adapter_diagnostics.openrouter_budget_exceeded,
+                    preserved_worktree_path=preserved_worktree,
+                    base_branch=base_branch,
+                    git_change_summary=git_change_summary,
+                    vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                    resource_diagnostics=resource_diagnostics,
+                    opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
+                    repo_profile=repo_profile_dict,
+                )
+            return False
+
+        # Ab hier beginnt die Post-Worker-Phase (Issue #350).
+        post_worker_started_at = datetime.now()
+        post_worker_deadline_seconds = compute_post_worker_deadline(
+            run_started_at,
+            max_run_runtime_seconds,
+            max_post_worker_runtime_seconds,
+        )
+        branch_pushed_remote = False
+
+        def _write_post_push_recovery_report(
+            status_value: str,
+            note_text: str,
+            *,
+            worker_result_for_report=diagnostic_result,
+        ) -> None:
+            """Schreibt einen Run-Report fuer ``pushed_without_pr``/``pr_creation_timeout``.
+
+            Enthaelt Branch-Namen, PR-Recovery-Befehl und (falls vorhanden)
+            das Worktree-Preset, damit das Watchdog die Lage bewerten und
+            ein Folgerun aufsetzen kann.
+            """
+            if not run_report:
+                return
+            note = note_text
+            if branch_name and branch_pushed_remote:
+                note = (
+                    f"{note_text}\n"
+                    + format_post_push_recovery_note(
+                        config["owner"],
+                        repo,
+                        branch_name,
+                        number,
+                        base_branch,
+                    )
+                )
+            write_resource_diagnostics_to_report(
+                run_report.path, run_resources, resource_diagnostics
+            )
+            write_run_report(
+                run_report,
+                status_value,
+                worker_result=worker_result_for_report,
+                note=note,
+                preserved_worktree_path=preserved_worktree,
+                base_branch=base_branch,
+                git_change_summary=git_change_summary,
+                vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
+                resource_diagnostics=resource_diagnostics,
+                opencode_session_metrics=opencode_session_metrics,
+                openrouter_usage_metrics=openrouter_usage_metrics,
+                repo_profile=repo_profile_dict,
+            )
+
+        # Post-Worker-Watchdog fuer die Validierungs-Phase. Die Phase
+        # selbst ist billig, aber sie ist der erste Schritt nach dem
+        # Worker-Heartbeat; ein expliziter Heartbeat + Deadline-Check
+        # schliesst die Luecke, die Issue #339/Issue #340 aufgedeckt haben.
+        try:
+            _check_post_worker_deadline(
+                post_worker_started_at,
+                post_worker_deadline_seconds,
+                "validating",
+            )
+        except PostWorkerTimeoutError as exc:
+            print_warn(f"Post-Worker-Timeout in 'validating': {exc}")
+            if run_report:
+                write_run_health(
+                    run_report,
+                    status="unhealthy",
+                    phase="validating",
+                )
+            return False
+        if run_report:
+            write_run_health(
+                run_report,
+                status="running",
+                phase="validating",
+            )
         validation = validate_worker_changes(repo_dir, git_status)
         if not validation.ok:
             print_warn("Worker-Validierung fehlgeschlagen; erstelle keinen Commit und keinen PR")
@@ -3220,6 +3662,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                 )
             return False
@@ -3230,7 +3673,60 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
         print(f"      📤 Commit & Push ...", end=" ", flush=True)
         commit_msg = f"fix: Löse Issue #{number} — {title}\n\nAutomatisch gelöst mit AI Issue Solver (Modell: {model})\nIssue: https://github.com/{config['owner']}/{repo}/issues/{number}"
 
-        pushed = commit_and_push(repo_dir, branch_name, commit_msg, token, config["owner"], repo)
+        # Post-Worker-Watchdog (Issue #350): Commit + Push unter expliziter
+        # Deadline fuehren. Wenn das Budget ueberschritten wird, schreiben
+        # wir einen ``pushed_without_pr``-Report, weil der Branch moeglicherweise
+        # bereits remote ist (commit_and_push fuehrt git add/commit/push in
+        # einem Schritt aus).
+        try:
+            _check_post_worker_deadline(
+                post_worker_started_at,
+                post_worker_deadline_seconds,
+                "committing",
+            )
+        except PostWorkerTimeoutError as exc:
+            print_warn(f"Post-Worker-Timeout in 'committing': {exc}")
+            if run_report:
+                write_run_health(
+                    run_report,
+                    status="unhealthy",
+                    phase="committing",
+                )
+            _write_post_push_recovery_report(
+                "pushed_without_pr",
+                f"Timeout vor Commit/Push: {exc}",
+            )
+            return False
+
+        pushed = commit_and_push(
+            repo_dir,
+            branch_name,
+            commit_msg,
+            token,
+            config["owner"],
+            repo,
+            timeout_seconds=post_worker_deadline_seconds or DEFAULT_POST_WORKER_RUNTIME_SECONDS,
+        )
+
+        # Nach erfolgreichem Push die "pushing"-Phase markieren. Falls
+        # commit_and_push teilweise erfolgreich war (Commit ok, Push fehlt),
+        # behandeln wir das wie vorher als "push_failed" und erhalten den
+        # Branch-Wert ueber das Worktree-Preset.
+        if pushed:
+            branch_pushed_remote = True
+            if run_report:
+                write_run_health(
+                    run_report,
+                    status="running",
+                    phase="pushing",
+                )
+                # Heartbeat direkt nach erfolgreichem Push schreiben.
+                write_run_health(
+                    run_report,
+                    last_activity_at=datetime.now(),
+                    status="running",
+                    phase="creating_pr",
+                )
 
         if not pushed:
             print_warn("Push fehlgeschlagen oder keine Änderungen")
@@ -3265,6 +3761,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     vibe_log_snippet=vibe_log_snippet if model == "mistral-vibe" else None,
                     resource_diagnostics=resource_diagnostics,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                 )
             return False
@@ -3350,6 +3847,7 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                     resource_diagnostics=resource_diagnostics,
                     model_selection_metadata=model_selection_metadata,
                     opencode_session_metrics=opencode_session_metrics,
+                    openrouter_usage_metrics=openrouter_usage_metrics,
                     repo_profile=repo_profile_dict,
                     test_command=test_command,
                     test_result=post_solve_test.status,
@@ -3371,6 +3869,8 @@ def solve_issue(client: GitHubClient, issue: dict, repo: str,
                 resource_diagnostics=resource_diagnostics,
                 model_selection_metadata=model_selection_metadata,
                 opencode_session_metrics=opencode_session_metrics,
+                openrouter_usage_metrics=openrouter_usage_metrics,
+                repo_profile=repo_profile_dict,
                 test_command=test_command,
                 test_result=post_solve_test.status,
             )
@@ -3448,6 +3948,17 @@ def check_and_warn_on_congestion(
         return True
 
 
+def should_check_existing_open_pr(args: argparse.Namespace, issue_number: int) -> bool:
+    """Return whether the normal per-issue open-PR guard should run."""
+    return bool(
+        issue_number
+        and not args.retry
+        and not args.compare_models
+        and not args.rework
+        and not args.benchmark
+    )
+
+
 def print_solver_directories() -> None:
     """
     Dokumentiert die solver-lokalen Verzeichnisstrukturen und Umgebungsvariablen.
@@ -3463,6 +3974,57 @@ def print_solver_directories() -> None:
     print("   - OpenCode Cache: $OPENCODE_CACHE_DIR")
     print("   - Isolierte Run-Checkouts: $OPENCODE_CACHE_DIR/tmp/ai-solver-*/<repo>")
     print("   - Temporäre Dateien: $OPENCODE_CACHE_DIR/tmp/")
+
+
+# ─────────────────────────────────────────────────────────────
+# Rework / retry flag usage instrumentation
+# ─────────────────────────────────────────────────────────────
+
+# Path is intentionally fixed (relative to repo CWD) so dashboard tools and
+# post-hoc analytics can find it without configuration.
+REWORK_FLAG_USAGE_LOG = Path("reports/usage/rework-flags.jsonl")
+
+
+def _log_rework_flag_use(args) -> None:
+    """Append one JSON line to REWORK_FLAG_USAGE_LOG when any of
+    --rework / --retry / --rework-pr / --compare-models is used.
+
+    Best-effort: any I/O failure is logged as a warning but does not
+    abort the solver run. The hook is also disabled when the
+    AIS_REWORK_FLAG_NO_LOG env var is set (used by unit tests).
+    """
+    if os.environ.get("AIS_REWORK_FLAG_NO_LOG"):
+        return
+
+    active_flags: list[str] = []
+    if getattr(args, "rework", False):
+        active_flags.append("--rework")
+    if getattr(args, "retry", False):
+        active_flags.append("--retry")
+    if getattr(args, "rework_pr", 0):
+        active_flags.append(f"--rework-pr {args.rework_pr}")
+    if getattr(args, "compare_models", False):
+        active_flags.append("--compare-models")
+    if not active_flags:
+        return
+
+    entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "flags": active_flags,
+        "model": getattr(args, "model", None),
+        "repo": getattr(args, "repo", None),
+        "issue": getattr(args, "issue", None),
+        "rework_pr": getattr(args, "rework_pr", 0) or None,
+        "dry_run": bool(getattr(args, "dry_run", False)),
+    }
+
+    try:
+        REWORK_FLAG_USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with REWORK_FLAG_USAGE_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        # Instrumentation must never break the solver.
+        print_warn(f"rework-flag usage log failed: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3512,6 +4074,14 @@ def main():
         action="store_true",
         help="OpenCode-Diagnose: Version, Auth-Status und Modellbeispiele anzeigen",
     )
+    parser.add_argument(
+        "--allow-opencode-state-conflict",
+        action="store_true",
+        help=(
+            "OpenCode trotz laufendem Versions-/State-Mix starten. "
+            "Nur bewusst verwenden; Standard ist blockieren."
+        ),
+    )
     parser.add_argument("--repo", help="Nur dieses Repo bearbeiten")
     parser.add_argument("--issue", type=int, help="Nur diese Issue-Nummer lösen")
     parser.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts ändern")
@@ -3519,6 +4089,14 @@ def main():
         "--skip-pr",
         action="store_true",
         help="Benchmark-Modus: Commit & Push ausführen aber keinen PR erstellen",
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help=(
+            "Benchmark-Modus: umgeht Open-PR-Guards für Sweeps. "
+            "Nur zusammen mit --skip-pr erlaubt."
+        ),
     )
     parser.add_argument(
         "--branch-suffix",
@@ -3536,6 +4114,14 @@ def main():
         action="store_true",
         dest="continue_",
         help="Vorhandenen Branch mit Änderungen weiterbearbeiten statt PR zu erstellen",
+    )
+    parser.add_argument(
+        "--rework",
+        action="store_true",
+        help=(
+            "Vorhandenen offenen Issue-PR-Branch bewusst weiterbearbeiten. "
+            "Standard bleibt: offene PRs überspringen."
+        ),
     )
     parser.add_argument("--label", default="ai-generated", help="Welche Issues holen (Label)")
     parser.add_argument(
@@ -3585,6 +4171,11 @@ def main():
         help="Workflow-Congestion-Check vor dem Start ueberspringen",
     )
     parser.add_argument(
+        "--skip-hygiene-check",
+        action="store_true",
+        help="Lokalen Pre-Solver-Hygiene-Check bewusst ueberspringen",
+    )
+    parser.add_argument(
         "--pr-threshold",
         type=int,
         default=3,
@@ -3594,6 +4185,17 @@ def main():
         "--retry",
         action="store_true",
         help="Erzwingt die erneute Bearbeitung eines Issues, auch wenn bereits ein offener PR existiert",
+    )
+    parser.add_argument(
+        "--rework-pr",
+        type=int,
+        default=0,
+        help=(
+            "PR-Nummer fuer den Rework-Workflow: Holt PR-Diff + Review-Feedback, "
+            "erstellt einen fokussierten Prompt und wendet die Aenderungen als "
+            "Follow-up-Commits auf demselben Branch an. Nutzt das angegebene --model. "
+            "Beispiel: --rework-pr 403 --model openrouter_direct"
+        ),
     )
     parser.add_argument(
         "--compare-models",
@@ -3625,7 +4227,22 @@ def main():
         default=None,
         help="Maximale Cache-Read-Tokens fuer einen OpenCode-Run",
     )
+    parser.add_argument(
+        "--max-run-runtime-seconds",
+        type=float,
+        default=None,
+        help="Maximale Laufzeit in Sekunden fuer direkte API-Worker wie OpenRouter Direct",
+    )
+    parser.add_argument(
+        "--max-post-worker-runtime-seconds",
+        type=float,
+        default=None,
+        help="Maximale Laufzeit in Sekunden fuer Validierung, Tests, Commit, Push und PR-Erstellung",
+    )
     args = parser.parse_args()
+
+    if args.benchmark and not args.skip_pr:
+        parser.error("--benchmark erfordert --skip-pr, damit Benchmark-Runs keine PRs erstellen")
 
     if args.cleanup_preserved_worktrees:
         stale_paths = cleanup_preserved_worktrees(
@@ -3658,8 +4275,17 @@ def main():
         exit_code = run_opencode_diagnostic()
         sys.exit(exit_code)
 
-    if not args.model:
-        parser.error("--model ist erforderlich, ausser bei --cleanup-preserved-worktrees")
+    if not args.model and not args.rework_pr:
+        parser.error(
+            "--model ist erforderlich, ausser bei --cleanup-preserved-worktrees "
+            "oder --rework-pr"
+        )
+    if args.rework_pr and not args.model:
+        args.model = "openrouter_direct"
+
+    # Instrumentation: append a JSON line to reports/usage/rework-flags.jsonl
+    # if any rework/retry/compare-models flag was used. See §48 / #412.
+    _log_rework_flag_use(args)
 
     if requests is None:
         print_err("Python-Abhängigkeit fehlt: requests")
@@ -3674,12 +4300,17 @@ def main():
     _ROLE_ROUTING = _ensure_role_routing()
 
     # OpenRouter-Slugs verifizieren (überspringbar mit --skip-slug-verification)
-    if _ROLE_ROUTING and not args.skip_slug_verification and not args.dry_run:
+    # Im --rework-pr-Modus nicht noetig (nutzt direkten API-Zugriff)
+    if _ROLE_ROUTING and not args.skip_slug_verification and not args.dry_run and not args.rework_pr:
         if not _ensure_slug_verification():
             sys.exit(1)
         print("   ✅ OpenRouter model slugs verified")
 
     _BUDGET_TRACKING_ACTIVE = bool(_ROLE_ROUTING and not args.skip_budget_check)
+
+    if not args.skip_hygiene_check:
+        if not run_pre_solver_hygiene_check(dry_run=args.dry_run):
+            sys.exit(1)
 
     # Preflight-Checks durchfuehren
     if args.repo:
@@ -3704,6 +4335,11 @@ def main():
             print_err("OpenCode CLI wurde nicht gefunden!")
             print("   → Installieren: https://opencode.ai/docs/installation")
             print("   → Danach `opencode` im PATH verfügbar machen")
+            sys.exit(1)
+        if not check_opencode_state_guard(
+            opencode_exe,
+            allow_conflict=args.allow_opencode_state_conflict,
+        ):
             sys.exit(1)
         check_opencode_auth(opencode_exe)
         print_solver_directories()
@@ -3801,6 +4437,44 @@ def main():
         if model_name:
             print(f"   Modell-Name: {model_name}")
 
+    # Rework-PR-Modus: eigenstaendiger Pfad ohne Issue-Iteration
+    if args.rework_pr:
+        print_step(1, f"Rework-Workflow fuer PR #{args.rework_pr}")
+        print(f"   Modell: {args.model}")
+        if model_name:
+            print(f"   Modell-Name: {model_name}")
+        repo = args.repo or "ai-issue-solver"
+
+        if args.dry_run:
+            print_warn("DRY-RUN: Rework wird simuliert\n")
+
+        from validation.rework import run_pr_rework
+        result = run_pr_rework(
+            owner=user,
+            repo=repo,
+            pr_number=args.rework_pr,
+            model=model_name or model,
+            dry_run=args.dry_run,
+            timeout_seconds=args.max_run_runtime_seconds or 300,
+        )
+
+        status_str = result.status
+        print(f"\n   Rework-Status: {status_str}")
+        if result.pr_url:
+            print(f"   PR: {result.pr_url}")
+        if result.run_id:
+            print(f"   Run-ID: {result.run_id}")
+        if result.error_detail:
+            print(f"   Detail: {result.error_detail}")
+
+        if args.dry_run:
+            print(f"\n   [DRY-RUN] Wuerde Rework-Prompt mit folgenden Parametern ausfuehren:")
+            print(f"      PR #{args.rework_pr} in {user}/{repo}")
+            print(f"      Modell: {model_name or model}")
+            print(f"      Basis-Branch: aus PR-Metadaten")
+
+        sys.exit(0 if status_str in ("rework_pushed", "dry_run", "no_changes", "skip_merged_pr") else 1)
+
     # Repos ermitteln
     if args.repo:
         repos = [args.repo]
@@ -3822,7 +4496,7 @@ def main():
                 repo_name,
                 issue_number=args.issue,
                 pr_threshold=args.pr_threshold,
-                skip_congestion_check=args.skip_congestion_check,
+                skip_congestion_check=args.skip_congestion_check or args.benchmark,
             )
             if not can_proceed and args.issue:
                 print_err(f"Workflow-Congestion blockiert Issue #{args.issue} in {repo_name}")
@@ -3860,8 +4534,8 @@ def main():
             issue_number = issue.get("number", 0)
 
             # Workflow-Congestion-Check: Issues mit offenen PRs ueberspringen
-            # (ausser --retry oder --compare-models ist gesetzt)
-            if not args.retry and not args.compare_models and issue_number:
+            # (ausser --retry, --compare-models, --rework oder --benchmark ist gesetzt)
+            if should_check_existing_open_pr(args, issue_number):
                 try:
                     open_prs_for_issue = client.get_pull_requests_for_branch(
                         repo_name,
@@ -3915,8 +4589,11 @@ def main():
                 max_run_input_tokens=args.max_run_input_tokens,
                 max_run_output_tokens=args.max_run_output_tokens,
                 max_run_cache_read_tokens=args.max_run_cache_read_tokens,
+                max_run_runtime_seconds=args.max_run_runtime_seconds,
+                max_post_worker_runtime_seconds=args.max_post_worker_runtime_seconds,
                 ensemble=args.ensemble,
                 role_routing=_ROLE_ROUTING if _BUDGET_TRACKING_ACTIVE else None,
+                rework=args.rework,
             )
             if ok:
                 solved += 1

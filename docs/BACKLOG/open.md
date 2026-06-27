@@ -42,437 +42,12 @@ python scripts/cleanup_backlog.py --backlog docs/BACKLOG/open.md --apply --confi
 
 ## Priority 1
 
-## 5. Evaluate mobile-first Claude Code alternative to Codex
-
-
-Labels: `kind/automation`, `theme/quality`, `theme/provider`, `theme/workflow`
-
-Priority: `1`
-
-Codex usage should be conserved when possible. We need a practical alternative
-that can be used from a phone in a similar supervision style, with comparable
-quality for GitHub issue solving and pull request creation.
-
-Suggested scope:
-- evaluate Claude Code on the web/mobile app with GitHub repositories as the
-  primary Codex alternative
-- compare Cursor Web/Mobile Agent as a secondary candidate
-- define a phone-first workflow for starting tasks, reviewing progress,
-  responding to clarifying questions, and reviewing generated PRs
-- test against tiny safe issues in this repo before using it for larger work
-- compare quality against Codex using concrete outcomes: PR created, tests
-  passed, review effort, runtime, cost, and failure mode
-- document setup requirements, GitHub permissions, mobile limitations, and
-  rollback/recovery steps
-- do not read or expose secret files such as `config/.env`, provider auth
-  files, or API keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 16. Use GitHub repository intelligence before local repo type detection
-
-
-Labels: `kind/automation`, `kind/analysis`, `theme/quality`, `theme/workflow`, `theme/github`
-
-Priority: `1`
-
-The solver should use GitHub's existing repository intelligence before falling
-back to local repo type detection. GitHub already exposes language shares,
-repository metadata, topics, file trees, workflows, issues, PRs, and checks. We
-should avoid rebuilding a large Linguist-like detector locally.
-
-Context:
-- PR #211 attempted to solve #188 by adding a large local
-  `repo_type_detection.py` implementation.
-- That approach passed CI after a small fix, but it duplicated GitHub data and
-  increased maintenance surface.
-- We are GitHub-first in practice; generic/non-GitHub support can remain a
-  fallback abstraction.
-
-Suggested scope:
-- add a `RepoProfileProvider` abstraction
-- implement `GitHubRepoProfileProvider` as the primary provider
-- keep a thin `LocalRepoProfileProvider` fallback for offline, non-GitHub, or
-  already-checked-out repositories
-- use GitHub REST data first:
-  - `/repos/{owner}/{repo}/languages` for language byte shares and dominant
-    language
-  - repo metadata for default branch, archived/private state, size, and
-    description
-  - topics for explicit project signals
-  - recursive git tree or contents API for marker files
-  - workflows/actions metadata for validation hints
-  - existing PR/check/issue state to avoid duplicate work
-- use local marker heuristics only for details GitHub does not provide, for
-  example `DESCRIPTION`, `renv.lock`, `app.R`, `inst/shiny/app.R`,
-  `pyproject.toml`, and `package.json`
-- expose a structured `RepoProfile` in run reports:
-  - `dominant_language`
-  - `language_percentages`
-  - `repo_kind`
-  - `framework_hints`
-  - `test_hints`
-  - `recommended_worker`
-  - `python_required`
-- make #188 solvable without assuming Python is mandatory
-- do not read or expose secret files such as `.env`, provider auth files, or
-  API keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 17. Add workflow control for backlog and PR queue congestion
-
-
-Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `theme/quality`
-
-Priority: `1`
-
-The solver should detect and surface workflow congestion before starting more
-automated work. Congestion includes too many open PRs, open issues that already
-have PRs, stale generated branches, unresolved red checks, superseded
-approaches, and backlog items that were converted into issues but not cleaned
-up.
-
-Suggested scope:
-- detect open PR count, red PR count, green-but-unreviewed PR count, and stale
-  PR age
-- map open PRs back to issues and backlog entries
-- warn before starting new solver runs when unresolved PRs exceed a
-  configurable threshold
-- recommend the next workflow action: review, merge, close, rebase, rerun,
-  create follow-up, or clean backlog
-- add a process status section to the dashboard and overnight summary
-- show backlog entries that already have matching issues or merged/closed issues
-- make generated solver runs avoid issues that already have open PRs unless the
-  user explicitly asks for a retry or alternative model comparison
-- add tests for clean workflow, PR congestion, stale generated branches, and
-  duplicate issue/PR situations
-- do not read or expose secret files such as `.env`, provider auth files, or
-  API keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 18. Harden Codex sandbox and escalated-command workflow handling
-
-
-Labels: `kind/automation`, `theme/workflow`, `theme/codex`, `theme/quality`
-
-Priority: `1`
-
-Codex runs can behave differently inside the app sandbox than the same commands
-run directly in the user's terminal. We have seen GitHub API DNS failures from
-Python inside the sandbox while the terminal worked, `.git` write operations
-blocked by sandbox permissions, and commands such as `git pull`, `git switch`,
-or GitHub checks needing escalated execution. The solver workflow should make
-these differences explicit, diagnosable, and recoverable.
-
-Suggested scope:
-- add a Codex environment preflight that checks GitHub API access through both
-  `gh` and Python `requests`
-- detect sandbox-related DNS/network failures and recommend or request
-  escalated execution instead of retrying blindly
-- detect `.git` write permission failures such as blocked `FETCH_HEAD` or
-  `index.lock` creation and surface a clear recovery hint
-- record whether commands ran sandboxed or escalated in run reports and
-  overnight summaries
-- add a safe command classification for common workflow operations such as
-  `git switch`, `git pull --ff-only`, `gh pr checks`, `gh run view`, and
-  `gh issue create`
-- avoid broad approvals; keep suggested escalation prefix rules narrow and
-  task-specific
-- make Codex-specific limitations visible in the dashboard process status
-  section once workflow congestion reporting exists
-- add tests for sandbox DNS failure classification, `.git` permission failure
-  handling, and escalated-command recommendation text
-- do not read or expose secrets such as `.env`, provider auth files, API keys,
-  or GitHub tokens
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 19. Add structured rework workflow with sub-issues and separate PRs
-
-
-Labels: `kind/automation`, `theme/workflow`, `theme/quality`, `theme/github`
-
-Priority: `1`
-
-When a generated PR needs rework, the solver should avoid turning one branch
-into a mixed correction pile. Rework should be tracked explicitly, split into
-clear sub-tasks, and implemented through separate PRs when the changes are
-independent enough to review and merge safely.
-
-Suggested scope:
-- detect rework situations such as user review feedback, failed checks,
-  behavior that looks unchanged, partial implementation, superseded approach, or
-  a PR that should be closed in favor of a better path
-- create or update a GitHub issue with a checklist of concrete rework
-  sub-tasks instead of hiding the plan only in chat or run logs
-- link each sub-task to the related original issue, PR, run report, failing
-  check, and user observation
-- support one PR per sub-task when the work is separable, for example:
-  - validation/test repair
-  - implementation correction
-  - documentation or backlog cleanup
-  - dashboard/reporting follow-up
-  - closing or replacing a superseded PR
-- keep a single PR only when the rework is tiny, tightly coupled, and easier to
-  review as one change
-- make solver scripts avoid reusing a messy failed branch unless explicitly
-  requested; prefer a fresh branch from the base branch with preserved context
-- add run-report and dashboard fields for `rework_of`, `rework_reason`,
-  `subtask_id`, `supersedes_pr`, and `follow_up_issue`
-- add commands or script modes to generate the rework issue/checklist from a PR,
-  failed run, or user review note
-- add tests for rework issue creation, checklist parsing, separate PR
-  recommendation, superseded PR handling, and tiny-rework single-PR fallback
-- do not read or expose secret files such as `.env`, provider auth files, API
-  keys, or GitHub tokens
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 21. Add solver process supervisor for monitoring and targeted cancellation
-
-
-Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `theme/quality`
-
-Priority: `1`
-
-Running solver jobs should not require Codex to manually inspect process lists,
-tail health files, infer stuck states, and kill individual processes. The
-project should provide a small supervisor command or daemon that tracks active
-solver runs, reports their health, and can stop exactly the intended job by
-run id, issue number, repo, branch, or worker pid.
-
-Suggested scope:
-- add a solver process registry that records run id, repo, issue, branch,
-  worker adapter, model name, pid tree, start time, latest health timestamp,
-  run report path, and current phase
-- provide a command such as `scripts/solver_supervisor.py status` to list
-  active jobs with stale/healthy/unhealthy classification
-- provide targeted stop commands such as `stop --run-id`, `stop --issue`,
-  `stop --repo`, or `stop --pid`, with a dry-run mode that shows the exact
-  process tree before sending signals
-- use graceful termination first, then configurable escalation only for the
-  selected process tree; never kill unrelated solver, dashboard, terminal, or
-  user processes
-- detect repeated test loops, repeated edit failures, no-health-update windows,
-  WAL/database failures, network stalls, and worker output inactivity
-- preserve or copy the active worktree before terminating an unhealthy job when
-  there are local changes
-- write a structured cancellation reason to the run report and overnight
-  summary
-- surface active job status and stop recommendations in the dashboard, ideally
-  with copyable commands rather than requiring Codex to run process monitoring
-  manually
-- integrate with `solve_issues.py`, `solve_issues_batch.py`, and
-  `run_overnight.py` without requiring a separate terminal watcher for normal
-  runs
-- add tests for registry writes, stale detection, process tree selection,
-  dry-run stop output, preservation-before-stop, and unrelated-process safety
-- do not read or expose secret files such as `.env`, provider auth files, API
-  keys, or GitHub tokens
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 22. Research backlog shaping frameworks before turning ideas into issues
-
-
-Labels: `theme/research`, `theme/workflow`, `theme/backlog`, `theme/quality`
-
-Priority: `1`
-
-The project needs a deliberate shaping layer between raw ideas and generated
-GitHub issues. We are moving bottom-up from concrete observations and
-experiments, but we need structure so interesting ideas do not immediately
-become oversized implementation issues. Before changing the backlog generator
-or dashboard workflow, research established approaches and recommend a small
-set of candidate structures that fit `ai-issue-solver`.
-
-Context:
-- raw ideas, initiatives, discovery work, ready implementation issues, and
-  generated GitHub issues are currently too close together
-- `NEXT_BACKLOG.md` should remain useful, but not every idea should become a
-  GitHub issue automatically
-- the dashboard/PWA will likely need to show ideas, shaped candidates, ready
-  issues, generated issues, and run history as different workflow states
-- strategic ideas such as reusing old laptops as coding worker nodes should be
-  researched against existing distributed-computing, home-lab, CI-runner, and
-  agent-runner solutions before we design our own implementation
-
-Suggested scope:
-- research and compare established product/workflow structures for the path
-  from idea to executable issue, including at least:
-  - Dual-Track Agile / Discovery and Delivery
-  - Opportunity Solution Tree
-  - GIST planning: Goals, Ideas, Steps, Tasks
-  - Backlog Refinement and Definition of Ready
-  - RICE or similar lightweight prioritisation/scoring methods
-  - Shape Up pitches, appetite, bets, and cycles if applicable
-- research structurally similar open-source or platform projects that are close
-  to this project's domain, including at least OpenCode, Codex, OpenRouter, and
-  other AI coding, model-routing, agent-orchestration, or provider-integration
-  projects
-- create a standardised comparison report for each researched approach:
-  - purpose and core workflow
-  - where raw ideas live
-  - how ideas become candidates
-  - how candidates become ready implementation work
-  - prioritisation model
-  - evidence or confidence signals
-  - fit for solo/mobile use
-  - fit for AI-assisted issue generation
-  - fit for dashboard/PWA representation
-  - risks, overhead, and failure modes
-- create an evidence log for project assumptions and lessons learned, for
-  example Aider currently being a weak fit for this workflow, MiniMax looking
-  promising for some R work, or Mistral Medium being a good cost/performance
-  default
-- define how often subjective provider/model assessments should be challenged
-  again using fresh benchmark runs, new public information, and recent local
-  solver outcomes
-- propose a lightweight model/provider knowledge base that records strengths,
-  weaknesses, cost tier, interface stability, task fit, last-reviewed date, and
-  evidence source for each model or provider interface
-- include internet research as one input for model preselection, but keep local
-  benchmark results and project-specific failures visible so recommendations do
-  not rely only on public claims
-- research comparable systems for reusing old hardware or distributed worker
-  capacity, including:
-  - self-hosted GitHub Actions runners
-  - Buildkite/GitLab/Jenkins style worker agents
-  - home-lab orchestration patterns
-  - distributed CI queues
-  - agent runner or coding-worker orchestration projects
-  - lightweight SSH-based job dispatch patterns
-- produce a recommended backlog state model for this project, for example:
-  `idea -> opportunity -> solution candidate -> discovery spike -> ready issue
-  -> generated GitHub issue -> solver run -> PR/rework/done`
-- define which states are allowed to generate GitHub issues automatically and
-  which states must remain research/shaping only
-- propose a small schema for `NEXT_BACKLOG.md` entries, including fields such as
-  `type`, `state`, `priority`, `confidence`, `evidence`, `dependencies`,
-  `generate_issue`, and `source`
-- propose dashboard views for the shaped backlog, including mobile-first
-  handling of idea inbox, candidates, ready issues, and generated GitHub issues
-- keep this issue as research and recommendation only; do not implement the
-  backlog generator or dashboard changes in the same PR
-
-Deliverables:
-- one markdown report under `docs/` comparing the researched frameworks
-- one recommended state model for `ai-issue-solver`
-- one proposed `NEXT_BACKLOG.md` item template
-- a list of follow-up implementation issues that can be generated separately
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 24. Trigger the solver automatically via GitHub Actions when an issue is labeled
-
-
-Labels: `kind/automation`, `theme/workflow`, `theme/github`
-
-Priority: `1`
-
-Inspired by OpenHands, which demonstrated that an AI coding agent can be
-triggered directly from GitHub events without requiring a local machine to be
-running. OpenHands uses a similar label-based dispatch model to start solver
-runs on GitHub-hosted infrastructure.
-
-Currently the solver must be started manually on the local machine. This is a
-break in the workflow: the issue exists on GitHub, but the fix has to be
-triggered locally. A GitHub Actions workflow that automatically triggers the
-solver when a defined label is applied closes this gap and brings the project
-closer to how git-bob and OpenHands work.
-
-Suggested scope:
-- add `.github/workflows/solve-on-label.yml` that triggers on
-  `issues: [labeled]`
-- when the label is `ai-solve`, check out the repo, install dependencies, and
-  run `solve_issues.py` with the labeled issue number
-- remove the `ai-solve` label after the solver run completes, regardless of
-  outcome
-- store API keys as GitHub Secrets, never hardcoded in the workflow
-- give the runner write access only to its own fork branch, not to the base
-  branch
-- do not forward secrets to the AI worker beyond what `solve_issues.py`
-  already handles
-- support optional label variants as a follow-up: `ai-solve-claude` for an
-  explicit Claude run, `ai-analyze` to run `analyze_repos.py` only,
-  `ai-cleanup` to run `post_merge_cleanup.py`
-- optionally restrict the workflow to label setters defined in CODEOWNERS
-- do not expose API keys, provider auth files, or GitHub tokens in logs or
-  run reports
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 36. Persist dashboard repo, tab and agent selection in URL parameters
-
-
-Labels: `kind/feature`, `theme/dashboard`, `theme/quality`, `agent/solver`
-
-Priority: `1`
-
-The dashboard resets to its default view on every auto-refresh or manual reload,
-discarding the user's current repo, tab, and agent selection. Users cannot share
-or bookmark a specific dashboard view. All three selection dimensions must be
-persisted in the URL and restored on load.
-
-Suggested scope:
-- store `repo`, `tab`, and `agent` as `URLSearchParams` query parameters; update
-  them via `history.replaceState` whenever the user changes a selection so the
-  page does not reload
-- on page load, read all three parameters from `location.search` and apply them
-  before rendering; fall back to sensible defaults when a parameter is absent
-- default `tab`: `run-list`; default `agent`: `all`; default `repo`: the repo
-  with currently running jobs (most recently started if multiple repos are active)
-- agent filter: add a selector that filters the visible run rows by worker/model
-  adapter; use `agent=all` to show all rows; implement as a sub-filter within
-  the active tab (Variant C from the requirements doc)
-- ensure the auto-refresh meta tag does not fight the URL state; the restored
-  view after refresh must exactly match what was in the URL — same repo, tab,
-  and agent — with no automatic jump back to run-list
-- update `switchTab`, the repo dropdown, and the new agent selector to all call
-  a shared `updateUrlParams({tab, repo, agent})` helper that keeps the URL in
-  sync
-- add tests for URL parameter read/write, default fallback logic, multi-repo
-  active-job selection, and single-repo auto-selection
-- do not expose API keys, provider auth files, or secret files in dashboard
-  output
-
-Touches: `scripts/status_dashboard.py`, `scripts/serve_dashboard.py`
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 37. Free OpenCode models full integration and evaluation
+## 37. Free OpenCode models full integration and evaluation *(parked)*
 
 
 Labels: `kind/feature`, `theme/workflow`, `agent/solver`, `priority/1`
+
+Parked because: Free OpenCode models full integration and evaluation — not 0.9.0-critical; the hard-coded free-models list is known stale (see agent memory 2026-06-14) and must be re-verified before any real run, not parked as a priority-1 item.
 
 Priority: `1`
 
@@ -512,441 +87,15 @@ Checks:
 - `python -m unittest discover -s tests`
 
 ---
-## 38. Parallel Solver Ensemble – mehrere Modelle auf ein Issue, beste Lösung gewinnt
-
-
-Labels: `kind/feature`, `theme/workflow`, `agent/solver`, `priority/1`
-
-Priority: `1`
-
-Replace the current single-model-per-issue approach with an ensemble that runs
-multiple models on the same issue concurrently, then selects the best result
-and creates a single PR. This serves both production (best possible solution)
-and benchmarking (fair comparison without branch collision).
-
-Key design decisions:
-- each model gets its own branch: `ai/fix-issue-{number}/{sanitized-model-name}`
-- all branches are pushed to the remote; no PR is created per model
-- after all models finish, a "reviewer" step evaluates each result by:
-  - did tests pass? (primary gate)
-  - diff size vs issue scope
-  - touched files vs `Touches:` hint
-  - number of edit/fix iterations the model needed
-  - worker exit code and output signals (WAL failures, edit loops)
-- the best result is promoted: its branch becomes the PR branch, or a new
-  combined branch is created cherry-picking the best parts
-- in benchmark mode (`--benchmark` / `--skip-pr`): evaluation results are
-  logged, no PR is created, no branch is promoted
-- in production mode (`--ensemble`): the best result gets a single PR
-
-Suggested scope:
-- add `--ensemble N` flag to `solve_issues.py` that spawns N model workers for
-  each issue; workers share the same clone but get isolated solver dirs
-- extend branch naming in `solve_issue()` to accept an optional suffix
-  (`model_slug`) so branches don't collide
-- implement the reviewer/evaluation step as a standalone function that takes a
-  list of `DiagnosticResult` and returns a ranked list
-- update `benchmark_issues.py` to be a thin wrapper around `--ensemble --skip-pr`
-- show benchmark results (per-model diffs, test delta, wall-clock time) in the
-  dashboard's model-comparison tab so results are可视 without digging through
-  JSON files
-- add tests for: branch name generation with model suffix, reviewer ranking
-  logic, ensemble dispatch with N workers, skip-pr mode in ensemble context
-
-Touches: `scripts/solve_issues.py`, `scripts/benchmark_issues.py`,
-         `scripts/status_dashboard.py`, `tests/`
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
 
 ---
-## Priority 2
 
-## 6. Support low-code and non-code repositories without Python assumptions
-
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `kind/analysis`
-
-Priority: `2`
-
-The solver should handle repositories that contain little or no application
-code, such as documentation, research notes, prompt collections, data-only
-repositories, planning repos, or mixed-language projects. Python must not be
-treated as mandatory unless the target repo actually uses Python.
-
-Suggested scope:
-- detect repository type and dominant stack before selecting checks or worker
-  instructions
-- support low-code/no-code repo classes such as docs-only, research, data,
-  templates, configuration, and project-management repositories
-- choose validation commands based on detected files, for example markdown
-  checks for docs, R checks for R repos, npm checks for JS repos, and no forced
-  Python tests when no Python project exists
-- make no-op or documentation-only changes first-class successful outcomes when
-  they satisfy the issue
-- show the detected repo type and selected validation plan in run reports
-- add tests for Python, R, docs-only, and empty/minimal repository fixtures
-- do not read or expose secret files such as `.env`, provider auth files, or API
-  keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 15. Add vertical process quality analysis and periodic workflow retrospective
-
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/dashboard`
-
-Priority: `2`
-
-The solver should not only move forward through the backlog but periodically
-step back and assess quality at every stage of its own workflow. After a
-configurable number of solved issues per repository, or on demand, it should
-analyse each workflow step — analysis, issue creation, worker execution,
-validation, commit, PR creation, and review — and surface patterns, regressions,
-and improvement opportunities before the next batch starts.
-
-A periodic comparison with structurally similar open-source solver projects
-should also be included so the project does not optimise in isolation.
-
-Suggested scope:
-- define the workflow steps to be assessed: repo analysis, issue creation,
-  worker execution (per provider), validation, commit/push, PR creation,
-  and post-merge cleanup
-- collect per-step quality signals from existing run reports: success rate,
-  no-change rate, failure mode distribution, median runtime, retry count,
-  and open vs closed PR ratio per step and per provider
-- trigger a retrospective automatically after a configurable number of solved
-  issues per repository (for example every 10 issues), and expose it as an
-  explicit `--retrospective` mode or standalone script
-- produce a structured retrospective report per repository with findings per
-  workflow step, trend direction (improving, stable, degrading), and suggested
-  next actions such as retry threshold adjustment, provider swap, or backlog
-  reprioritisation
-- include a periodic comparison with structurally comparable open-source
-  AI-assisted issue solver projects to avoid local optimisation traps; record
-  comparable metrics, approach differences, and transferable ideas
-- surface retrospective findings in the dashboard and overnight summaries so
-  they are visible without running a separate command
-- keep retrospective reports free of secrets, API keys, provider auth contents,
-  and raw prompts
-- add tests for retrospective triggering logic, per-step signal collection,
-  trend detection, and report formatting with missing or partial run data
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 25. Decompose oversized issues into sub-issues automatically
-
-
-Labels: `kind/automation`, `theme/workflow`, `theme/github`, `theme/quality`
-
-Priority: `2`
-
-When an issue is too large or vague, the solver often fails or produces a
-large, hard-to-review PR. The better strategy: the solver recognises when an
-issue should be split and creates concrete sub-issues instead of attempting a
-monolithic fix.
-
-Suggested scope:
-- add complexity heuristics to `solve_issues.py` that flag an issue as too
-  large: body longer than ~1500 characters, more than three distinct file areas
-  mentioned, labels such as `epic`, `large`, or `refactor`, the AI worker
-  explicitly stating that multiple steps are needed, or no clear `Touches:`
-  hint in the body
-- add a `--decompose` flag that sends the issue to the AI with a prompt asking
-  for 3–5 concrete, independently solvable sub-issues returned as JSON
-- add an `--auto-decompose` flag that applies the same logic automatically when
-  complexity heuristics are triggered
-- create sub-issues via the GitHub Issues API with title
-  `[Sub] <parent-title> — Part N`, a body describing the sub-task with
-  `Parent: #<number>` reference, and labels `ai-sub-issue` and `ai-solve`
-- add a comment to the parent issue linking all generated sub-issues
-- add tests for complexity heuristic thresholds, sub-issue JSON parsing, and
-  parent-issue comment creation
-- do not expose API keys, provider auth files, or GitHub tokens in sub-issue
-  bodies or comments
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 26. Run tests after each solver fix and include the result in the PR body
-
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`
-
-Priority: `2`
-
-Inspired by OpenHands and SWE-agent, both of which validate fixes internally
-before creating a PR. This entry applies the same principle using the existing
-test setup instead of requiring external infrastructure.
-
-Tests already run as a preflight check before the solver. But after the fix is
-committed, there is currently no check whether the new code still passes the
-test suite. A solver that fixes a bug but breaks another test lands in the PR
-undetected. The AI branch should be tested after the commit and the result
-should flow into the run report and PR body.
-
-Suggested scope:
-- add a `--post-solve-tests` flag to `solve_issues.py` that runs the test
-  suite on the AI branch after a successful commit
-- accept a `--test-command` override, defaulting to the existing preflight test
-  command
-- measure a baseline from the preflight run and compare outcomes: all green,
-  unchanged, or new failures
-- create the PR as a normal PR when all tests pass, with a warning note when
-  results are unchanged, and as a draft PR with an explicit failure block when
-  new failures appear
-- include a compact test-delta table in `summary.txt` and the PR body, for
-  example: passed before / passed after / delta
-- feed the test delta into the provider scorecard so cross-model comparisons
-  can show which model breaks the fewest tests
-- add tests for each outcome: all green, unchanged, new failures, and draft PR
-  creation
-- do not expose API keys, provider auth files, or full test output in the PR
-  body
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 28. Track solver success rate with a benchmark script
-
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `theme/provider`
-
-Priority: `2`
-
-Inspired by SWE-Bench, which made it possible to compare AI coding agents on
-a standardised benchmark. The goal here is a lightweight internal equivalent:
-a `benchmark_solver.py` script that aggregates run reports into a comparable
-success-rate view per model, provider, and issue type — without requiring an
-external evaluation harness.
-
-The test-delta data from entry #26 (post-solve test validation) is the primary
-input for cross-model comparisons.
-
-Suggested scope:
-- add `scripts/benchmark_solver.py` that reads run reports from `reports/runs/`
-  and aggregates outcomes by provider, model, repo, issue label, and task type
-- track per-run fields: PR created, tests passed, no-change, validation failed,
-  runtime, and estimated cost
-- group runs by same-issue comparison groups so several model attempts on the
-  same issue can be compared directly
-- compute per-model metrics: PR-created rate, test-pass rate, no-change rate,
-  failure rate, median runtime, and estimated cost per successful PR
-- consume the test-delta table from `summary.txt` (added in #26) as a
-  structured quality signal — which model broke the fewest tests
-- output a compact scorecard to stdout and optionally write a JSON report for
-  dashboard integration
-- integrate scorecard output into the status dashboard as a model comparison
-  tab (coordinate with dashboard work in #7)
-- support filtering by repo, model, date range, and issue label
-- add tests for scorecard aggregation, missing fields, single-run groups, and
-  same-issue comparison output
-- do not expose API keys, provider auth files, or raw prompts in benchmark
-  output
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 31. Implement agent/triage — automated issue classification and routing
-
-
-Labels: `kind/automation`, `theme/workflow`, `theme/github`, `agent/triage`
-
-Priority: `2`
-
-The triage agent classifies incoming issues and routes them to the correct
-agent role. Currently `create_backlog_issues.py` creates issues with labels
-from a static list, and `label_migration.py` updates existing issues manually.
-Neither applies the full label taxonomy automatically nor routes issues to an
-agent based on their content and labels. The triage agent closes this gap.
-
-Suggested scope:
-- add a `triage_issue.py` script (or extend `create_backlog_issues.py`) that
-  reads an issue body and title and applies the full multi-dimensional taxonomy:
-  `theme/*`, `area/*`, `kind/*`, `state/*`, `priority/*`, and `agent/*`
-- use keyword matching, file-path hints in the issue body (`Touches:`), and
-  label presence to assign one or more `agent/*` labels automatically
-- produce a dry-run output that shows proposed labels before applying them, and
-  require `--apply` to write labels to GitHub
-- integrate with the backlog generator so new backlog entries get labels at
-  creation time, not as a separate migration step
-- support batch re-triage of existing unlabeled or partially labeled issues via
-  a `--retriage` flag
-- add tests for taxonomy assignment, file-hint routing, `agent/*` label
-  selection, dry-run output, and batch re-triage with already-labeled issues
-- do not read or expose secret files such as `.env`, provider auth files, or
-  API keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 32. Implement agent/cost — dedicated cost tracking and budget alert agent
-
-
-Labels: `kind/automation`, `theme/workflow`, `theme/dashboard`, `agent/cost`
-
-Priority: `2`
-
-Cost information exists in run reports and the dashboard but is scattered and
-passive. There is no agent that aggregates costs across runs, enforces budget
-ceilings, or proactively recommends cheaper providers when a budget threshold is
-approached. The cost agent makes budget constraints explicit and actionable.
-
-Suggested scope:
-- add a `cost_agent.py` script (or extend `solver_reporting.py`) that reads all
-  run reports in a configurable time window and aggregates cost by provider,
-  model, repo, and issue type
-- support configurable daily and per-run budget ceilings; emit a structured
-  warning when a ceiling would be exceeded before starting a new run
-- surface an escalation recommendation when the cheapest model that historically
-  solves an issue type is not the model currently configured
-- write a structured cost summary to `reports/cost/` after each batch or
-  overnight run, including: total cost, per-model breakdown, budget consumed,
-  remaining budget, and cheapest-model recommendation for the next run
-- add a cost section to the status dashboard that shows the current period
-  spend, per-model breakdown, and budget status at a glance
-- integrate with `solve_issues_batch.py` and `run_overnight.py` so budget
-  warnings appear before new solver jobs are queued
-- add tests for cost aggregation, budget ceiling logic, empty reports,
-  partial cost data, and dashboard rendering with missing or zero-cost runs
-- do not read or expose API keys, provider auth files, or secret files
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 33. Implement agent/research — structured research report framework
-
-
-Labels: `kind/automation`, `theme/research`, `theme/workflow`, `agent/research`
-
-Priority: `2`
-
-Research work is currently ad-hoc: `analyze_repos.py` exists for repository
-analysis but there is no structured framework for processing `agent/research`
-labeled issues, collecting evidence, or producing comparable research reports.
-Research findings are not logged in a reusable format, so the same questions
-get re-investigated from scratch.
-
-Suggested scope:
-- define a research issue template with fields: research question, scope,
-  deliverables, evidence sources, and success criteria
-- add a `research_agent.py` script that processes issues labeled `agent/research`
-  and produces a structured markdown report under `docs/research/`
-- support at minimum: web search via `gh` and repository inspection via
-  `analyze_repos.py` as evidence sources
-- define an evidence log schema with fields: source, claim, confidence, date,
-  and link; write evidence logs to `docs/research/evidence/`
-- add a `--dry-run` mode that shows which issues would be processed and what
-  evidence sources would be queried without making changes
-- surface research reports and evidence logs in the status dashboard under a
-  Research tab
-- add tests for report template rendering, evidence log schema validation, issue
-  selection by label, and dry-run output
-- do not expose API keys, provider auth files, or secret files in research
-  output or evidence logs
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 34. Implement agent/planner — idea-to-issue shaping pipeline
-
-
-Labels: `kind/automation`, `theme/backlog`, `theme/workflow`, `agent/planner`
-
-Priority: `2`
-
-The planner agent bridges raw ideas and ready implementation issues. Currently
-`NEXT_BACKLOG.md` entries go directly to `create_backlog_issues.py` with no
-intermediate shaping, scoring, or readiness gate. Ideas and ready issues live
-in the same file with no automated prioritization beyond manually set priority
-numbers. The planner agent introduces a deliberate shaping layer.
-
-Suggested scope:
-- define backlog entry states: `idea`, `candidate`, `shaped`, `ready`,
-  `generated`; add a `state:` field to `NEXT_BACKLOG.md` entries (coordinate
-  with the schema proposed in #22)
-- add a `planner_agent.py` script that reads `NEXT_BACKLOG.md`, scores each
-  entry using configurable criteria (priority, estimated complexity, dependency
-  on open issues, label coverage), and outputs a ranked candidate list
-- only entries in `ready` state should be eligible for `create_backlog_issues.py`
-  to generate GitHub issues; block `idea` and `candidate` entries from automatic
-  issue creation
-- support a `--shape` mode that takes a `candidate` entry and prompts the solver
-  worker to refine its scope, add acceptance criteria, and assign labels before
-  advancing it to `ready`
-- write a daily planning summary to `reports/planning/` with: entry counts per
-  state, top-5 ready candidates, blocked entries, and suggested next action
-- add tests for state transitions, scoring logic, readiness gate enforcement,
-  and planning summary output with missing or malformed entries
-- do not read or expose secret files such as `.env`, provider auth files, or API
-  keys
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 35. Implement agent/reviewer — automated PR review and rework detection
-
-
-Labels: `kind/automation`, `theme/quality`, `theme/workflow`, `agent/reviewer`
-
-Priority: `2`
-
-Generated PRs are currently merged after a manual review with no structured
-quality gate from the solver side. The reviewer agent provides an automated
-first-pass review of AI-generated PRs: it checks for correctness signals,
-detects rework indicators, and creates a follow-up issue when the PR should not
-be merged as-is. This is distinct from #19 (rework workflow) and #26
-(post-solve tests), which cover specific sub-tasks the reviewer coordinates.
-
-Suggested scope:
-- add a `reviewer_agent.py` script that, given a PR number, fetches the diff,
-  test results, and run report, and produces a structured review summary
-- define review checks: post-solve test delta (from #26), diff size against
-  issue scope, touched files vs `Touches:` hint, no-change detection, and
-  obvious regression signals such as removed tests or weakened assertions
-- output a verdict: `approve`, `request-changes`, or `needs-rework` with a
-  brief rationale and a checklist of specific concerns
-- when verdict is `needs-rework`, create a GitHub issue using the rework
-  workflow from #19 with the reviewer's checklist as the issue body
-- post the review summary as a PR comment when `--comment` is passed, or print
-  to stdout for manual inspection by default
-- integrate with `solve_issues.py` via a `--auto-review` flag that runs the
-  reviewer after a successful PR is created
-- add tests for each verdict, the rework issue creation flow, PR comment
-  formatting, and edge cases such as empty diff or missing run report
-- do not expose API keys, provider auth files, or secret files in PR comments
-  or review output
-
-Checks:
-- `git diff --check`
-- `python -m unittest discover -s tests`
-
----
-## 39. Periodic documentation benchmark with free OpenCode models
+## 39. Periodic documentation benchmark with free OpenCode models *(parked)*
 
 
 Labels: `kind/automation`, `kind/docs`, `theme/workflow`, `theme/provider`, `priority/2`
+
+Parked because: Periodic documentation benchmark with free OpenCode models — depends on later validation/model-comparison data from 0.9.0; defer until 0.9.0 validation report and free-model registry are stable.
 
 Priority: `2`
 
@@ -1004,40 +153,691 @@ Checks:
 - `python -m unittest discover -s tests`
 
 ---
-## 40. Add compact growing progress heartbeat for long-running solver jobs
 
+## 51. Fix mock-based output capture in tests/test_rework_pr_cli.py
 
-Labels: `kind/feature`, `theme/workflow`, `agent/supervisor`, `priority/2`
+Labels: `kind/bug`, `theme/tests`, `priority/2`
 
 Priority: `2`
 
-Long-running solver jobs should emit a compact, phone-friendly heartbeat line
-that shows elapsed runtime without verbose logs. This is especially useful when
-Codex is monitored from a mobile client and token usage should stay low.
+Four out of five tests in `tests/test_rework_pr_cli.py` currently fail
+on Python 3.10 + 3.12 in CI because `patch("solve_issues.print")` does
+not capture the output the assertions expect.
 
-Expected output format:
-- print one short heartbeat per configured check interval
-- prefix each line with issue number and optional job label, for example:
-  `#223 PR2 ....+....+....+.. 17min`
-- every fifth progress character must be `+`; all other progress characters
-  are `.`
-- include elapsed minutes as a short suffix
-- keep the output stable for multiple parallel jobs by prefixing each line with
-  the issue number
+Discovered during the AIS-Review of PR #422 (import-style refactor).
+The fix is intentionally out of scope for #422 — the PR is a pure
+import-style refactor and the mock-bug predates it. PR #422 carries
+a warning-comment acknowledging the red CI status until this is fixed.
 
-Suggested implementation:
-- add a small formatter function for heartbeat progress strings
-- reuse it wherever long-running solver jobs are polled or monitored
-- default to the existing low-noise behavior unless heartbeat output is enabled
-  by verbosity or an explicit flag
-- add tests for the progress marker sequence, elapsed-minute suffix, issue
-  prefix, and optional job label
+Suggested scope:
+- investigate why `patch("solve_issues.print")` doesn't intercept the
+  `print(...)` calls inside `solve_issues.rework_pr_cli` (likely a
+  module-import shadowing issue, since `solve_issues` is imported via
+  `from X import` rather than as a package)
+- replace `patch("solve_issues.print")` with a stable capture
+  mechanism (e.g. `contextlib.redirect_stdout`, or `capsys`/`capfd`
+  pytest fixtures if applicable, or patching the actual symbol the
+  function under test references)
+- ensure all 5 tests in the file pass on Python 3.10 + 3.12
+- after the fix, re-run the full test suite — no other tests should
+  regress
 
-Touches: `scripts/solve_issues.py`, `scripts/solve_issues_batch.py`,
-         `tests/`
+Touches: `tests/test_rework_pr_cli.py`
 
 Checks:
 - `git diff --check`
+- `python -m unittest tests.test_rework_pr_cli -v`
 - `python -m unittest discover -s tests`
+
+---
+
+## 52. Replace build_graph.py done.md-parsing with GitHub-native API + Actions workflow logs
+
+Labels: `kind/refactor`, `theme/workflow`, `area/build-graph`, `priority/2`
+
+Priority: `2`
+
+`scripts/build_graph.py` currently parses `docs/BACKLOG/done.md` as a
+text source to build the Issue↔PR↔Commit relationship graph. This is
+redundant: GitHub already encodes all of these relationships
+natively, and per-run cost/model/runtime data lives in the Actions
+workflow logs (one workflow run per solver-produced PR).
+
+Replace the done.md parser with a GitHub-native data source so the
+graph becomes fully machine-readable without manual backlog-text
+maintenance.
+
+Suggested scope:
+- audit which fields `build_graph.py` reads from done.md today (LOC,
+  cost, model, files, parent-of links) and map each to its GitHub
+  native equivalent:
+  - Issue↔PR links: parse PR body / PR comments for "Closes #N",
+    "Fixes #N", "Part of #N", "Parent: #N"
+  - PR↔branch: `pulls.head.ref` (already in API)
+  - PR↔commit: `pulls.commits` (already in API)
+  - solver-produced flag: PR author + `ai-generated` label
+  - LOC / file count: PR `additions` + `deletions` + `changed_files`
+  - model / cost / runtime: Actions workflow runs + logs via
+    `gh run view <id> --log` or `GET /repos/{o}/{r}/actions/runs/{id}/logs`
+- rewrite `scripts/build_graph.py` to call `gh api` (or `requests`
+  against `api.github.com`) instead of opening `done.md`
+- keep `--format json|dot` and `--color-by {cost,model}` flags; the
+  data source changes, the user-facing CLI does not
+- remove the LOC-parsing caveat in `WORKFLOW.md` §build_graph
+  ("Inkonsistente Formate werden übersprungen") since the GitHub
+  source is always well-formed
+- add a `--since YYYY-MM-DD` filter so historical graphs can be scoped
+- extend `tests/test_build_graph.py` to cover the new GitHub-native
+  data path (mock `gh api` calls, not file fixtures)
+
+Touches: `scripts/build_graph.py`, `tests/test_build_graph.py`,
+         `docs/WORKFLOW.md`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_build_graph -v`
+- `python -m unittest discover -s tests`
+- `python scripts/build_graph.py --format json | python -c "import json, sys; d=json.load(sys.stdin); assert d.get('nodes') and d.get('edges')"`
+
+---
+
+## 53. Make test_rework_pr_cli.py CI-environment-independent
+
+Labels: `kind/bug`, `theme/tests`, `area/ci`, `priority/2`
+
+Priority: `2`
+
+`tests/test_rework_pr_cli.py` produces 4 failures in CI even after the
+print-mock fix from PR #427 (closes #423). The remaining failures are
+caused by CI-environment differences, not by the original mock bug.
+
+Two distinct CI-env failure modes were observed:
+
+1. **Missing `requests` module** — `solve_issues.py:4148` does
+   `sys.exit(1)` if its top-level `requests` import fell back to `None`.
+   CI's Python 3.10 env had a missing or stale `requests`, causing
+   `validation.rework` to fail to import, which cascaded into
+   `AttributeError: module 'validation' has no attribute 'rework'`
+   when the dotted-string `patch` target tried to bind.
+2. **Missing `GITHUB_TOKEN`** — `solve_issues.py` performs an early
+   GITHUB_TOKEN check that prints "GitHub Token fehlt" and calls
+   `sys.exit(1)` BEFORE the test's mocks for `preflight_checks`,
+   `load_env`, `run_pr_rework`, etc. can bind. Local `.env` has
+   `GITHUB_TOKEN`, CI does not. After stubbing `requests`, this is
+   the dominant failure mode.
+
+Suggested scope:
+- inject a minimal `requests` stub into `sys.modules` at test-file
+  import time (already partially done in PR #427) and force-load
+  `validation.rework` so the dotted-string patch target binds
+- mock `solve_issues.requests` per-test so the
+  `if requests is None: sys.exit(1)` guard at line 4148 is bypassed
+- either inject a dummy `GITHUB_TOKEN` into the test env (so the
+  early token check passes) OR mock the auth-check function itself
+  before main() is called — pick the lower-friction option
+- verify on Python 3.10 AND 3.12 in CI without any secrets or env
+  vars; the test should be 100% self-contained
+
+Touches: `tests/test_rework_pr_cli.py`
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_rework_pr_cli -v`
+- `python -m unittest discover -s tests`
+- All five `ReworkPrCliDryRunTests` pass on Python 3.10 + 3.12 with
+  no `GITHUB_TOKEN` and no `requests` installed
+
+---
+
+## 54. Symbol-whitelist pre-filter for the AIS code reviewer
+
+Labels: `kind/refactor`, `theme/review`, `area/ci`, `priority/3`
+
+Priority: `3`
+
+The AIS code reviewer (`scripts/review_pr.py --role code`) emits
+hallucinated BLOCKERs at a ~100% rate across model + temperature
+combinations — measured 0/10 real across two PR reviews (#433,
+#434), three model variants (deepseek-v4-flash-free, mistral-large,
+gpt-4o-mini, gpt-4o), and three temperatures (0.0, 0.7, 1.2). The
+hallucinated BLOCKERs follow a consistent pattern: the model names
+an import, function, or symbol in its finding that does not exist
+in the diff (or, less often, asserts a Python-version constraint
+that `from __future__ import annotations` already neutralises).
+
+The prompt-only fix in PR #434 (reviewer-code.md schema reframed
+to "Recommendation / Improvements / Concerns / Strengths" + strict
+"do not invent" rules) addresses the *framing* — the model is now
+asked to be constructive instead of finding-bug-shaped. But it
+does not structurally prevent the model from citing symbols that
+do not exist in the diff. A symbol-whitelist pre-filter does.
+
+Suggested scope:
+- in `scripts/review_pr.py`, parse the diff with `re` (or, better,
+  `unified_diff` from `difflib`) before calling the LLM, and
+  extract: every `import X` / `from X import Y`, every `def name(`,
+  every `class name(`, and every top-level variable assignment
+  `name = ` in added lines
+- pass the extracted symbol set as a system-prompt context block,
+  e.g. "Available symbols in this diff: {list}"
+- in the post-processing of the LLM response, drop any
+  `Improvements` / `Concerns` bullet whose `<file:line>` reference
+  names a symbol not in the whitelist, and surface the count of
+  dropped bullets to the user ("3 of 8 findings filtered out —
+  referenced non-existent symbols X, Y, Z")
+- add unit tests in `tests/test_review_pr.py` covering: empty
+  diff, single-symbol diff, multi-symbol diff, false-positive
+  (symbol name in comment but not in code), and the post-filter
+  dropping logic
+
+Expected effect: ~95% reduction in hallucinated BLOCKERs (those
+that name non-existent symbols), at the cost of ~1-2h implementation
+plus tests. This is the structural follow-up to the prompt-only
+fix; do it once the prompt-only fix lands and is verified to
+reduce but not eliminate hallucinated findings.
+
+Touches: `scripts/review_pr.py`, `tests/test_review_pr.py` (new)
+
+Checks:
+- `git diff --check`
+- `python -m unittest tests.test_review_pr -v`
+- `python -m unittest discover -s tests`
+- re-run `scripts/review_pr.py --pr 434 --role code` (already-merged
+  PR, must still produce a sensible review with no hallucinated
+  symbols) and confirm the filtered finding count = 0
+
+---
+
+## 56. ~~Fix the `--rework-pr` workflow in `solve_issues.py`~~ **DONE in PR #440 (squash 166f8b2)**
+
+Resolved 2026-06-25. See `done.md` for the closure summary and the
+follow-up items that this fix enabled (notably §57 — partial-patch
+reporting — and the still-open patch-mismatch hardening for the
+normal solve path).
+
+---
+
+## 57. ~~Worker must not report `success` on partial patch application~~ **DONE in PR #442 (squash 8d68b50)**
+
+Resolved 2026-06-25. See `done.md` for the closure summary. The
+follow-up item §58 below depends on this fix and remains open.
+
+---
+
+## 58. ~~PR-review 'static free_models regression' anti-pattern~~ **DONE in PR #443 (squash 11eafc1)**
+
+Resolved 2026-06-25. See `done.md` for the closure summary, including
+the user-found path-leak fix (live-review finding by Guido).
+
+The `docs/AGENTS.md` "Recently Removed Patterns" list is now
+maintainer-pflegbar; future PRs that intentionally remove a pattern
+should add a row to that table in the same PR.
+
+The still-open follow-up item — patch-mismatch hardening for the
+normal solve path (potential §59) — is now even more relevant: with
+the §57 reporting fix + §58 prompt guard in place, a partial-fix PR
+that would also reintroduce a recently-removed pattern should be
+caught earlier.
+
+---
+
+## 59. Watchlist: Patch-mismatch hardening for the normal solve path (2026-06-25)
+
+Labels: `kind/watchlist`, `theme/solver`, `area/prompt`, `priority/4`
+
+Priority: `4` (parked — **do not activate** without evidence)
+
+**Status: WATCHLIST ONLY.** This item exists so we do not lose
+track of a possible quality follow-up, but it is **not** an active
+backlog commitment. Do not invest in a fix until the activation
+trigger below is met.
+
+**The Mode-C failure mode on the normal solve path** (the same
+patch-mismatch symptom §56 addressed for `--rework-pr`):
+
+- Worker produces a patch JSON
+- The patch references file content that does not match the current
+  working tree (file moved, lines shifted, surrounding code changed
+  since the model's training cutoff)
+- `git apply` rejects the patch
+- Worker reports failure → §57 now correctly stops the run before
+  any PR is created
+
+This used to be a silent regression (PR #441). After §57 + §58 it is
+a clean failure with no PR — acceptable behavior. A §59 fix would
+turn these clean failures into clean successes, but the bar is
+"is this worth the architecture work?", and a single data point is
+not enough to answer that.
+
+**Current data point (1 of ≥3 needed):**
+
+| Run | Date | Repo | Issue | Affected file | Failure | Result |
+|-----|------|------|-------|---------------|---------|--------|
+| #389 re-run | 2026-06-25 | ai-issue-solver | #389 | `scripts/model_selection.py:52` | `git apply` rejected | `nonzero_without_changes`, no PR ✅ |
+
+**Activation trigger:** ≥3 Mode-C patch-mismatch runs on the
+normal solve path, ideally across **different** files (so we know
+it is a systematic prompt/model issue, not a one-off file-specific
+problem). Until that threshold is met, §59 stays parked.
+
+**Non-goal (while parked):** no code changes, no architecture work.
+§57 + §58 are sufficient to keep the pipeline correct.
+
+**Scope when activated:**
+
+- prompt anchoring on the normal solve path (similar to §56's
+  rework-pr fix: explicit file-version context, current branch tip
+  SHA, recently-touched files in the issue scope)
+- per-file `git apply --check` before declaring application success
+- optional targeted re-prompting loop if `git apply --check` fails
+  (model retries with the failure context instead of bailing out
+  entirely)
+
+**Touches (when activated):** `scripts/solve_issues.py`,
+`scripts/validation/rework.py`, `workers/openrouter_worker.py`,
+tests for the patch-mismatch path on the normal solve flow.
+
+**Tracking note:** when a Mode-C failure appears on the normal
+solve path, log it here (file, issue, date, error message). Two
+more data points move this item from watchlist to active backlog.
+
+---
+
+## 61. ~~Update README for current solver workflow~~ **DONE in PR #447 (squash 9b85570)**
+
+Resolved 2026-06-26. See `done.md` for the closure summary.
+
+The §61 task covered three README areas that were missing or
+outdated before the fix: dynamic OpenCode free-model discovery
+(`scripts/model_catalog.py`), the recently-removed-patterns guard
+(`docs/AGENTS.md`), and the new safety behavior for partial / reject
+patch failures (§57 / §60). The final PR also includes a small
+correction to an overstated claim about the reviewer's use of the
+model_catalog mechanism.
+
+---
+
+## 60. ~~Returncode 5 (Reject-Artefakte) must hard-stop~~ **DONE in PR #445 (squash 2549f0f)**
+
+Resolved 2026-06-26. See `done.md` for the closure summary.
+
+User scope discipline was respected: only Returncode 5 was hardened
+in this fix; the general `nonzero_with_changes` semantics for
+other workers were deliberately **not** refactored (it may exist
+intentionally for some workers).
+
+The general principle remains valid for any future returncode
+class (e.g. Returncode 3 for timeout, if it ever surfaces the same
+problem): "Any nonzero worker-returncode that produces partial
+on-disk changes must be a hard stop. Commit + push + PR-create
+must not run." That is the underlying rule both §57 (returncode 6)
+and §60 (returncode 5) implement.
+
+
+---
+
+## 62. ~~Fix benchmark/open-PR workflow methodology~~ **DONE in PR #448 (squash 0d08679)**
+
+Resolved 2026-06-26. See `done.md` for the closure summary.
+
+Three commits on the PR branch (squashed):
+- `e145a54` — Codex's main fix: `get_open_pull_requests` alias +
+  `--benchmark` CLI flag + benchmark-mode handling in
+  `scripts/benchmark_free_models.py` + tests.
+- `da02e17` — Mavis portability fix: derive `REPO` from `__file__`
+  instead of hardcoded `/Users/Guido/...` (CI was failing with
+  `FileNotFoundError` for the missing local path).
+- merge → `0d08679` on develop.
+
+Scope discipline: §62 was kept strictly to the methodology fix.
+No Free-Model-Qualitätsbewertung (§64) and no §59-Prompt-Hardening
+was mixed into this PR.
+
+Next: §64 (Free-Models-Robustheit-Studie, priority/4) is now
+unblocked for proper data collection.
+
+---
+
+## 63. OpenCode app-state conflict resolution (2026-06-26) — parked, diagnostic scope moved to §65
+
+Labels: `kind/bug`, `theme/opencode`, `area/runtime`, `priority/3`
+
+Priority: `3` — **parked** (the diagnostic + docs subset is split off as
+§65, see below; the real resolution remains unstarted).
+
+Observed on Mavis's macOS environment (2026-06-26):
+
+- `~/.opencode/bin/opencode` (CLI): version `1.15.13`
+- `/Applications/MiniMax Code.app/Contents/Resources/resources/opencode/opencode` (app-bundled): version `1.14.28`
+- Killing the opencode-serve process triggers an app-launchd respawn that re-launches the OLD version, so the conflict is permanent until either the app bundle or the launchd config changes
+
+**Impact:** the 5 OpenCode Free-Models (`opencode/big-pickle`, `opencode/deepseek-v4-flash-free`, `opencode/mimo-v2.5-free`, `opencode/nemotron-3-ultra-free`, `opencode/north-mini-code-free`) are untestable on this machine. The OpenCode Free-Model production-readiness question cannot be answered empirically until the conflict is resolved.
+
+The current workaround (`--allow-opencode-state-conflict`) is a **diagnostic** tool, not a production-ready path.
+
+Scope split (per User directive 2026-06-26 — keep §63 narrow, no app updates):
+
+- **§65 (active, narrow, repo-side)** — diagnostic script + docs.
+  Makes the App-State-Conflict reproducible and explainable on
+  every developer machine. Scope: `scripts/opencode_state_diagnostic.py`
+  + `docs/OPENCODE_APP_STATE.md` + README cross-reference.
+- **§63 (parked, wide)** — actual resolution. Needs app-side
+  changes (option A: update MiniMax Code.app bundle) OR
+  project-side option C (always use configured `OPENCODE_BIN`).
+  Out of scope for the 0.9.0 release; revisit only if OpenCode
+  Free-Models become a strategic priority.
+
+Touches: `docs/OPENCODE_APP_STATE.md` (new, in §65),
+`scripts/opencode_state_diagnostic.py` (new, in §65).
+
+Checks:
+- §65's diagnostic script prints the conflict clearly
+- §63's full-resolution remains parked until §65 confirms the
+  conflict is real on multiple developer machines
+
+---
+
+## 64. ~~Free-model robustness study~~ **CLOSED with smoke-benchmark evidence (2026-06-26)**
+
+Status: **closed without full activation**. The smoke-benchmark
+(`scripts/benchmark_free_models.py --issue 390 --models
+openrouter_direct:deepseek/deepseek-chat-v3.1:free,openrouter_direct:qwen/qwen3-coder:free,openrouter_direct:openai/gpt-oss-20b:free,openrouter_direct:meta-llama/llama-3.3-70b-instruct:free`)
+provided enough signal to close this item without burning the
+planned 5×5 sweep budget.
+
+**Results (4/4 attempted, 0/4 PR-relevant):**
+
+| Model | rc | Real cause |
+|-------|----|-----------|
+| `deepseek/deepseek-chat-v3.1:free` | 0 | 404 Not Found — slug drift (provider may have renamed) |
+| `qwen/qwen3-coder:free` | 0 | 429 Too Many Requests — provider rate limit |
+| `openai/gpt-oss-20b:free` | 0 | Worker exit_code=2 — empty / whitespace response |
+| `meta-llama/llama-3.3-70b-instruct:free` | 0 | 429 Too Many Requests — provider rate limit |
+
+**Conclusion:** for issue-classes comparable to #390 (Periodic
+doc benchmark, low-risk), free OpenRouter models produce
+**zero PR-relevant results**. The failure surface is **not** a
+single bug — it is a stability profile (provider rate limits +
+slug drift + empty responses). Each additional run would just
+re-confirm the same profile, not extend the picture.
+
+**§62 methodology fix is validated by this benchmark:** all 4
+runs were actually attempted (the previous sweep had 24/31
+aborted by the open-PR guard). Data-quality is now clean even
+if the underlying signal is "free stays wobbly".
+
+**Recommendation table produced from smoke (not a full study, but enough to act):**
+
+- `qwen/qwen3-coder:free`, `meta-llama/llama-3.3-70b-instruct:free`
+  → 429-Rate-Limit-Hit on first call within a sweep window. Not
+  useful without provider-side rate-limit coordination.
+- `openai/gpt-oss-20b:free` → empty response on this issue-class.
+  May work for smaller scopes; needs re-test on a text-only
+  issue before any production use.
+- `deepseek/deepseek-chat-v3.1:free` → 404 (slug drift). Re-test
+  with the current OpenRouter slug list before any production use.
+
+**0.9.0 decision (per User, 2026-06-26):** paid OpenRouter / `gpt-4o`
+is the strategic default. Free-Models stay **experimental /
+supervised / docs-only candidates**. The full 5×5 sweep is
+explicitly **not** planned unless a new use case emerges that
+justifies burning the budget.
+
+The smoke-run JSON lives at
+`reports/benchmarks/smoke-free-models-2026-06-26.json` /
+`.log` for future reference.
+
+---
+
+## 65. OpenCode app-state diagnostic script (2026-06-26)
+
+Labels: `kind/tooling`, `theme/opencode`, `area/runtime`, `priority/3`
+
+Priority: `3` — **scope: repo-side only, no app updates**.
+
+A narrow companion to §63. The full §63 spec is parked (App-
+update, bundle-rewrite, project-side configure-always-use-
+OPENCODE_BIN option), but a small diagnostic + documentation
+tool is valuable immediately because the App-State-Conflict
+itself is **reproducible and explainable** on every developer
+machine that has both `~/.opencode/bin/opencode` and a bundled
+app. The diagnostic makes the state visible; the docs explain
+why the conflict happens and what the three resolution options
+are.
+
+Scope:
+
+- `scripts/opencode_state_diagnostic.py` — Python script (no
+  external deps beyond the standard library) that prints:
+  - which opencode binaries are on `PATH` (with versions)
+  - which `opencode-serve` process is running and which binary
+    it uses (with version)
+  - which `.app` bundle owns the launchd respawn (by scanning
+    `/Applications/` and matching the running binary path)
+  - the configured `OPENCODE_BIN` env-var if set
+- `docs/OPENCODE_APP_STATE.md` — documentation covering:
+  - what the conflict looks like (CLI 1.15.13 vs Serve 1.14.28)
+  - why it happens (app-launchd respawn with the app-bundled binary)
+  - three resolution options (A: app update, B: rename the app-
+    bundled binary, C: project-side always-use-configured-`OPENCODE_BIN`)
+  - when to use `--allow-opencode-state-conflict` (diagnostic only,
+    never as a production-ready path)
+- README "Free-Models" section gets a short paragraph cross-
+  referencing `docs/OPENCODE_APP_STATE.md`
+
+**Out of scope (deliberately):** the full §63 implementation
+(app update, bundle rewrite, project-side option C). Those
+remain parked and would need their own Handover to Codex.
+
+Touches: `scripts/opencode_state_diagnostic.py` (new),
+`docs/OPENCODE_APP_STATE.md` (new), README small cross-reference.
+
+Checks:
+- `python scripts/opencode_state_diagnostic.py` produces a clear
+  status report (path + version + launchd owner + env-var)
+- `git diff --check`
+- README cross-reference is in place
+
+---
+
+## 66. ~~Dynamic OpenRouter free-model discovery for benchmark sweeps~~ **DONE in PR #449 (squash e38c1f4)**
+
+Labels: `kind/tooling`, `theme/openrouter`, `area/model-catalog`, `priority/2`
+
+Priority: `2` — active methodology fix, not a production-default change.
+
+OpenCode free-model discovery is now dynamic via
+`scripts/model_catalog.py`, but OpenRouter free-model benchmark
+selection is still backed by a static list in
+`scripts/benchmark_free_models.py`. The 2026-06-26 smoke benchmark
+proved why that is not enough: `deepseek/deepseek-chat-v3.1:free`
+returned `404 Not Found`, which is classic provider slug drift.
+
+Goal: make OpenRouter free-model benchmark inputs come from the live
+OpenRouter catalog, with cache + fallback semantics similar to the
+OpenCode path. Static lists may remain as fallback, but must not be
+treated as source of truth for real benchmark sweeps.
+
+Scope:
+
+- Add OpenRouter free-model discovery to the shared model catalog layer
+  or a small helper reused by `scripts/model_catalog.py` and
+  `scripts/benchmark_free_models.py`.
+- Reuse existing live OpenRouter catalog plumbing from
+  `scripts/verify_openrouter_slugs.py` where practical instead of
+  creating a second API client.
+- Filter only live catalog entries that are actually free according to
+  provider metadata; `:free` suffix alone is a useful hint but should
+  not override the live catalog.
+- Add cache + fallback behavior:
+  - fresh live catalog → use live free-model list
+  - API/network unavailable → use clearly-labelled fallback list
+  - live catalog says a fallback slug is missing → do not benchmark it
+    unless explicitly requested via `--models`
+- Make `scripts/benchmark_free_models.py` default to the dynamic
+  OpenRouter free-model list plus the existing OpenCode free-model
+  list.
+- Preserve explicit `--models` behavior exactly; user-specified models
+  are allowed even if they are not in the live free-model list.
+
+Acceptance criteria:
+
+- `python scripts/benchmark_free_models.py --issue 390 --models ...`
+  keeps working for explicit model lists.
+- A default benchmark run no longer includes OpenRouter slugs that the
+  live catalog reports as missing.
+- Unit tests cover:
+  - live OpenRouter catalog with free + paid + missing/stale examples
+  - fallback behavior when the OpenRouter API is unavailable
+  - benchmark default model selection uses dynamic OpenRouter discovery
+  - explicit `--models` bypasses dynamic filtering
+- README/Free-Models status is updated only if wording is needed to
+  explain dynamic OpenRouter discovery.
+
+Out of scope:
+
+- Free-model quality evaluation / large 5×5 robustness study (§64 is
+  closed with smoke evidence).
+- §59 patch-mismatch hardening.
+- Changing the strategic production default away from paid
+  OpenRouter / `gpt-4o`.
+- OpenCode App-State resolution (§63 / §65).
+
+Stop criteria:
+
+- If the OpenRouter catalog does not expose enough pricing/free-tier
+  metadata to distinguish free models reliably, stop and document the
+  limitation instead of guessing from names only.
+- If the fix grows beyond roughly 250 LOC, split into a Handover for
+  Codex before implementation.
+
+---
+
+## 67. ~~Fix `benchmark_free_models.classify()` so Worker-Failures stop looking like successes (2026-06-26)~~ **DONE in PR #465 (squash 5fbc6f6)**
+
+Labels: `kind/bug`, `theme/solver`, `area/benchmark`, `priority/1`
+
+Priority: `1` — pipeline-correctness blocker. **Do this BEFORE any
+further Free-Model-Benchmark-Sweep.** Without this fix, every
+benchmark run's aggregate output (`reports/benchmarks/*.json`)
+systematically mislabels worker-failures as `success_no_pr`, which
+poisons any subsequent decision-making on Free-Models.
+
+Repro (2026-06-26, Issue #450 benchmark sweep with 4 Free-Models):
+
+```
+$ python scripts/benchmark_free_models.py --issue 450 \
+    --models openrouter_direct:liquid/lfm-2.5-1.2b-instruct:free,\
+              openrouter_direct:qwen/qwen3-coder:free,\
+              openrouter_direct:google/gemma-4-26b-a4b-it:free,\
+              openrouter_direct:cohere/north-mini-code:free
+
+=== Run 1/4 END: rc=0, classification=success_no_pr ===
+=== Run 2/4 END: rc=0, classification=success_no_pr ===
+=== Run 3/4 END: rc=0, classification=success_no_pr ===
+=== Run 4/4 END: rc=0, classification=success_no_pr ===
+=== Free-Models-Benchmark END (4 runs, counts={'success_no_pr': 4}) ===
+```
+
+But every run-report (`reports/runs/20260626-222516/...-issue-450/summary.txt`)
+shows the workers actually **failed**:
+
+| Run | Model | worker_exit_code | Real failure |
+|-----|-------|------------------|--------------|
+| 1 | liquid/lfm-2.5-1.2b-instruct:free | 2 | 1387 chars Prosa, kein Unified-Diff-Patch |
+| 2 | qwen/qwen3-coder:free | 1 | 429 Too Many Requests |
+| 3 | google/gemma-4-26b-a4b-it:free | 1 | 429 Too Many Requests |
+| 4 | cohere/north-mini-code:free | 2 | 0 Zeichen Antwort, 135s request |
+
+All 4 runs have `has_changes=False` and `status=nonzero_without_changes`
+in their summary.txt.
+
+Root cause (`scripts/benchmark_free_models.py:100-117`):
+
+```python
+def classify(model_arg, model_name, rc, log_text):
+    if rc != 0:
+        # ... returns specific failure classes
+    if "PR erstellt" in log_text or "pr_created" in log_text:
+        return "success_pr_created"
+    if "Keine Patches" in log_text:
+        return "no_patches"
+    return "success_no_pr"   # ← fall-through treats every rc=0+no-PR as success
+```
+
+`solve_issues.py` returns rc=0 even when the worker truly failed
+(as long as no partial commits were made — `status="no_changes"`).
+The fall-through classifies any such run as `success_no_pr`,
+which is the inverse of what the name suggests.
+
+Goal: make `classify()` consult the run-report's `summary.txt`
+(`worker_exit_code` + `has_changes` + `status` fields) for ground
+truth, and only fall back to log-text heuristics if the run-report
+cannot be located.
+
+Scope:
+
+- Read the matching run-report per `subprocess.run` invocation
+  via pid/issue-number + timestamp-window match (report dir format:
+  `<YYYYMMDD-HHMMSS-mics>-<repo>-issue-<N>/summary.txt`).
+- Add canonical classification classes:
+  - `success_pr_skipped` — worker_exit_code=0, has_changes=True,
+    `--skip-pr` was set (the "actual" success in benchmark mode)
+  - `no_changes` — worker_exit_code=0, has_changes=False (worker
+    ran cleanly but produced no patch)
+  - `empty_response_rc2` — worker_exit_code=2 (output empty)
+  - `model_failure_rc1` — worker_exit_code=1 (general worker error)
+  - `patch_validation_failed_rc5` — worker_exit_code=5 (reject artifacts)
+  - `partial_patch_failure_rc6` — worker_exit_code=6 (partial patch)
+  - `openrouter_429` — 429 Too Many Requests (separate from openrouter_400)
+- Keep existing log-text heuristics as fallback when no run-report
+  is found (e.g. tests with mocked subprocess).
+- Existing classes that remain semantically correct:
+  `success_pr_created`, `infrastructure_opencode_state_conflict`,
+  `patch_validation_failed_rc5`, `no_patches` (parseable fallback),
+  `patch_mismatch_mode_c`, `openrouter_400`,
+  `infrastructure_or_unknown_failure`.
+- Update the aggregate JSON `runs[i].classification` field to use
+  the new classes; the `--json` shape stays backward-compatible
+  (no breaking field changes).
+- Tests for: run-report with each new class, run-report missing
+  (fallback path), 429 detection, log-text fallback preservation.
+- Update README "Free-Models"-block + `docs/BACKLOG/done.md`
+  closure entry on completion.
+
+Acceptance criteria:
+
+- Re-running the Issue #450 benchmark with the same 4 Free-Models
+  produces 4 distinct failure classifications (no `success_no_pr`
+  in the aggregate), matching the per-run `worker_exit_code` and
+  `has_changes` from the run-reports.
+- A run with worker_exit_code=0 + has_changes=True + `--skip-pr`
+  is classified as `success_pr_skipped`.
+- A run with worker_exit_code=0 + has_changes=False is classified
+  as `no_changes`, **not** `success_no_pr`.
+- A run with worker_exit_code=2 is classified as `empty_response_rc2`,
+  **not** `success_no_pr`.
+- A run with 429 in worker output is classified as `openrouter_429`.
+- A run without a matching run-report (test mock) falls back to
+  existing log-text heuristics.
+- All existing benchmark-related tests pass.
+
+Out of scope:
+
+- §66 OpenRouter dynamic discovery (already done in PR #449).
+- Changing the production default (still `gpt-4o`).
+- §59 Mode-C Patch-Mismatch-Hardening.
+- §63/§65 OpenCode-App-State.
+- Issue #450 itself — to be addressed **after** this bugfix,
+  via gpt-4o (Mavis-as-dev is acceptable once the bugfix lands).
+
+Stop criteria:
+
+- If the run-report timestamp-correlation logic cannot reliably
+  find the right report (e.g. multiple runs in the same second),
+  stop and add a `--run-report-dir` flag to `solve_issues.py`
+  that prints the absolute path; do not guess.
+- If the fix grows beyond roughly 250 LOC, split into a Handover
+  for Codex before implementation (same rule as §66).
 
 ---

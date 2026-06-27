@@ -15,6 +15,9 @@ lives in `config/role_routing.yaml` (planned for 0.7.0).
 For the current release focus and open questions, see
 [`CURRENT_CONTEXT.md`](CURRENT_CONTEXT.md).
 
+For model default and per-run override policy across AI-backed process steps,
+see [`MODEL_OVERRIDE_POLICY.md`](MODEL_OVERRIDE_POLICY.md).
+
 For the process we run after each release to revisit this document, see
 [`RELEASE_REVIEW_AGENDA.md`](RELEASE_REVIEW_AGENDA.md).
 
@@ -39,7 +42,7 @@ For the process we run after each release to revisit this document, see
 
 - `release-review`
 - `backlog-planning`
-- `issue-splitting`
+- `issue-splitting` (implementiert in `scripts/split_planning.py` — siehe [WORKFLOW.md](WORKFLOW.md))
 - `roadmap-planning`
 
 **Note:** The Planner does **not** handle knowledge lifecycle actions
@@ -69,6 +72,21 @@ agent, implemented via issue #312) — see below.
 **Settled principle (from 0.7.0 review):** Solver gets minimal context —
 the issue, the touched files, the relevant skill. Nothing else. Smaller
 context, cheaper model, faster runs.
+
+## Recently Removed Patterns (last 90 days)
+
+Patterns the project explicitly removed in a recently merged PR. The
+solver MUST NOT re-introduce them. If an issue seems to require one of
+these patterns, the solver MUST explain why in the PR description instead
+of silently restoring it.
+
+Maintainers update this list when a PR intentionally removes a pattern
+that future solver runs are likely to rediscover.
+
+| Removed by | Date | Pattern | Why removed |
+|------------|------|---------|-------------|
+| PR #439 | 2026-06-25 | Static `free_models` list in `MODEL_CONFIGS["opencode"]`, including `opencode/minimax-m3-free` | Dynamic discovery via `scripts/model_catalog.py` is the source of truth; static lists drift. |
+| PR #437 | 2026-06-25 | Hard `$20 / $20` cost-cap defaults | Replaced with `$15 / $50` plus staggered budget-ratio warnings. |
 
 ---
 

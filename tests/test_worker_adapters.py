@@ -303,7 +303,7 @@ class TestOpenCodeAdapter(unittest.TestCase):
         self.assertIn("nicht gefunden", result.output)
 
     def test_find_opencode_executable_uses_repo_venv(self):
-        from workers.opencode_adapter import find_opencode_executable
+        from workers.opencode_diagnostics import find_opencode_executable
         with tempfile.TemporaryDirectory() as tmpdir:
             opencode = Path(tmpdir) / ".venv" / "bin" / "opencode"
             opencode.parent.mkdir(parents=True)
@@ -311,21 +311,21 @@ class TestOpenCodeAdapter(unittest.TestCase):
             opencode.chmod(0o755)
             inactive_python = str(Path(tmpdir) / "bin" / "python")
 
-            with patch("workers.opencode_adapter.sys.executable", inactive_python):
+            with patch("workers.opencode_diagnostics.sys.executable", inactive_python):
                 found = find_opencode_executable(tmpdir)
 
         self.assertEqual(found, str(opencode))
 
     def test_find_opencode_executable_uses_home_opencode_install(self):
-        from workers.opencode_adapter import find_opencode_executable
+        from workers.opencode_diagnostics import find_opencode_executable
         with tempfile.TemporaryDirectory() as tmpdir:
             home_opencode = Path(tmpdir) / ".opencode" / "bin" / "opencode"
             home_opencode.parent.mkdir(parents=True)
             home_opencode.write_text("#!/bin/sh\n", encoding="utf-8")
             home_opencode.chmod(0o755)
 
-            with patch("workers.opencode_adapter.Path.home", return_value=Path(tmpdir)), \
-                 patch("workers.opencode_adapter.shutil.which", return_value=None):
+            with patch("workers.opencode_diagnostics.Path.home", return_value=Path(tmpdir)), \
+                 patch("workers.opencode_diagnostics.shutil.which", return_value=None):
                 found = find_opencode_executable("/missing/repo")
 
         self.assertEqual(found, str(home_opencode))
@@ -664,6 +664,38 @@ class TestAiderAdapter(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("Aider completed", diag.all_outputs[0])
 
+    def test_aider_emits_deprecation_warning_on_init(self):
+        """AiderAdapter.__init__ must emit a DeprecationWarning pointing at
+        opencode / openrouter_direct / codex as the supported paths."""
+        import warnings
+
+        from workers.aider_adapter import AiderAdapter
+        import workers.aider_adapter as aider_mod
+
+        # Reset the once-per-process guard so the warning fires reliably in
+        # this test even if an earlier test in the same process already
+        # instantiated AiderAdapter.
+        aider_mod._AIDER_DEPRECATION_EMITTED = False
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                AiderAdapter("claude")
+            deprecation = [
+                w for w in caught if issubclass(w.category, DeprecationWarning)
+            ]
+            self.assertEqual(
+                len(deprecation), 1,
+                "expected exactly one DeprecationWarning on AiderAdapter() init",
+            )
+            message = str(deprecation[0].message)
+            self.assertIn("aider", message.lower())
+            self.assertIn("opencode", message)
+            self.assertIn("openrouter_direct", message)
+            self.assertIn("codex", message)
+        finally:
+            # Restore the guard so the rest of the test run is not affected.
+            aider_mod._AIDER_DEPRECATION_EMITTED = True
+
 
 # ─────────────────────────────────────────────────────────────
 # OpenRouterDirectAdapter
@@ -761,7 +793,48 @@ class TestOpenRouterDirectAdapter(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("[openrouter_direct]", result.output)
-        worker_cls.assert_called_once_with(api_key="test-key", model="mistralai/mistral-large")
+        worker_cls.assert_called_once_with(
+            api_key="test-key",
+            model="mistralai/mistral-large",
+            request_timeout_seconds=180.0,
+            use_structured_output=False,
+        )
+        worker_cls.return_value.run_direct.assert_called_once_with(
+            prompt="Fix issue",
+            repo_dir="/tmp/repo",
+            file_targets=[],
+            max_tokens=8192,
+            request_timeout=180.0,
+        )
+
+    def test_run_passes_explicit_file_targets_to_openrouter_worker(self):
+        """OpenRouter Direct bekommt Datei-Targets als Prompt-Kontext."""
+        from workers.openrouter_direct_adapter import OpenRouterDirectAdapter
+
+        direct_result = SimpleNamespace(
+            returncode=0,
+            output="[openrouter_direct] 1 Patch angewendet.",
+        )
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), \
+             patch("workers.openrouter_worker.OpenRouterWorker") as worker_cls, \
+             contextlib.redirect_stdout(io.StringIO()):
+            worker_cls.return_value.run_direct.return_value = direct_result
+            adapter = OpenRouterDirectAdapter()
+            adapter.run(
+                "Fix docs/SETUP_AIDER.md",
+                "/tmp/repo",
+                env={"OPENROUTER_API_KEY": "test-key"},
+                file_targets=["docs/SETUP_AIDER.md"],
+            )
+
+        worker_cls.return_value.run_direct.assert_called_once_with(
+            prompt="Fix docs/SETUP_AIDER.md",
+            repo_dir="/tmp/repo",
+            file_targets=["docs/SETUP_AIDER.md"],
+            max_tokens=8192,
+            request_timeout=180.0,
+        )
 
     def test_run_returncode_2_for_prose_output(self):
         """Returncode 2 bei Prosa-Ausgabe ohne Diffs."""
@@ -878,10 +951,13 @@ class TestGetWorkerAdapter(unittest.TestCase):
 
 class TestConsistentOutcomeClassification(unittest.TestCase):
     """
-    Stellt sicher, dass die Outcome-Klassifizierung konsistent über alle Adapter ist.
+    Stellt sicher, dass die Outcome-Klassifizierung konsistent über alle
+    Adapter und die gemeinsame shared primitive ist.
 
-    Die Klassifizierung verwendet assess_worker_result() aus solve_issues,
-    die über alle Provider hinweg gilt.
+    Die Klassifizierung verwendet sowohl ``assess_worker_result()`` aus
+    ``solve_issues`` (Legacy) als auch ``classify_worker_outcome()`` aus
+    ``workers.execution`` (Shared), um sicherzustellen, dass beide denselben
+    Code durchlaufen und identische Ergebnisse liefern.
     """
 
     def _assess(self, returncode: int, git_status: str, **kwargs):
@@ -889,45 +965,75 @@ class TestConsistentOutcomeClassification(unittest.TestCase):
         result = WorkerRunResult(returncode=returncode, output="")
         return assess_worker_result(result, git_status, **kwargs)
 
+    def _assess_shared(self, returncode: int, git_status: str, **kwargs):
+        from workers.execution import classify_worker_outcome
+        from workers.base import WorkerRunResult
+        result = WorkerRunResult(returncode=returncode, output="")
+        return classify_worker_outcome(result, git_status, **kwargs)
+
+    def _assert_consistent(self, returncode: int, git_status: str,
+                           expected_reason: str,
+                           expected_continue: bool,
+                           expected_changes: bool, **kwargs):
+        legacy = self._assess(returncode, git_status, **kwargs)
+        shared = self._assess_shared(returncode, git_status, **kwargs)
+        for assessment in (legacy, shared):
+            self.assertEqual(assessment.reason, expected_reason)
+            self.assertEqual(assessment.should_continue, expected_continue)
+            self.assertEqual(assessment.has_changes, expected_changes)
+
     def test_returncode_0_with_changes_is_changed(self):
-        assessment = self._assess(0, " M README.md\n")
-        self.assertEqual(assessment.reason, "changed")
-        self.assertTrue(assessment.should_continue)
-        self.assertTrue(assessment.has_changes)
+        self._assert_consistent(0, " M README.md\n",
+                                "changed", True, True)
 
     def test_returncode_0_without_changes_is_no_changes(self):
-        assessment = self._assess(0, "")
-        self.assertEqual(assessment.reason, "no_changes")
-        self.assertFalse(assessment.should_continue)
-        self.assertFalse(assessment.has_changes)
+        self._assert_consistent(0, "",
+                                "no_changes", False, False)
 
     def test_nonzero_with_meaningful_changes_continues(self):
-        assessment = self._assess(1, " M scripts/solver.py\n")
-        self.assertEqual(assessment.reason, "nonzero_with_changes")
-        self.assertTrue(assessment.should_continue)
+        self._assert_consistent(1, " M scripts/solver.py\n",
+                                "nonzero_with_changes", True, True)
 
     def test_nonzero_without_changes_stops(self):
-        assessment = self._assess(1, "")
-        self.assertEqual(assessment.reason, "nonzero_without_changes")
-        self.assertFalse(assessment.should_continue)
+        self._assert_consistent(1, "",
+                                "nonzero_without_changes", False, False)
 
     def test_returncode_2_from_openrouter_direct_treated_as_nonzero(self):
         """OpenRouter Direct Returncode 2 (Prosa) wird als nonzero_without_changes klassifiziert."""
-        assessment = self._assess(2, "")
-        self.assertEqual(assessment.reason, "nonzero_without_changes")
-        self.assertFalse(assessment.should_continue)
+        self._assert_consistent(2, "",
+                                "nonzero_without_changes", False, False)
 
     def test_returncode_2_with_changes_continues_for_review(self):
         """OpenRouter Direct Returncode 2 mit Änderungen: partial success."""
-        assessment = self._assess(2, " M scripts/solver.py\n")
-        self.assertEqual(assessment.reason, "nonzero_with_changes")
-        self.assertTrue(assessment.should_continue)
+        self._assert_consistent(2, " M scripts/solver.py\n",
+                                "nonzero_with_changes", True, True)
+
+    def test_partial_patch_failure_with_changes_stops(self):
+        """Partial patch application is a hard stop, even with file changes."""
+        from workers.base import PARTIAL_PATCH_FAILURE_RETURN_CODE
+        self._assert_consistent(
+            PARTIAL_PATCH_FAILURE_RETURN_CODE,
+            " M scripts/solver.py\n",
+            "partial_patch_failure",
+            False,
+            True,
+        )
+
+    def test_patch_validation_failed_with_changes_stops(self):
+        """Reject artifacts are a hard stop, even with file changes."""
+        from workers.base import PATCH_VALIDATION_FAILED_RETURN_CODE
+        self._assert_consistent(
+            PATCH_VALIDATION_FAILED_RETURN_CODE,
+            " M scripts/solve_issues.py\n",
+            "patch_validation_failed",
+            False,
+            True,
+        )
 
     def test_aider_side_effects_only_stops(self):
         """Nur Aider-Nebenwirkungen ohne Änderungen → stoppt."""
-        assessment = self._assess(1, "?? .aider.chat.history.md\n")
-        self.assertEqual(assessment.reason, "nonzero_without_changes")
-        self.assertFalse(assessment.should_continue)
+        self._assert_consistent(1, "?? .aider.chat.history.md\n",
+                                "nonzero_without_changes", False, False)
 
 
 # ─────────────────────────────────────────────────────────────

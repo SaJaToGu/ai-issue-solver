@@ -13,7 +13,7 @@ und Dashboard-Parsing nicht ändern.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import json
 import os
@@ -24,13 +24,13 @@ import time
 from pathlib import Path
 from typing import Mapping
 
-from scripts.utils import clean_path_candidate, print_warn
-from scripts.solver_repository import (
+from utils import clean_path_candidate, print_warn
+from solver_repository import (
     branch_has_changes_against_base,
     git_output,
     git_status_porcelain,
 )
-from scripts.repo_profile import filter_secret_paths
+from repo_profile import filter_secret_paths
 
 
 RUN_REPORTS_ROOT = Path("reports") / "runs"
@@ -42,13 +42,44 @@ GIT_SUMMARY_STAT_GRAPH_WIDTH = 30
 WORKER_OUTPUT_TAIL_LINES = 25
 WORKER_OUTPUT_TAIL_CHARS = 4000
 PRESERVE_WORKTREE_STATUSES = {
+    "budget_exceeded",
     "nonzero_without_changes",
     "pr_failed",
     "pr_failed_from_existing_branch",
+    "pr_creation_timeout",
     "push_failed",
+    "pushed_without_pr",
     "rate_limit_deferred",
     "validation_failed",
 }
+# Statuswerte, die in der Watchdog-Auswertung als terminal gelten.
+# ``pushed_without_pr`` und ``pr_creation_timeout`` markieren eine
+# Teil-Auslieferung: Der Branch ist bereits remote, der PR aber (noch) nicht
+# angelegt. Diese Status muessen explizit terminal sein, damit das Watchdog
+# sie nicht weiter als "haengend" meldet, waehrend ein Folgerun den PR
+# nachreichen kann.
+TERMINAL_STATUSES = frozenset({
+    "archived",
+    "cleanup_noop",
+    "cleanup_successful",
+    "clone_failed",
+    "failed",
+    "no_changes",
+    "nonzero_without_changes",
+    "pr_created",
+    "pr_created_from_existing_branch",
+    "pr_created_with_warning",
+    "pr_creation_timeout",
+    "pr_failed",
+    "pr_failed_from_existing_branch",
+    "pushed_without_pr",
+    "push_failed",
+    "rate_limit_deferred",
+    "skip_existing_pr",
+    "skip_merged_pr",
+    "validation_failed",
+    "worker_validation_failed",
+})
 
 WORKER_LIVE_OUTPUT_RE = re.compile(
     r"("
@@ -88,10 +119,47 @@ OPENCODE_WAL_FAILURE_RE = re.compile(
 OPENCODE_EDIT_FAILURE_RE = re.compile(r"\bEdit\s+(.+?)\s+failed\b", re.IGNORECASE)
 OPENCODE_EDIT_FAILURE_REPEAT_THRESHOLD = 3
 NO_CHANGE_STATUSES = {"no_changes", "skip_existing_pr", "skip_merged_pr", "skip_closed_pr"}
-PIPELINE_FAILURE_STATUSES = {
+RUNNING_STATUSES = frozenset({"started", "running", "queued"})
+ARCHIVED_STATUSES = frozenset({"archived", "cleanup_archived"})
+SUCCESS_STATUSES = frozenset({
+    "cleanup_successful",
+    "pr_created",
+    "pr_created_from_existing_branch",
+    "pr_created_with_warning",
+})
+NOOP_STATUSES = frozenset({
+    "cleanup_noop",
+    "no_changes",
+    "skip_closed_pr",
+    "skip_existing_pr",
+    "skip_merged_pr",
+})
+FAILED_STATUSES = frozenset({
+    "branch_create_failed",
+    "checkout_failed",
+    "cleanup_failed",
+    "clone_failed",
+    "nonzero_without_changes",
     "pr_failed",
     "pr_failed_from_existing_branch",
     "push_failed",
+    "rate_limit_deferred",
+    "validation_failed",
+    "worker_validation_failed",
+})
+# Statuswerte, die einen hart abgebrochenen PR-Schritt markieren.
+PIPELINE_FAILURE_STATUSES = {
+    "pr_failed",
+    "pr_failed_from_existing_branch",
+    "pr_creation_timeout",
+    "push_failed",
+}
+# Statuswerte, die nach erfolgtem Push ohne PR stehen geblieben sind.
+# Ein Folgerun oder Watchdog-Re-Run kann auf Basis des Branch-Namens den
+# PR nachreichen.
+POST_PUSH_INCOMPLETE_STATUSES = {
+    "pushed_without_pr",
+    "pr_creation_timeout",
 }
 
 
@@ -125,6 +193,8 @@ class RunReport:
     issue_title: str
     branch: str
     model: str
+    rework_of: int | None = None
+    rework_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +207,278 @@ class OpenCodeRuntimeDiagnostics:
     @property
     def has_findings(self) -> bool:
         return self.wal_failure or self.edit_loop
+
+
+@dataclass(frozen=True)
+class NormalizedRunOutcome:
+    """Read-side normalized view over a solver run report."""
+    run_dir: Path
+    summary: Mapping[str, str]
+    metadata: Mapping[str, object]
+    health: Mapping[str, object]
+    status: str
+    category: str
+    worker_exit_code: str
+    run_outcome: Mapping[str, object]
+    worker_health_state: str
+    worker_health_reason: str
+    last_activity_at: datetime | None
+    last_report_update_at: datetime | None
+    repo: str
+    issue_number: str
+    issue_title: str
+    branch: str
+    model: str
+    pr_url: str
+    preserved_worktree: str
+    provider_scorecard: Mapping[str, object]
+
+
+def _string_value(data: Mapping[str, object], key: str) -> str:
+    value = data.get(key)
+    return "" if value is None else str(value)
+
+
+def _bool_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def _read_json_file(path: Path) -> dict[str, object]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def parse_summary_file(
+    path: Path,
+    multiline_keys: set[str] | None = None,
+) -> dict[str, str]:
+    """Parse a summary.txt file into a key/value dictionary.
+
+    Args:
+        path: Path to the summary file.
+        multiline_keys: Keys whose values span multiple lines.
+            Defaults to ``{"output_tail", "git_diff_stat", "git_change_summary"}``.
+    """
+    if multiline_keys is None:
+        multiline_keys = {"output_tail", "git_diff_stat", "git_change_summary"}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    fields: dict[str, str] = {}
+    current_key: str | None = None
+    parts: list[str] = []
+
+    for raw_line in lines:
+        key, separator, value = raw_line.partition(":")
+        if current_key:
+            # A multiline block ends when a new multiline key starts
+            # ("key:" at column 0). Non-multiline lines with separators
+            # (e.g. "Git-Änderungsübersicht:") stay as content.
+            starts_new_multiline = (
+                separator
+                and key.strip() in multiline_keys
+                and not raw_line.startswith((" ", "\t"))
+            )
+            if starts_new_multiline:
+                fields[current_key] = "\n".join(parts).strip()
+                current_key = key.strip()
+                parts = [value.strip()] if value.strip() else []
+                continue
+            parts.append(raw_line)
+            continue
+
+        if not raw_line.strip() or not separator:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if key in multiline_keys:
+            current_key = key
+            parts = [value] if value else []
+            continue
+        fields[key] = value
+
+    if current_key:
+        fields[current_key] = "\n".join(parts).strip()
+    return fields
+
+
+def parse_datetime_value(value: str) -> datetime | None:
+    if not value:
+        return None
+    for candidate in (value, value.replace("Z", "+00:00")):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            pass
+    return None
+
+
+def parse_created_at(run_name: str) -> datetime | None:
+    match = re.match(r"^(\d{8}-\d{6})(?:-(\d{6}))?", run_name)
+    if not match:
+        return None
+    value = "".join(part for part in match.groups(default="") if part)
+    fmt = "%Y%m%d-%H%M%S%f" if match.group(2) else "%Y%m%d-%H%M%S"
+    try:
+        return datetime.strptime(value, fmt)
+    except ValueError:
+        return None
+
+
+def latest_datetime(*values: datetime | None) -> datetime | None:
+    parsed = [value for value in values if value is not None]
+    return max(parsed) if parsed else None
+
+
+def classify_run_status(status: str, worker_exit_code: str = "") -> str:
+    """Normalize raw report status into the shared dashboard/supervisor category."""
+    if not status:
+        return "unknown"
+    if status == "queued":
+        return "queued"
+    if status == "started":
+        return "running"
+    if status == "unhealthy":
+        return "unhealthy"
+    if status in ARCHIVED_STATUSES:
+        return "archived"
+    if status in SUCCESS_STATUSES:
+        return "successful"
+    if status in NOOP_STATUSES:
+        return "noop"
+    if status in FAILED_STATUSES or status.endswith("_failed"):
+        return "failed"
+    if worker_exit_code and worker_exit_code != "0":
+        return "failed"
+    return "noop"
+
+
+def classify_worker_health(
+    status: str,
+    phase: str,
+    last_seen: datetime | None,
+    now: datetime | None = None,
+    stale_seconds: int = 15 * 60,
+) -> tuple[str, str]:
+    """Classify read-side worker health consistently for monitor-style tools."""
+    if status in TERMINAL_STATUSES:
+        return "finished", "terminal status"
+    if status == "unhealthy":
+        return "unhealthy", "health status unhealthy"
+    if last_seen is None:
+        return "unknown", "no health timestamp"
+
+    current = now or datetime.now()
+    age_seconds = int((current - last_seen).total_seconds())
+    if age_seconds > stale_seconds:
+        return "stale", f"no update for {age_seconds}s"
+    if phase:
+        return "healthy", f"phase {phase}"
+    return "healthy", "recent update"
+
+
+def read_normalized_run_outcome(
+    run_dir: Path,
+    *,
+    now: datetime | None = None,
+    stale_seconds: int = 15 * 60,
+) -> NormalizedRunOutcome:
+    """Read and normalize status, health, delivery, model, and metadata for one run."""
+    summary = parse_summary_file(run_dir / "summary.txt")
+    metadata = _read_json_file(run_dir / "metadata.json")
+    health = _read_json_file(run_dir / "health.json")
+
+    status = _string_value(metadata, "status") or summary.get("status", "")
+    health_status = _string_value(health, "status")
+    if health_status and health_status not in RUNNING_STATUSES and not status:
+        status = health_status
+
+    worker_exit_code = _string_value(metadata, "worker_exit_code") or summary.get("worker_exit_code", "")
+    category = classify_run_status(status, worker_exit_code)
+    phase = _string_value(health, "phase")
+    last_activity = parse_datetime_value(
+        _string_value(health, "last_activity_at")
+        or _string_value(metadata, "last_activity_at")
+        or summary.get("last_activity_at", "")
+    )
+    last_report_update = parse_datetime_value(
+        _string_value(health, "last_report_update_at")
+        or _string_value(metadata, "last_report_update_at")
+        or summary.get("last_report_update_at", "")
+    )
+    last_seen = latest_datetime(last_activity, last_report_update, parse_created_at(run_dir.name))
+    worker_health_state, worker_health_reason = classify_worker_health(
+        status,
+        phase,
+        last_seen,
+        now=now,
+        stale_seconds=stale_seconds,
+    )
+
+    run_outcome = metadata.get("run_outcome")
+    if isinstance(run_outcome, dict):
+        run_outcome = dict(run_outcome)
+        if "has_changes" in run_outcome:
+            run_outcome["has_changes"] = _bool_value(run_outcome.get("has_changes"))
+    else:
+        run_outcome = {
+            "worker_status": summary.get("run_outcome_worker_status", ""),
+            "has_changes": summary.get("run_outcome_has_changes", "").lower() in {"true", "1", "yes"},
+            "test_status": summary.get("run_outcome_test_status", ""),
+            "delivery_status": summary.get("run_outcome_delivery_status", ""),
+            "failure_class": summary.get("run_outcome_failure_class", ""),
+            "recovery_status": summary.get("run_outcome_recovery_status", ""),
+        }
+        if not any(run_outcome.values()):
+            run_outcome = {}
+
+    provider_scorecard = metadata.get("provider_scorecard")
+    if not isinstance(provider_scorecard, dict):
+        provider_scorecard = {}
+
+    return NormalizedRunOutcome(
+        run_dir=run_dir,
+        summary=summary,
+        metadata=metadata,
+        health=health,
+        status=status,
+        category=category,
+        worker_exit_code=worker_exit_code,
+        run_outcome=run_outcome,
+        worker_health_state=worker_health_state,
+        worker_health_reason=worker_health_reason,
+        last_activity_at=last_activity,
+        last_report_update_at=last_report_update,
+        repo=_string_value(metadata, "repo") or summary.get("repo") or summary.get("selected_repo", ""),
+        issue_number=(
+            _string_value(metadata, "issue_number")
+            or _string_value(metadata, "issue")
+            or summary.get("issue_number")
+            or summary.get("issue", "")
+        ),
+        issue_title=_string_value(metadata, "issue_title") or summary.get("issue_title", ""),
+        branch=_string_value(metadata, "branch") or summary.get("branch", ""),
+        model=_string_value(metadata, "model") or summary.get("model", ""),
+        pr_url=_string_value(metadata, "pr_url") or summary.get("pr_url", ""),
+        preserved_worktree=_string_value(metadata, "preserved_worktree") or summary.get("preserved_worktree", ""),
+        provider_scorecard=provider_scorecard,
+    )
+
+
+def load_run_outcome(run_report: Path | None) -> dict:
+    """Compatibility helper for benchmark-style code."""
+    if not run_report:
+        return {}
+    return dict(read_normalized_run_outcome(run_report).run_outcome)
 
 
 def infer_test_status(test_result: str | None) -> str:
@@ -172,10 +514,14 @@ def build_run_outcome(status: str,
         delivery_status = "push_failed"
     elif status in {"pr_failed", "pr_failed_from_existing_branch"}:
         delivery_status = "pr_failed"
+    elif status in POST_PUSH_INCOMPLETE_STATUSES:
+        delivery_status = "pushed_without_pr"
     elif status in NO_CHANGE_STATUSES:
         delivery_status = "not_applicable"
     elif status == "pr_skipped":
         delivery_status = "pushed_without_pr" if has_changes else "not_applicable"
+    elif status == "budget_exceeded":
+        delivery_status = "incomplete"
     elif status == "started":
         delivery_status = "incomplete"
     else:
@@ -187,6 +533,12 @@ def build_run_outcome(status: str,
         failure_class = "success"
     elif status == "pr_skipped":
         failure_class = "success" if has_changes else "noop"
+    elif status in POST_PUSH_INCOMPLETE_STATUSES:
+        # Branch ist remote, PR fehlt: kontrollierte Teilauslieferung mit
+        # klarem Recovery-Pfad.
+        failure_class = "pipeline_failure" if has_changes or preserved else "runtime_failure"
+    elif status == "budget_exceeded":
+        failure_class = "control_failure"
     elif status in PIPELINE_FAILURE_STATUSES and (has_changes or preserved):
         failure_class = "pipeline_failure"
     elif worker_result is not None and worker_result.returncode != 0 and not has_changes:
@@ -202,8 +554,13 @@ def build_run_outcome(status: str,
 
     if preserved:
         recovery_status = "preserved_worktree"
+    elif status in POST_PUSH_INCOMPLETE_STATUSES and (has_changes or preserved):
+        # Branch ist remote, PR fehlt: Recovery = manueller/gh-Aufruf.
+        recovery_status = "manual_review"
     elif failure_class in {"model_failure", "runtime_failure", "interrupted"}:
         recovery_status = "retry_clean"
+    elif failure_class == "control_failure":
+        recovery_status = "manual_review"
     elif failure_class == "validation_failure":
         recovery_status = "manual_review"
     else:
@@ -368,7 +725,9 @@ def safe_run_repo_name(repo: str) -> str:
 def create_run_report(repo: str, issue_number: int, branch: str, model: str,
                       now_fn=datetime.now,
                       issue_title: str = "",
-                      run_dir: Path | str | None = None) -> RunReport | None:
+                      run_dir: Path | str | None = None,
+                      rework_of: int | None = None,
+                      rework_reason: str | None = None) -> RunReport | None:
     if run_dir is None:
         timestamp = now_fn().strftime("%Y%m%d-%H%M%S-%f")
         run_dir = RUN_REPORTS_ROOT / f"{timestamp}-{safe_run_repo_name(repo)}-issue-{issue_number}"
@@ -381,7 +740,16 @@ def create_run_report(repo: str, issue_number: int, branch: str, model: str,
     except OSError as exc:
         print_warn(f"Run-Report konnte nicht angelegt werden: {exc}")
         return None
-    return RunReport(run_dir, repo, issue_number, issue_title, branch, model)
+    return RunReport(
+        run_dir,
+        repo,
+        issue_number,
+        issue_title,
+        branch,
+        model,
+        rework_of=rework_of,
+        rework_reason=rework_reason,
+    )
 
 
 def _sanitize_repo_profile_for_report(repo_profile: dict | None) -> dict:
@@ -492,6 +860,42 @@ def preserved_worktree_cleanup_command(retention_days: int = PRESERVED_WORKTREE_
         "python scripts/solve_issues.py --cleanup-preserved-worktrees "
         f"--retention-days {retention_days}"
     )
+
+
+def pr_recovery_command(
+    owner: str,
+    repo: str,
+    branch: str,
+    issue_number: int,
+    base_branch: str = "main",
+) -> str:
+    """Baut einen reproduzierbaren gh-Befehl fuer eine PR-Nachlieferung.
+
+    Wird verwendet, wenn der Branch bereits remote ist, der PR aber (noch)
+    nicht existiert (Status ``pushed_without_pr`` oder ``pr_creation_timeout``).
+    """
+    return (
+        "gh pr create "
+        f"--repo {owner}/{repo} "
+        f"--base {base_branch} "
+        f"--head {branch} "
+        f"--title \"[AI] Fix: Issue #{issue_number}\" "
+        "--body \"Automatisch gelöst durch AI Issue Solver; PR manuell angelegt.\""
+    )
+
+
+def format_post_push_recovery_note(
+    owner: str,
+    repo: str,
+    branch: str,
+    issue_number: int,
+    base_branch: str = "main",
+) -> str:
+    """Mehrzeilige Notiz fuer Run-Reports, wenn der Branch remote ist, aber kein PR existiert."""
+    return "\n".join([
+        "Recovery-Befehl (PR nachträglich anlegen):",
+        f"  {pr_recovery_command(owner, repo, branch, issue_number, base_branch)}",
+    ])
 
 
 def preserved_worktree_recovery_note(path: Path, branch: str, base_branch: str | None = None) -> str:
@@ -676,6 +1080,7 @@ def write_run_report(report: RunReport, status: str,
                       supersedes_pr: int | None = None,
                       follow_up_issue: int | None = None,
                       opencode_session_metrics: dict | None = None,
+                      openrouter_usage_metrics: dict | None = None,
                       repo_profile: dict | None = None) -> Path | None:
     worker_exit_code = "" if worker_result is None else str(worker_result.returncode)
     worker_output = "" if worker_result is None else worker_result.output
@@ -687,6 +1092,8 @@ def write_run_report(report: RunReport, status: str,
     preserved_value = str(preserved_worktree_path) if preserved_worktree_path else ""
     cleanup_command = preserved_worktree_cleanup_command() if preserved_value else ""
     vibe_snippet = vibe_log_snippet or ""
+    effective_rework_of = rework_of if rework_of is not None else report.rework_of
+    effective_rework_reason = rework_reason if rework_reason is not None else report.rework_reason
 
     # Secret-Pfade (z. B. .env, auth.json, secrets/*) nie in den Run-Report
     # schreiben — weder in metadata.json noch in summary.txt.
@@ -713,8 +1120,19 @@ def write_run_report(report: RunReport, status: str,
         scorecard = create_provider_scorecard(
             report, status, worker_result, pr_url, model_selection_metadata, test_command, test_result
         )
+        if openrouter_usage_metrics:
+            openrouter_cost = openrouter_usage_metrics.get("cost_usd")
+            if openrouter_cost is not None:
+                scorecard = replace(
+                    scorecard,
+                    estimated_cost=openrouter_cost,
+                    cost_currency="USD",
+                    cost_confidence="high",
+                    cost_source="provider_api",
+                )
 
         opencode_session = (opencode_session_metrics or {}) if opencode_session_metrics else {}
+        openrouter_usage = (openrouter_usage_metrics or {}) if openrouter_usage_metrics else {}
         metadata = {
             "status": status,
             "selected_repo": report.repo,
@@ -744,13 +1162,14 @@ def write_run_report(report: RunReport, status: str,
             "run_outcome": run_outcome,
             "model_selection": model_selection_metadata or {},
             "rework": {
-                "rework_of": rework_of,
-                "rework_reason": rework_reason,
+                "rework_of": effective_rework_of,
+                "rework_reason": effective_rework_reason,
                 "subtask_id": subtask_id,
                 "supersedes_pr": supersedes_pr,
                 "follow_up_issue": follow_up_issue,
             },
             "opencode_session": opencode_session,
+            "openrouter_usage": openrouter_usage,
             "provider_scorecard": {
                 "requested_model": scorecard.requested_model,
                 "actual_model": scorecard.actual_model,
@@ -810,8 +1229,8 @@ def write_run_report(report: RunReport, status: str,
             f"provider_scorecard_cost_currency: {scorecard.cost_currency or ''}",
             f"provider_scorecard_cost_confidence: {scorecard.cost_confidence or ''}",
             f"provider_scorecard_cost_source: {scorecard.cost_source or ''}",
-            f"rework_of: {rework_of or ''}",
-            f"rework_reason: {rework_reason or ''}",
+            f"rework_of: {effective_rework_of or ''}",
+            f"rework_reason: {effective_rework_reason or ''}",
             f"subtask_id: {subtask_id or ''}",
             f"supersedes_pr: {supersedes_pr or ''}",
             f"follow_up_issue: {follow_up_issue or ''}",
@@ -895,6 +1314,21 @@ def write_run_report(report: RunReport, status: str,
                 f"  total_tokens_cache_write: {opencode_session.get('total_tokens_cache_write', '')}",
             ])
             budget_exceeded = opencode_session.get("budget_exceeded")
+            if budget_exceeded:
+                summary_lines.append(f"  budget_exceeded: {budget_exceeded}")
+        if openrouter_usage:
+            summary_lines.extend([
+                "",
+                "openrouter_usage:",
+                f"  prompt_tokens: {openrouter_usage.get('prompt_tokens', '')}",
+                f"  completion_tokens: {openrouter_usage.get('completion_tokens', '')}",
+                f"  total_tokens: {openrouter_usage.get('total_tokens', '')}",
+                f"  cost_usd: {openrouter_usage.get('cost_usd', '')}",
+                f"  model: {openrouter_usage.get('model', '')}",
+                f"  request_seconds: {openrouter_usage.get('request_seconds', '')}",
+                f"  timed_out: {openrouter_usage.get('timed_out', False)}",
+            ])
+            budget_exceeded = openrouter_usage.get("budget_exceeded")
             if budget_exceeded:
                 summary_lines.append(f"  budget_exceeded: {budget_exceeded}")
         if output_tail:

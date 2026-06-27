@@ -14,6 +14,12 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Tuple
 
+from model_catalog import (
+    OPENCODE_FREE_MODELS,
+    OPENCODE_LOW_STRENGTH_MODELS,
+    OPENCODE_MEDIUM_STRENGTH_MODELS,
+)
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Konfiguration und Konstanten
 # ────────────────────────────────────────────────────────────────────────────────
@@ -46,9 +52,9 @@ RISK_MAP = {
 
 STRENGTH_MAP = {
     "low": ["mistral-small", "deepseek-coder:6.7b", "qwen-coder",
-            "opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free", "opencode/minimax-m3-free"],
+            *OPENCODE_LOW_STRENGTH_MODELS],
     "medium": ["mistral-medium", "claude-sonnet-3.5", "gpt-4o-mini",
-               "opencode/nemotron-3-ultra-free"],
+               *OPENCODE_MEDIUM_STRENGTH_MODELS],
     "high": ["mistral-large", "claude-sonnet-4", "gpt-4o"],
 }
 
@@ -57,10 +63,7 @@ COST_TIERS = {
     "mistral-small": "cheap",
     "deepseek-coder:6.7b": "cheap",
     "qwen-coder": "cheap",
-    "opencode/deepseek-v4-flash-free": "cheap",
-    "opencode/mimo-v2.5-free": "cheap",
-    "opencode/minimax-m3-free": "cheap",
-    "opencode/nemotron-3-ultra-free": "cheap",
+    **{model: "cheap" for model in OPENCODE_FREE_MODELS},
     "mistral-medium": "medium",
     "claude-sonnet-3.5": "medium",
     "gpt-4o-mini": "medium",
@@ -71,10 +74,7 @@ COST_TIERS = {
 
 # Standard-Modell-Reihenfolge für Eskalation
 MODEL_ESCALATION = [
-    "opencode/deepseek-v4-flash-free",
-    "opencode/mimo-v2.5-free",
-    "opencode/minimax-m3-free",
-    "opencode/nemotron-3-ultra-free",
+    *OPENCODE_FREE_MODELS,
     "mistral-small",
     "mistral-medium",
     "mistral-large",
@@ -134,6 +134,65 @@ def filter_models_by_cost(models: List[str], max_cost: str) -> List[str]:
     cost_order = ["cheap", "medium", "expensive"]
     max_index = cost_order.index(max_cost)
     return [m for m in models if cost_order.index(COST_TIERS.get(m, "medium")) <= max_index]
+
+
+def _looks_like_repo_path(value: str) -> bool:
+    """Return True for conservative repo-relative path candidates."""
+    if not value or any(char.isspace() for char in value):
+        return False
+    if value.startswith(("/", "http://", "https://")):
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9_./-]+", value):
+        return False
+    return "/" in value or bool(re.search(r"\.[A-Za-z0-9]+$", value))
+
+
+def _extract_path_candidates(text: str) -> List[str]:
+    paths: List[str] = []
+    for raw in re.split(r"[,;\s]+", text):
+        candidate = raw.strip().strip("`'\"()[]{}")
+        candidate = candidate.removeprefix("-").removeprefix("*").strip()
+        if _looks_like_repo_path(candidate) and candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def extract_touched_files_from_issue_body(issue_body: str) -> List[str]:
+    """Extract clear `Touches:` file hints from an issue body.
+
+    Supported patterns:
+    - `Touches: scripts/foo.py, tests/test_foo.py`
+    - `Touches:` followed by indented or bulleted path lines.
+
+    The parser is intentionally conservative. If no explicit `Touches:` marker
+    is present, or the following text does not look like repo-relative paths, it
+    returns an empty list.
+    """
+    if not issue_body:
+        return []
+
+    paths: List[str] = []
+    lines = issue_body.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^\s*touches\s*:\s*(.*)$", line, re.IGNORECASE)
+        if not match:
+            continue
+
+        paths.extend(_extract_path_candidates(match.group(1)))
+        for continuation in lines[index + 1:]:
+            if not continuation.strip():
+                break
+            if not re.match(r"^\s+(?:[-*]\s*)?|^\s*[-*]\s+", continuation):
+                break
+            next_paths = _extract_path_candidates(continuation)
+            if not next_paths:
+                break
+            for path in next_paths:
+                if path not in paths:
+                    paths.append(path)
+        break
+
+    return paths
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Hauptfunktionen
@@ -277,7 +336,7 @@ def select_model_for_issue(
     return select_model(
         issue_text=issue.get("body", ""),
         labels=issue.get("labels", []),
-        touched_files=[],  # TODO: Aus Git-History oder Issue-Text extrahieren
+        touched_files=extract_touched_files_from_issue_body(issue.get("body", "")),
         repo_type=repo_type,
         max_cost_tier=max_cost_tier,
         manual_overrides=manual_overrides,

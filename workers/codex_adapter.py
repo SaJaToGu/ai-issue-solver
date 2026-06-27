@@ -82,12 +82,12 @@ def detect_codex_rate_limit(output: str) -> CodexRateLimit | None:
 
     reset_text = reset_match.group(1).strip()
     return CodexRateLimit(
-        reset_at=_parse_codex_reset_datetime(reset_text),
+        reset_at=parse_codex_reset_datetime(reset_text),
         reset_text=reset_text,
     )
 
 
-def _parse_codex_reset_datetime(reset_text: str) -> datetime | None:
+def parse_codex_reset_datetime(reset_text: str) -> datetime | None:
     """Parst die Reset-Zeit aus der Codex-CLI-Meldung im lokalen Zeitkontext."""
     normalized = re.sub(r"\s+", " ", reset_text.strip())
     normalized = normalized.replace(", at ", " ").replace(" at ", " ")
