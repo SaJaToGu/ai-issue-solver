@@ -1305,3 +1305,89 @@ Original labels: `kind/bug`, `theme/solver`, `area/benchmark`,
 `priority/1`
 
 ---
+
+## Done — Issue #450: Update README directory structure for current repo layout
+
+Closed 2026-06-27 via PR #466 (squash `d7ea03f` on develop). 1 file,
++54/-31, single Mavis-as-dev commit on `fix/450-readme-tree`.
+Originally designed as a Free-Model benchmark target; §67 (Run-Report
+classification) was fixed first so the post-fix sweep correctly
+classified the 4 Free-Model failures (no more `success_no_pr`
+fall-through).
+
+**Background:** the README `Verzeichnisstruktur` block had drifted
+from the actual repo layout. Stale path `docs/docs/BACKLOG/open.md`,
+missing directories (`workers/`, `prompts/`, `benchmarks/`),
+incomplete `scripts/` list, stale `docs/` references, and a
+redundant `---` separator before `## Verzeichnisstruktur`.
+
+**Fix (`README.md` only):**
+
+- Removed `docs/docs/BACKLOG/open.md` → now correctly
+  `docs/BACKLOG/open.md` (also grouped under a `BACKLOG/`
+  subdirectory block with `open.md` and `done.md`).
+- Added missing directories: `workers/` (Worker-Adapter block with
+  opencode, openrouter, aider, codex, mistral_vibe, diagnostics,
+  session reader, execution), `prompts/` (Codex-Skill-Prompts,
+  `rework_pr.md`), `benchmarks/` (local benchmark artifacts).
+- Expanded `scripts/` to include current model/benchmark/
+  runtime-relevant files (`model_catalog.py`,
+  `benchmark_free_models.py`, `opencode_state_diagnostic.py`,
+  `verify_openrouter_slugs.py`, `solver_reporting.py`,
+  `watchdog.py`, `validation_run.py`, `workflow_congestion.py`,
+  `review_pr.py`, plus the rest of the live scripts).
+- Expanded `docs/` to reference current core docs (`AGENTS.md`,
+  `OPENCODE_APP_STATE.md`, `MODEL_OVERRIDE_POLICY.md`,
+  `PLANNING_0.9.0.md`, `PRODUCT_VISION_1.0.md`, `ROADMAP.md`,
+  `label_taxonomy.md`).
+- Updated `tests/` block to reference representative current test
+  modules (`test_benchmark_free_models.py`, `test_model_catalog.py`,
+  `test_solve_issues*.py`, `test_opencode_state_diagnostic.py`,
+  `test_reviewer_runtime.py`) instead of the stale subset.
+- Added inline hints to `reports/` subpaths (`runs/`,
+  `benchmarks/`, `preserved-worktrees/`).
+- Removed the duplicate `---` separator.
+
+**Acceptance criteria (all met):**
+
+- README no longer contains `docs/docs/BACKLOG/open.md`.
+- Tree includes all current major directories (`.github/`,
+  `.agents/`, `config/`, `scripts/`, `workers/`, `prompts/`,
+  `templates/`, `reports/`, `docs/`, `tests/`, `benchmarks/`).
+- `scripts/` includes the current model/benchmark/runtime-relevant
+  files at a representative level.
+- `workers/` listed with adapter purpose.
+- `docs/` references current core docs.
+- Redundant separator removed.
+- `git diff --check` passes.
+
+**Pre-merge live-review caught two path bugs that the AIS
+documentation review missed:**
+
+1. `docs/PLANNING_0.10.0_DESIGN_BRIEF.md` was referenced but the
+   file is untracked / not part of the repo. Per User directive
+   "Den PLANNING_0.10.0_DESIGN_BRIEF.md nicht anfassen!" — line
+   removed from README, file left alone.
+2. `tests/test_review_pr.py` was referenced but the actual file
+   is `tests/test_reviewer_runtime.py` — renamed in fix commit
+   `378df27`.
+
+**Scope discipline (per User directive):** README-only, no code,
+benchmark, or backlog changes.
+
+**Verification:**
+
+- `./.venv/bin/python -c "..."` on aggregate JSON confirms §67
+  fix classifies the 4 Free-Models correctly (no `success_no_pr`).
+- `grep -c 'docs/docs/BACKLOG/open.md' README.md` returns 0.
+- `git diff --check` passes.
+- AIS documentation review: `request changes` (conservative —
+  lacks filesystem access). User live review after the
+  two path-fix commits: "Jetzt OK zum Squash-Merge."
+- Squash-merge body cleaned up post-review (no mentions of the
+  removed/renamed paths in the merge commit).
+
+Original labels: `kind/feature`, `theme/documentation`,
+`area/readme`, `priority/2`
+
+---
