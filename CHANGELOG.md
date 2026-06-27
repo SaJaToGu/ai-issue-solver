@@ -24,6 +24,12 @@
   `docs/archive/` with revival-checklist READMEs. Tests for the
   deprecated wrapper deleted (kept the archive folder would still be
   picked up by `python -m unittest discover -s tests`).
+- **Milestone and orchestration cleanup (§46 / §47 / §48 / §49, PRs
+  #413 / #414 / #415 / #419):** synchronized `VERSION` and changelog
+  to 0.9.0, deprecated the Aider worker adapter in favor of the active
+  Codex/OpenCode/OpenRouter paths, added rework/retry usage
+  instrumentation, and closed the remaining cost-limit-forwarding gap
+  in overnight runs.
 - **Solver-loop hardening (§56 / §57 / §60, PRs #440 / #442 / #445):**
   rework prompts now anchor to the branch tip and configurable token cap;
   partial patch application and reject-artifact failures are hard stops,
