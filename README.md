@@ -226,10 +226,6 @@ Die verbleibenden Backlog-Items befinden sich in [docs/BACKLOG/open.md](docs/BAC
 
 ---
 
-
-
----
-
 ## Verzeichnisstruktur
 
 ```
@@ -239,15 +235,7 @@ ai-issue-solver/
 │   └── workflows/
 │       └── ci.yml               # GitHub-Actions-Smoke- und Testlauf
 ├── .agents/
-│   └── skills/
-│       ├── git-cleanup/         # Branch- und PR-Bereinigung nach Merge
-│       ├── model-selection/     # Codex-Skill für die automatische Modellauswahl
-│       ├── plan-issue-batches/  # Konfliktarme Issue-Wellen planen
-│       ├── recovery/            # Recovery bei abgebrochenen Solver-Runs
-│       ├── rework/              # Gezielte Nacharbeit an generierten PRs
-│       ├── run-overnight/       # Unbeaufsichtigter Batch-Betrieb
-│       ├── solve-issues/        # Codex-Skill für Schritt 3 (solve_issues.py)
-│       └── solver-reporting/    # Codex-Skill für Run-Reports, Metriken & Provider-Scorecards
+│   └── skills/                  # Codex-Skills (git-cleanup, model-selection, recovery, ...)
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Dependencies
 ├── requirements-aider.txt       # Optionale Aider-Dependencies
@@ -255,38 +243,74 @@ ai-issue-solver/
 ├── config/
 │   └── config.example.env       # Vorlage für deine .env
 ├── scripts/
+│   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
+│   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
+│   ├── run_overnight.py         # Unbeaufsichtigter Batch mit Preflight und Logs
+│   ├── model_catalog.py         # OpenCode-/OpenRouter-Free-Model-Discovery
+│   ├── model_selection.py       # Automatische Modellauswahl (Heuristik)
+│   ├── benchmark_free_models.py # Free-Model-Sweep pro Issue (Run-Report-Klassifikation)
+│   ├── benchmark_issues.py      # Klassische Issue-Benchmarks
+│   ├── review_pr.py             # AIS-Code-Review (architecture/code/documentation)
+│   ├── opencode_state_diagnostic.py # OpenCode-App-State-Konflikte diagnostizieren
+│   ├── verify_openrouter_slugs.py  # OpenRouter-Slug-Validierung
+│   ├── solver_reporting.py      # Run-Report-Erzeugung, Health, Worktrees
+│   ├── watchdog.py              # Run-Watchdog (kaputte Runs erkennen)
+│   ├── validation_run.py        # Pipeline-Validierungslauf
+│   ├── workflow_congestion.py   # Workflow-Stau-Diagnose
+│   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
+│   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
+│   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
+│   ├── plan_issue_batches.py    # Konfliktarme Issue-Wellen planen
+│   ├── repo_profile.py          # Repo-Profil (Sprache, Framework, Defaults)
 │   ├── analyze_repos.py         # Schritt 1: Repos analysieren
 │   ├── create_issues.py         # Schritt 2: Issues erstellen
 │   ├── create_backlog_issues.py # Backlog-Issues aus Markdown erstellen
 │   ├── github_summary.py        # GitHub-Issues, PRs und Actions-Runs anzeigen
-│   ├── plan_issue_batches.py    # Konfliktarme Issue-Wellen planen
-│   ├── post_merge_cleanup.py    # Gemergte AI-PRs und Branches bereinigen
-│   ├── status_dashboard.py      # Lokales HTML-Dashboard aus Run-Reports
-│   ├── serve_dashboard.py       # Dashboard lokal mit Beenden-Knopf servieren
-│   ├── solve_issues.py          # Schritt 3: einzelnes Issue mit KI lösen
-│   ├── solve_issues_batch.py    # Mehrere Issues parallel begrenzt lösen
-│   ├── run_overnight.py         # Unbeaufsichtigter Batch mit Preflight und Logs
-│   ├── model_selection.py       # Automatische Modellauswahl (Heuristik)
 │   └── utils.py                 # Gemeinsame Hilfsfunktionen
+├── workers/                     # Worker-Adapter (pro Modell-Provider ein Adapter)
+│   ├── opencode_adapter.py      # OpenCode-CLI-Worker
+│   ├── openrouter_worker.py     # OpenRouter-OpenAI-kompatibler Worker
+│   ├── openrouter_direct_adapter.py # Direkter OpenRouter-HTTP-Adapter
+│   ├── aider_adapter.py         # Aider-Adapter
+│   ├── codex_adapter.py         # Codex-CLI-Adapter
+│   ├── mistral_vibe_adapter.py  # Mistral-Vibe-Adapter
+│   ├── opencode_diagnostics.py  # OpenCode-Runtime-Diagnose-Helfer
+│   ├── opencode_session_reader.py # OpenCode-Session-Metriken lesen
+│   └── execution.py             # Worker-Ausführung & -Lifecycle
+├── prompts/                     # Codex-Skill-Prompts
+│   └── rework_pr.md
 ├── templates/
 │   └── issue_body               # Issue-Text-Vorlage
+├── benchmarks/                  # Lokale Benchmark-Artefakte (gitignored)
 ├── reports/                     # Generierte Analyse-Reports (gitignored)
-│   └── .gitkeep
+│   ├── runs/                    # Pro-Run-Reports (summary.txt, metadata.json, health.json)
+│   ├── benchmarks/              # Free-Model-Sweep-Aggregate (--json)
+│   └── preserved-worktrees/     # Recovery-Snapshots bei abgebrochenen Runs
 ├── docs/
+│   ├── AGENTS.md                # Multi-Agent-Setup und Routing
 │   ├── BACKLOG.md               # Erster Projekt-Backlog
-│   ├── docs/BACKLOG/open.md          # Nächste Ausbaustufe
+│   ├── BACKLOG/
+│   │   ├── open.md              # Aktive Ausbaustufe
+│   │   └── done.md              # Abgeschlossene Items
 │   ├── WORKFLOW.md              # Detaillierter Workflow
 │   ├── SETUP_AIDER.md           # Aider-Einrichtung
+│   ├── LANGUAGE_POLICY.md       # Sprachrichtlinie / Language Policy
+│   ├── OPENCODE_APP_STATE.md    # OpenCode-App-State-Konflikt-Doku
+│   ├── MODEL_OVERRIDE_POLICY.md # Modell-Override-Regeln
+│   ├── PLANNING_0.9.0.md        # 0.9.0-Release-Planung
+│   ├── PLANNING_0.10.0_DESIGN_BRIEF.md # 0.10.0-Design-Brief
+│   ├── PRODUCT_VISION_1.0.md    # 1.0-Produkt-Vision
+│   ├── ROADMAP.md               # Strategischer Ausbauplan
 │   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
 │   ├── REPO_PROFILE_PROVIDER.md # GitHub-first Repo-Profil mit lokalem Fallback
-│   └── LANGUAGE_POLICY.md        # Sprachrichtlinie / Language Policy
-└── tests/
-    ├── test_analyze_repos.py    # Analyzer-Tests
-    ├── test_github_summary.py   # GitHub-Übersichts-Tests
-    ├── test_post_merge_cleanup.py # Post-Merge-Cleanup-Tests
-    ├── test_status_dashboard.py # Dashboard-Tests
-    ├── test_solve_issues_batch.py # Batch-Runner-Tests
-    └── test_solve_issues.py     # Solver- und Worker-Tests
+│   └── label_taxonomy.md        # Label-Taxonomie-Vorschlag
+└── tests/                       # unittest-Suite (~30 Module, repräsentative Auswahl)
+    ├── test_benchmark_free_models.py # Run-Report-Klassifikation (§67)
+    ├── test_benchmark_issues.py      # Issue-Benchmark-Tests
+    ├── test_model_catalog.py         # OpenCode-/OpenRouter-Catalog-Tests
+    ├── test_solve_issues*.py         # Solver-CLI- und Worker-Adapter-Tests
+    ├── test_opencode_state_diagnostic.py # OpenCode-State-Diagnose-Tests
+    └── test_review_pr.py             # AIS-Code-Review-Tests
 ```
 
 ---
