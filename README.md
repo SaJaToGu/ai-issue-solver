@@ -298,6 +298,8 @@ ai-issue-solver/
 │   ├── OPENCODE_APP_STATE.md    # OpenCode-App-State-Konflikt-Doku
 │   ├── MODEL_OVERRIDE_POLICY.md # Modell-Override-Regeln
 │   ├── PLANNING_0.9.0.md        # 0.9.0-Release-Planung (abgeschlossen)
+│   ├── PLANNING_0.10.0_DESIGN_BRIEF.md # 0.10.0-Design-Brief (Arbeits-/Reviewauftrag)
+│   ├── PLANNING_0.10.0.md       # 0.10.0-Release-Plan (beschlossen)
 │   ├── PRODUCT_VISION_1.0.md    # 1.0-Produkt-Vision
 │   ├── ROADMAP.md               # Strategischer Ausbauplan
 │   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
