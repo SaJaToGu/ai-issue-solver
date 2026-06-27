@@ -2,7 +2,7 @@
 
 Created: 2026-06-15 (file introduced as part of Release 0.7.0 information
 architecture audit, issue #309).
-Last rewritten: 2026-06-18 (0.9.0 Solver Validation — first run prep landed).
+Last rewritten: 2026-06-27 (0.9.0 release close-out).
 
 This document is a **short-lived snapshot** of where the project stands. It
 should be revisited after every release via
@@ -11,63 +11,39 @@ whenever the situation changes materially.
 
 ## Current Release
 
-- Release 0.7.0 closed (see
-  [`RELEASE_REVIEW_0.7.0.md`](RELEASE_REVIEW_0.7.0.md) and
-  [`RELEASE_NOTES_0.7.0.md`](RELEASE_NOTES_0.7.0.md)).
-- HEAD at close: `b8fabf5`. Five architecture issues (#311, #312, #313,
-  #314, #315) plus the #309 audit all delivered.
-- Issue #309 is the meta-issue and is closed by the release review
-  document.
-- 0.8.0 was scoped (Handover Audit + Reviewer Runtime + Knowledge Dry
-  Run) but the scoping itself became the work. 30+ messages of
-  meta-planning revealed the 0.8.0 scope had no independent identity.
-  Pivoted to 0.9.0. See [`PLANNING_0.9.0.md`](PLANNING_0.9.0.md).
+- Release 0.9.0 is closed as of 2026-06-27. The version file remains
+  `0.9.0`; the historical `v0.9.0` tag already exists on the earlier
+  milestone-sync commit.
+- `develop` is the release source branch. The close-out target is to
+  fast-forward `main` to the current `develop` head.
+- Release notes are in [`CHANGELOG.md`](../CHANGELOG.md). The original
+  plan remains in [`PLANNING_0.9.0.md`](PLANNING_0.9.0.md) as a
+  historical planning artifact.
 
-## Current Focus: 0.9.0 — Solver Validation
+## Current Focus After 0.9.0
 
-The goal of 0.9.0 is **empirical evidence that ai-issue-solver
-resolves real GitHub issues end-to-end**. This is the first release
-whose success criterion is a number, not a feature.
+0.9.0 answered the practical solver-validation question by hardening the
+pipeline around real failures:
 
-**Scope (4 fixed pieces, see `PLANNING_0.9.0.md` for details):**
+- worker runs with partial patch application or reject artifacts now
+  hard-stop instead of creating misleading PRs;
+- rework prompts are anchored to the branch tip and can use a larger
+  configurable output cap;
+- OpenCode and OpenRouter free-model discovery are dynamic instead of
+  relying on stale static lists;
+- benchmark sweeps now classify results from run reports, so empty
+  responses and OpenRouter 429s are visible as failures instead of
+  `success_no_pr`;
+- free models are documented as experimental and supervised-only. Paid
+  OpenRouter `openai/gpt-4o` remains the strategic default for issues
+  whose PRs are intended to merge.
 
-1. **Backlog Cleanup** (Pre-Work, **landed** via PR #330 / commit
-   `f515ac7`) — 10 stale sections in `docs/BACKLOG/open.md` moved
-   to `done.md` with provenance; §37 and §39 parked.
-2. **Cost-Limit-Forwarding Fix** (**landed** via PR #328 / commit
-   `85c8821`) — `solve_issues_batch.py` and `run_overnight.py`
-   now forward `--max-run-cost-usd`, `--max-run-input-tokens`, and
-   `--max-run-output-tokens` to spawned `solve_issues.py` workers.
-   9/9 new tests in `tests/test_cost_limit_forwarding.py`.
-3. **Reviewer Runtime** (**landed** via PR #329 / commit `bfc65c7`)
-   — `scripts/review_pr.py` loads one of the 3 reviewer prompts and
-   produces a structured verdict. Separate script, not a flag on
-   `solve_issues.py`. 45/45 new tests in
-   `tests/test_reviewer_runtime.py`. Also a separate `--local-branches`
-   mode landed via PR #332 / commit `5d1513f` (17 new tests pin
-   the safety rule for `post_merge_cleanup.py`).
-4. **Validation Metrics & Run** (the deliverable, **in progress**)
-   — generates `reports/validation-0.9.0.md` with solved/partial/
-   quote, cost per solved issue, time per solved issue, top-5 error
-   classes. **Hard Definition of Solved: PR merged + CI green,
-   produced by the Solver pipeline itself.** Anything less does not
-   count. Skeleton in place at `reports/validation-0.9.0.md`;
-   first real run pending. Validation-target issue opened: **#333**
-   (small, well-scoped docstring change in `review_pr.py`).
+Remaining open work is intentionally narrow:
 
-**Important:** the four landed pieces above are all **Mavis-as-dev
-infrastructure** (the human-equivalent work of building the
-machine). They do NOT count toward the 0.9.0 metric. The 0.9.0
-metric is the empirical evidence from the Solver itself, not from
-Mavis in chat. The validation report at
-`reports/validation-0.9.0.md` explicitly distinguishes
-pipeline-produced PRs from human/AI-assisted PRs. See the
-"Mavis-as-dev vs the system Mavis is being measured on" entry
-in agent memory (2026-06-18).
-
-**Out of scope:** Handover Audit, Knowledge Dry Run, AI Contributors,
-new agents, new architecture, model benchmarking, cross-repo
-validation.
+- §59 — Mode-C patch-mismatch hardening remains watchlist-only until
+  there are at least three normal solve-path Mode-C data points.
+- §63 — OpenCode app-state conflict remains parked because it depends on
+  app-side version alignment rather than a repository-only fix.
 
 ### Architectural invariants to preserve
 
@@ -119,12 +95,7 @@ validation.
 
 ## Open Questions
 
-- **Solver effectiveness** — no real pipeline run yet. Validation
-  target issue opened (#333) for the first Solver run. The
-  validation report skeleton is in place at
-  `reports/validation-0.9.0.md` and will be populated when the
-  first run lands. This is THE 0.9.0 question.
-- **GITHUB_TOKEN validity for the first Solver run** — `gh auth
-  status` returns "Bad credentials" as of 2026-06-18 02:25 UTC.
-  Needs a fresh token before the first `solve_issues.py` run can
-  push branches and open PRs.
+- **0.10.0 scope** — not yet committed in tracked documentation.
+- **Free-model production readiness** — current evidence says
+  experimental/supervised-only. Revisit only with fresh benchmark data
+  and after §62/§67-style methodology checks remain green.

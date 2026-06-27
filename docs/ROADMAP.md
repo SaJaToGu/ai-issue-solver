@@ -34,13 +34,12 @@ project. It is intentionally lean and strategic; concrete tasks live in
   but the scope (Handover Audit + Reviewer Runtime + Knowledge
   Dry Run) had no independent identity once meta-planning began.
   Pivoted.
-- **0.9.0** planned — Solver Validation Release. The first release
-  whose success criterion is empirical evidence that the solver
-  resolves real GitHub issues end-to-end. Plan:
-  [`PLANNING_0.9.0.md`](PLANNING_0.9.0.md).
-  Four pieces: Backlog Cleanup (Pre-Work), Cost-Limit-Forwarding
-  Fix, Reviewer Runtime, Validation Metrics & Run. Hard Definition
-  of Solved: PR merged + CI green.
+- **0.9.0** done — Solver Validation Release. It shipped validation
+  infrastructure, PR rework, backward-split handling, hard stops for
+  partial/reject patch failures, dynamic OpenCode/OpenRouter free-model
+  discovery, and corrected benchmark classification from run reports.
+  Close-out is recorded in [`CHANGELOG.md`](../CHANGELOG.md); the
+  original plan remains in [`PLANNING_0.9.0.md`](PLANNING_0.9.0.md).
 - **1.0.0** target — Runnable workflow app for AI-assisted repository
   work. The app coordinates transparent, reviewable steps around one
   repository: triage, planning, model selection, solver execution,

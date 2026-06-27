@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 - 2026-06-23
+## 0.9.0 - 2026-06-23 / closed 2026-06-27
 
 - **Validation infrastructure (§42, PRs #395 / #396 / #397):** shipped the
   0.9.0 validation library end-to-end — models + parsers + metrics
@@ -24,6 +24,23 @@
   `docs/archive/` with revival-checklist READMEs. Tests for the
   deprecated wrapper deleted (kept the archive folder would still be
   picked up by `python -m unittest discover -s tests`).
+- **Solver-loop hardening (§56 / §57 / §60, PRs #440 / #442 / #445):**
+  rework prompts now anchor to the branch tip and configurable token cap;
+  partial patch application and reject-artifact failures are hard stops,
+  so failed workers no longer create PRs from partial on-disk changes.
+- **Dynamic model catalogs (§58 / §66, PRs #443 / #449):** OpenCode and
+  OpenRouter free-model discovery moved away from stale static lists.
+  Recently removed patterns are injected into solve prompts so workers do
+  not silently reintroduce deleted model slugs or old budget defaults.
+- **Free-model benchmark methodology (§62 / §67, PRs #448 / #465):**
+  benchmark mode now skips PR creation safely and classifies runs from
+  worker run reports instead of treating clean process exit as success.
+  The #450 smoke benchmark correctly classified two empty responses and
+  two OpenRouter 429 rate-limit failures.
+- **0.9.0 close-out (#450 / PR #466):** README repository structure and
+  free-model status were updated. Free models remain experimental and
+  supervised-only; paid OpenRouter `openai/gpt-4o` stays the strategic
+  default for merge-intended issues.
 
 ## 0.3.1 - 2026-06-01
 

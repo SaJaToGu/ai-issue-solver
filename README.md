@@ -297,7 +297,7 @@ ai-issue-solver/
 │   ├── LANGUAGE_POLICY.md       # Sprachrichtlinie / Language Policy
 │   ├── OPENCODE_APP_STATE.md    # OpenCode-App-State-Konflikt-Doku
 │   ├── MODEL_OVERRIDE_POLICY.md # Modell-Override-Regeln
-│   ├── PLANNING_0.9.0.md        # 0.9.0-Release-Planung
+│   ├── PLANNING_0.9.0.md        # 0.9.0-Release-Planung (abgeschlossen)
 │   ├── PRODUCT_VISION_1.0.md    # 1.0-Produkt-Vision
 │   ├── ROADMAP.md               # Strategischer Ausbauplan
 │   ├── RASPBERRY_PI.md          # Ollama auf Raspberry Pi
