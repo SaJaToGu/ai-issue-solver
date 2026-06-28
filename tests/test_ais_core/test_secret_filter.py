@@ -15,7 +15,7 @@ class TestSecretFilterStub(unittest.TestCase):
 
     def test_all_exports_resolve(self) -> None:
         from ais_core.secret_filter import (
-            SECRED_PATTERNS,
+            SECRET_PATTERNS,
             redact_dict,
             redact_list,
             redact_secrets,
@@ -24,7 +24,7 @@ class TestSecretFilterStub(unittest.TestCase):
         self.assertTrue(callable(redact_secrets))
         self.assertTrue(callable(redact_dict))
         self.assertTrue(callable(redact_list))
-        self.assertIsInstance(SECRED_PATTERNS, list)
+        self.assertIsInstance(SECRET_PATTERNS, list)
 
 
 if __name__ == "__main__":

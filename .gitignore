@@ -29,6 +29,3 @@ benchmark_results_*.json
 .idea/
 .vscode/
 *.pyc
-
-# Python bytecode (Issue #1a)
-Found __pycache__ dirs during issue #1a work

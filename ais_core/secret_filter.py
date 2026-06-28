@@ -19,11 +19,11 @@ import re
 
 # Placeholder for compiled regex patterns. Real patterns are added in
 # Issue #1d. Declared as a list so callers can introspect coverage.
-SECRED_PATTERNS: list[re.Pattern[str]] = []
+SECRET_PATTERNS: list[re.Pattern[str]] = []
 
 
 __all__ = [
-    "SECRED_PATTERNS",
+    "SECRET_PATTERNS",
     "redact_secrets",
     "redact_dict",
     "redact_list",

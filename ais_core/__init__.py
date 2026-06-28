@@ -5,6 +5,10 @@ This package holds the stable library surface that backs the AIS CLI
 Odysseus integration). Modules here are designed to be importable
 without side-effects so they can be reused from multiple entry points.
 
+The package version is read from the project metadata (configured via
+``pyproject.toml``'s ``dynamic = ["version"]`` + ``VERSION`` file), not
+hard-coded here, so this module stays free of release-specific defaults.
+
 Modules:
     repo_resolve   — resolve a repo hint to (owner, repo, remote, local_path)
     issue_resolve  — locate and inspect GitHub issues
@@ -13,6 +17,4 @@ Modules:
     run_state      — run-id generation and per-run state persistence
 """
 
-__version__ = "0.9.0"
-
-__all__ = ["__version__"]
+__all__: list[str] = []
