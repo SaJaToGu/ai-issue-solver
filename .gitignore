@@ -28,3 +28,7 @@ benchmark_results_*.json
 .DS_Store
 .idea/
 .vscode/
+*.pyc
+
+# Python bytecode (Issue #1a)
+Found __pycache__ dirs during issue #1a work
