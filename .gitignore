@@ -28,3 +28,4 @@ benchmark_results_*.json
 .DS_Store
 .idea/
 .vscode/
+*.pyc
