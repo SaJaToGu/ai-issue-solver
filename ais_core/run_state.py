@@ -72,6 +72,9 @@ def _sanitize_repo_short(repo: str) -> str:
     s = _REPO_SHORT_RE.sub("-", repo.lower())
     s = _REPO_SHORT_DASH_RE.sub("-", s).strip("-")
     s = s[:20]
+    # Defense-in-depth: a 20-char truncate can leave a trailing dash
+    # if the input ends in a separator; strip again to be safe.
+    s = s.strip("-")
     return s or "repo"
 
 
@@ -86,21 +89,37 @@ def make_run_id(
         owner: GitHub owner (used as salt for the hash).
         repo: GitHub repository name (used for the repo-short label
             AND as salt for the hash).
-        timestamp: Optional UTC datetime. Defaults to ``datetime.now(tz=UTC)``.
+        timestamp: Optional UTC datetime. Defaults to
+            ``datetime.now(tz=UTC)``. The visible prefix is seconds-
+            precise (``YYYYMMDDTHHMMSSZ``) but the hash is computed
+            over a microsecond-precise ISO-8601 string, so two calls
+            within the same wall-clock second still produce different
+            IDs by default.
 
     Returns:
         A Run-ID matching the format ``<UTC>-<repo-short>-<hash>``.
         The hash is the first 8 hex chars of SHA-256 over
-        ``"<owner>|<repo>|<UTC-timestamp>"``.
+        ``"<owner>|<repo>|<microsecond-precise-ISO>"``.
+
+    Determinism:
+        If an explicit ``timestamp`` is passed, identical inputs always
+        produce identical IDs (microsecond-precise ISO is deterministic).
+        With ``timestamp=None``, each call uses the current time, so
+        consecutive calls within the same second produce different IDs.
     """
     if timestamp is None:
         timestamp = datetime.now(timezone.utc)
     if timestamp.tzinfo is None:
         # Treat naive timestamps as UTC for reproducibility.
         timestamp = timestamp.replace(tzinfo=timezone.utc)
-    ts_str = timestamp.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    utc_ts = timestamp.astimezone(timezone.utc)
+    # Visible prefix: seconds-precise (human-readable, sortable).
+    ts_str = utc_ts.strftime("%Y%m%dT%H%M%SZ")
     repo_short = _sanitize_repo_short(repo)
-    digest_input = f"{owner}|{repo}|{ts_str}".encode("utf-8")
+    # Hash input: microsecond-precise ISO-8601 (collision-safe within
+    # the same wall-clock second; deterministic for identical inputs).
+    iso_str = utc_ts.isoformat(timespec="microseconds")
+    digest_input = f"{owner}|{repo}|{iso_str}".encode("utf-8")
     digest = hashlib.sha256(digest_input).hexdigest()[:8]
     return f"{ts_str}-{repo_short}-{digest}"
 
@@ -119,9 +138,19 @@ def save_state(
     """Persist ``state`` to ``<base_dir>/<run_id>/metadata.json``.
 
     Creates the parent directory if needed. Returns the path written.
+
+    Raises:
+        ValueError: if ``state.run_id != run_id`` (defends against
+            accidental mis-pairing that would write a metadata file
+            whose embedded ``run_id`` does not match its on-disk path).
     """
     if base_dir is None:
         base_dir = DEFAULT_REPORTS_DIR
+    if state.run_id != run_id:
+        raise ValueError(
+            f"state.run_id ({state.run_id!r}) does not match run_id "
+            f"argument ({run_id!r})"
+        )
     path = _state_path(run_id, Path(base_dir))
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {

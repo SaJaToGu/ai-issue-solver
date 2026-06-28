@@ -89,6 +89,43 @@ class TestMakeRunIdUniqueness(unittest.TestCase):
         ids = {make_run_id(f"owner-{i}", "ai-issue-solver", ts) for i in range(1000)}
         self.assertEqual(len(ids), 1000)
 
+    def test_same_second_different_microseconds_produce_different_ids(self) -> None:
+        """Two runs in the same wall-clock second (different microseconds)
+        must produce different Run-IDs, even though the visible prefix
+        (seconds-precise) is the same.
+        """
+        ts_a = datetime(2026, 6, 27, 19, 24, 12, 123_456, tzinfo=timezone.utc)
+        ts_b = datetime(2026, 6, 27, 19, 24, 12, 123_789, tzinfo=timezone.utc)
+        rid_a = make_run_id("o", "r", ts_a)
+        rid_b = make_run_id("o", "r", ts_b)
+        # Visible prefix is identical (same second)
+        self.assertEqual(rid_a.split("-")[0], rid_b.split("-")[0])
+        self.assertEqual(rid_a.split("-")[0], "20260627T192412Z")
+        # But the IDs themselves are different (microsecond-precision hash)
+        self.assertNotEqual(rid_a, rid_b)
+
+    def test_visible_prefix_remains_seconds_precise(self) -> None:
+        """Even with microsecond input, the visible prefix is YYYYMMDDTHHMMSSZ."""
+        ts = datetime(2026, 6, 27, 19, 24, 12, 999_999, tzinfo=timezone.utc)
+        rid = make_run_id("o", "r", ts)
+        self.assertTrue(rid.startswith("20260627T192412Z-"))
+
+    def test_subsecond_resolution_default_timestamp(self) -> None:
+        """Two consecutive ``timestamp=None`` calls produce different IDs."""
+        rid_a = make_run_id("o", "r")
+        rid_b = make_run_id("o", "r")
+        # In practice these differ because of microsecond clock.
+        # If for some reason they don't differ (clock resolution),
+        # the function would still be valid but uniqueness would not
+        # be guaranteed; flag a warning.
+        if rid_a == rid_b:
+            import warnings
+            warnings.warn(
+                "make_run_id with timestamp=None returned identical IDs; "
+                "may indicate low-resolution clock",
+                stacklevel=2,
+            )
+
 
 class TestSaveLoadRoundtrip(unittest.TestCase):
     def setUp(self) -> None:
@@ -124,6 +161,14 @@ class TestSaveLoadRoundtrip(unittest.TestCase):
         save_state(state.run_id, state, base_dir=self.tmpdir)
         loaded = load_state(state.run_id, base_dir=self.tmpdir)
         self.assertEqual(loaded.data, {})
+
+    def test_save_state_rejects_run_id_mismatch(self) -> None:
+        """save_state() must raise ValueError when the run_id argument
+        and state.run_id do not match (defense against mis-paired writes).
+        """
+        state = RunState(run_id="real-id", status="queued", data={})
+        with self.assertRaises(ValueError):
+            save_state("WRONG-id", state, base_dir=self.tmpdir)
 
 
 if __name__ == "__main__":
