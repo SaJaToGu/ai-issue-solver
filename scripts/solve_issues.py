@@ -4318,6 +4318,15 @@ def main():
     else:
         token, user = require_github_config(cfg, require_user=True)
 
+    # Smoke-Use of ais_core.repo_resolve (Issue #1b): normalize the
+    # (owner, args.repo) pair through the new library. The result is
+    # currently unused (no broad refactor under #1b); this single call
+    # exercises the library code path and validates the integration.
+    if args.repo:
+        from ais_core.repo_resolve import resolve_from_owner_repo
+        _resolved_repo = resolve_from_owner_repo(user, args.repo)
+        del _resolved_repo  # suppress unused-variable lint
+
     # KI-Worker prüfen
     if args.model == "codex" and not find_codex_executable() and not args.dry_run:
         print_err("Codex CLI wurde nicht gefunden!")
